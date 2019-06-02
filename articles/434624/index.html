@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How I found a bug in GNU Tar</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The author of the article is Chris Siebenmann , Unix system administrator at the University of Toronto 
+
+ From time to time in my work something stran...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How I found a bug in GNU Tar</h1><div class="post__text post__text-html js-mediator-article"> <i><font color="gray">The author of the article is <a href="https://utcc.utoronto.ca/~cks/">Chris Siebenmann</a> , Unix system administrator at the University of Toronto</font></i> <br><br>  From time to time in my work something strange happens that makes you think.  Even if it is not immediately clear what the conclusions follow.  Recently, I mentioned that we found a bug in GNU Tar, and the story of how this happened is one such case. <br><br>  For backup file servers, we use Amanda and GNU Tar.  For a long time, we occasionally had a rather rare problem when tar went crazy when backing up the file system with the <code>/var/mail</code> directory, producing a huge amount of output.  Usually this process went to infinity and had to kill the dump;  in other cases, it did end up with a terabyte (s) of data that seemed to be perfectly compressed.  When I once again got such a giant tar file, I checked it - and found out that it partially consists of zero bytes, which the <code>tar -t</code> testing team doesn’t like very much, after which everything returns to normal. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      (Because of this, it became interesting to me whether people in mailboxes appear naturally in zero bytes. It turned out that <a href="https://utcc.utoronto.ca/~cks/space/blog/sysadmin/GreppingForNullBytes">finding zero bytes in text files is</a> not so simple and yes, they are there). <br><a name="habracut"></a><br>  We recently moved the file system from <code>/var/mail</code> to new Linux file servers under Ubuntu 18.04 and therefore switched to a later and more standard version of GNU Tar than is on OmniOS machines.  We hoped that this would solve our problems, but almost immediately the same incident occurred.  This time GNU Tar worked on the Ubuntu machine, where I am well acquainted with all the available debugging tools, so I checked the running <code>tar</code> process.  The test showed that <code>tar</code> produces an endless stream of <code>read()</code> , returning 0 bytes: <br><br><pre> <code class="plaintext hljs">read(6, "", 512) = 0 read(6, "", 512) = 0 [...] read(6, "", 512) = 0 write(1, "\0\0\0\0\0"..., 10240) = 10240 read(6, "", 512) = 0 [...]</code> </pre> <br>  <code>lsof</code> said that file descriptor 6 is someone's mailbox. <br><br>  Using <code>apt-get source tar</code> I downloaded the source code and started looking for <code>read()</code> system calls that do not check for file completion.  Having examined several levels of indirect addressing, I found an obvious place where such a check seems to be omitted, namely in the function <code>sparse_dump_region</code> from the file <a href="">sparse.cs</a> .  And then I remembered something. <br><br>  A few months ago, <a href="https://utcc.utoronto.ca/~cks/space/blog/linux/KernelNFSPageBug">we ran into an NFS problem in Alpine</a> .  While working on this bug, I traced the Alpine process and noticed, among other things, that it uses <code>ftruncate()</code> to resize mailboxes;  sometimes it expands them, temporarily creating a sparse section of the file, until it fills it, and, possibly, sometimes compresses it.  This seemed to coincide with the current situation: sparse areas are related, and reducing the file size with <code>ftruncate()</code> creates a situation where tar unexpectedly encounters file termination. <br><br>  (This even explains why tar is sometimes restored; if later a new mail suddenly arrives in the box, it returns to the expected size and tar no longer faces an unexpected completion of the file). <br><br>  I fiddled a bit with GDB on the Ubuntu debugging symbols and tar source code I received, and was able to reproduce the error, although it was somewhat different from my original theory.  It turned out that <code>sparse_dump_region</code> does not reset sparse areas of the file, but resets not sparse (well, of course), and is used for all files (sparse or not) if you run tar with the argument <code>--sparse</code> .  Thus, the actual error is that <b>if you run GNU Tar with the argument <code>--sparse</code> and the file is compressed during its reading, tar cannot correctly handle the end of the file received earlier than expected</b> .  If the file grows again, tar restores. <br><br>  (Except when the file is sparse only at the end and is compressed only in this place. In this case, everything is fine). <br><br>  I thought that all the same I could check many years ago on our OmniOS file servers.  There are ways to trace the system calls of the program and analogs of <code>lsof</code> , and I could find and see the source code of my version of GNU Tar and run it with the OmniOS debugger (although GDB is not installed there), and so on.  But I did not.  Instead, we shrugged and moved on.  I had to move the file system under Ubuntu so that I could lift a finger and figure out the problem. <br><br>  (It's not just about tools and environments; we also automatically assumed that some old unsupported version of GNU Tar was on OmniOS, which makes no sense to investigate, because the problem was of course decided in a newer version). <br><br>  PS: Probably, as a quick fix, we simply forbid Amanda from using the tar <code>--sparse</code> when backing up.  Mailboxes should not be sparse, and if this happens, <a href="https://utcc.utoronto.ca/~cks/space/blog/sysadmin/GzipNotFast">we still compress the file system backups</a> , so all these zero bytes will compress well. <br><br>  PPS: I did not try to report a bug to the developers of GNU Tar, because I discovered it only on Friday, and the university is now on winter vacation.  Feel free to do this before me. </div><p>Source: <a href="https://habr.com/ru/post/434624/">https://habr.com/ru/post/434624/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../434604/index.html">How not to write templates for bootstrap</a></li>
+<li><a href="../434616/index.html">Soviet HI-FI and its creators: digital sound recording in the USSR - one step away from victory</a></li>
+<li><a href="../434618/index.html">MVP and Dagger 2 - Skeleton Android Application - Part 2</a></li>
+<li><a href="../434620/index.html">Create a stylish waterfall from RiME right in Unity or UE4</a></li>
+<li><a href="../434622/index.html">What worlds can survive the death of the sun?</a></li>
+<li><a href="../434626/index.html">New Buhtrap Loader</a></li>
+<li><a href="../434628/index.html">bitContainer (for food) - self-made Yandex. Station</a></li>
+<li><a href="../434634/index.html">Universal Radio Hacker - an easy way to explore digital radio protocols</a></li>
+<li><a href="../434636/index.html">How to exploit children</a></li>
+<li><a href="../434638/index.html">Rocket launch from East with your own eyes</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

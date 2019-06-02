@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Kubernetes tips & tricks: on local development and Telepresence</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="We are increasingly asked about the development of microservices in Kubernetes. Developers, especially interpreted languages, want to quickly correct ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Kubernetes tips & tricks: on local development and Telepresence</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/hi/ph/x9/hiphx9pgfhckxtda-itahq7tq1s.png"><br><br>  We are increasingly asked about the development of microservices in Kubernetes.  Developers, especially interpreted languages, want to quickly correct the code in their favorite IDE and without waiting for the build / deployment to see the result - by simply pressing F5.  And when it came to a monolithic application, it was enough to locally raise the database and the web server (in Docker, VirtualBox ...), after which - immediately enjoy the development.  With the sawing of monoliths on microservices and the arrival of Kubernetes, with the appearance of dependencies on each other, everything <a href="https://habr.com/ru/company/flant/blog/424531/">became a bit more complicated</a> .  The more of these microservices, the more problems.  To enjoy development again, you need to raise more than one and not two Docker containers, and sometimes not even a dozen ... In general, all this can take a lot of time, since it also needs to be kept up to date. <a name="habracut"></a><br><br>  At different times we tried different solutions to the problem.  And I will start with accumulated workarounds or simply “crutches”. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h2>  1. Crutches </h2><br>  Most IDEs have the ability to edit code directly on the server using FTP / SFTP.  This path is very obvious and we immediately decided to use it.  The essence of it is as follows: <br><br><ol><li>  In pod, the development environment (dev / review) launches an additional container with SSH access and forwarding the public SSH key of the developer that will commit / deploy the application. </li><li>  At the init-stage (as part of the <code>prepare-app</code> container), we transfer the code to <code>emptyDir</code> in order to have access to the code from the containers with the application and the SSH server. </li></ol><br><img src="https://habrastorage.org/webt/4i/i0/km/4ii0kmxovuszvyeyuyfdgadrvvg.png"><br><br>  For a better understanding of the technical implementation of such a scheme, I will cite fragments of the involved YAML configurations in Kubernetes. <br><br><h3>  Configurations </h3><br><h4>  1.1.  values.yaml </h4><br><pre> <code class="plaintext hljs">ssh_pub_key: vasya.pupkin: &lt;ssh public key in base64&gt;</code> </pre><br>  Here, <code>vasya.pupkin</code> is the value of the <code>${GITLAB_USER_LOGIN}</code> variable. <br><br><h4>  1.2.  deployment.yaml </h4><br><pre> <code class="plaintext hljs">... {{ if eq .Values.global.debug "yes" }} volumes: - name: ssh-pub-key secret: defaultMode: 0600 secretName: {{ .Chart.Name }}-ssh-pub-key - name: app-data emptyDir: {} initContainers: - name: prepare-app {{ tuple "backend" . | include "werf_container_image" | indent 8 }} volumeMounts: - name: app-data mountPath: /app-data command: ["bash", "-c", "cp -ar /app/* /app-data/" ] {{ end }} containers: {{ if eq .Values.global.debug "yes" }} - name: ssh image: corbinu/ssh-server volumeMounts: - name: ssh-pub-key readOnly: true mountPath: /root/.ssh/authorized_keys subPath: authorized_keys - name: app-data mountPath: /app ports: - name: ssh containerPort: 22 protocol: TCP {{ end }} - name: backend volumeMounts: {{ if eq .Values.global.debug "yes" }} - name: app-data mountPath: /app {{ end }} command: ["/usr/sbin/php-fpm7.2", "--fpm-config", "/etc/php/7.2/php-fpm.conf", "-F"] ...</code> </pre><br><h4>  1.3.  secret.yaml </h4><br><pre> <code class="plaintext hljs">{{ if eq .Values.global.debug "yes" }} apiVersion: v1 kind: Secret metadata: name: {{ .Chart.Name }}-ssh-pub-key type: Opaque data: authorized_keys: "{{ first (pluck .Values.global.username .Values.ssh_pub_key) }}" {{ end }}</code> </pre><br><h4>  Final touch </h4><br>  After that, it will only be <a href="https://habr.com/ru/company/flant/blog/345580/">necessary</a> to transfer the <a href="https://habr.com/ru/company/flant/blog/345580/">necessary gitlab-ci.yml variables</a> : <br><br><pre> <code class="plaintext hljs">dev: stage: deploy script: - type multiwerf &amp;&amp; source &lt;(multiwerf use 1.0 beta) - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf deploy --namespace ${CI_PROJECT_NAME}-stage --set "global.env=stage" --set "global.git_rev=${CI_COMMIT_SHA}" --set "global.debug=yes" --set "global.username=${GITLAB_USER_LOGIN}" tags: - build</code> </pre><br>  Voila: the developer running the deployment can connect by the service name ( <a href="https://habr.com/ru/company/flant/blog/427745/">we already told you</a> how to issue access to the cluster safely) from your desktop via SFTP and edit the code without waiting for it to be delivered to the cluster. <br><br>  This is quite a working solution, but in terms of implementation has obvious drawbacks: <br><br><ul><li>  the need to refine the Helm-chart, which further complicates its reading; </li><li>  can only be used by those who have registered the service; </li><li>  you need to remember to synchronize it with the local directory with the code and commit to Git. </li></ul><br><h2>  2. Telepresence </h2><br>  The project <a href="https://telepresence.io/">Telepresence</a> is known for a long time, but seriously try it in practice with us, as they say, "did not get around."  However, the demand has done its job and now we are happy to share experiences that may be useful to readers of our blog - especially since there have been no other materials about Telepresence on the site yet. <br><br>  In short, everything was not so scary.  All actions that require execution by the developer, we placed in a text file Helm-chart, called <code>NOTES.txt</code> .  Thus, the developer, after deploying the service to Kubernetes, sees the instructions for launching the local dev environment in the GitLab job log: <br><br><pre> <code class="plaintext hljs">!!!   ,   Kubernetes !!! *   * *       VPN * *     kubectl ( https://kubernetes.io/docs/tasks/tools/install-kubectl/ ) * *  config-  kubectl (  ~/.kube/config) * *     telepresence ( https://www.telepresence.io/reference/install ) * *    Docker * *    reporter     https://gitlab.site.com/group/app * *    registry  /  GitLab (  ): ######################################################################### docker login registry.site.com ######################################################################### *   ######################################################################### telepresence --namespace {{ .Values.global.env }} --swap-deployment {{ .Chart.Name }}:backend --mount=/tmp/app --docker-run -v `pwd`:/app -v /tmp/app/var/run/secrets:/var/run/secrets -ti registry.site.com/group/app/backend:v8 #########################################################################</code> </pre> <br><br>  We will not dwell on the steps described in this manual ... except for the last.  What happens during the launch of Telepresence? <br><br><h3>  Work with Telepresence </h3><br>  At the start (according to the last command specified in the instructions above) we ask: <br><br><ul><li>  namespace, in which microservice is running; </li><li>  the names of the deployment and the container into which we want to penetrate. </li></ul><br>  The remaining arguments are optional.  If our service interacts with the Kubernetes API and is <a href="https://habr.com/ru/company/flant/blog/422801/">created</a> for it <a href="https://habr.com/ru/company/flant/blog/422801/">by ServiceAccount</a> , we need to mount the certificates / tokens on our desktop.  To do this, use the option <code>--mount=true</code> (or <code>--mount=/dst_path</code> ), which will mount the root (/) from the container in Kubernetes to us on the desktop.  After that, we can (depending on the OS and the way the application is launched) use the "keys" from the cluster. <br><br>  At the beginning we will consider the most universal way of launching an application - in a Docker-container.  To do this, use the <code>--docker-run</code> key and mount the directory with the code in the container: <code>-v `pwd`:/app</code> <br><br>  Please note that this means starting from the project directory.  The application code will be mounted to the <code>/app</code> directory in the container. <br><br>  Next: <code>-v /tmp/app/var/run/secrets:/var/run/secrets</code> - to mount the directory with the certificate / token in the container. <br><br>  This option is finally followed by the image in which the application will run.  <b>NB</b> : When assembling an image, you must specify <code>CMD</code> or <code>ENTRYPOINT</code> ! <br><br>  What exactly will happen next? <br><br><ul><li>  In Kubernetes, for the specified Deployment, the number of replicas will be changed to 0. Instead of it, a new Deployment will be launched - with the <code>backend</code> container replaced. </li><li>  Two containers will be launched on the desktop: the first one will be from Telepresence (it will perform proxying of requests from / to Kubernetes), the second one will be developed with the application. </li><li>  If the exec go to the container with the application, then all the ENV variables transmitted by Helm during the deployment will be available to us, as well as all the services available.  It remains only to edit the code in your favorite IDE and enjoy the result. </li><li>  At the end of the work, it is enough just to close the terminal where Telepresence is running (terminate the session on Ctrl + C) - the Docker containers will stop on the desktop, and in Kubernetes everything will return to the initial state.  It only remains to commit, issue the MR and transfer it to review / merge / ... (depending on your workflow). </li></ul><br>  If we don’t want to run the application in a Docker container - for example, we are developing not with PHP, but with Go, and still collect it locally, launching Telepresence will be even easier: <br><br><pre> <code class="plaintext hljs">telepresence --namespace {{ .Values.global.env }} --swap-deployment {{ .Chart.Name }}:backend --mount=true</code> </pre> <br>  If the application accesses the Kubernetes API, you will need to mount a directory with keys (https://www.telepresence.io/howto/volumes).  For Linux, there is the <a href="https://github.com/proot-me/proot">proot</a> utility: <br><br><pre> <code class="plaintext hljs">proot -b $TELEPRESENCE_ROOT/var/run/secrets/:/var/run/secrets bash</code> </pre> <br>  After launching Telepresence without the <code>--docker-run</code> option, all environment variables will be available in the current terminal, therefore, the application launch must be done in it. <br><br>  <b>NB</b> : When using, for example, PHP, you need to remember to disable various op_cache, apc and other accelerators for development - otherwise editing the code will not lead to the desired result. <br><br><h2>  Results </h2><br>  Local development with Kubernetes is a problem, the need for which is growing in proportion to the spread of this platform.  Receiving appropriate requests from the developers (from our clients), we began to solve them with the first available means, which, however, did not prove to be in the long run.  Fortunately, it became obvious not only now and not only to us, therefore more suitable means have already appeared in the world, and Telepresence is the most famous of them (by the way, there is still a <a href="https://github.com/GoogleContainerTools/skaffold">skaffold</a> from Google).  Our experience of its use is not so great yet, but it already gives grounds to recommend to “colleagues in the workshop” - try it! <br><br><h2>  PS </h2><br>  Other K8s series tips &amp; tricks: <br><br><ul><li>  “ <a href="https://habr.com/ru/company/flant/blog/445596/">Kubernetes tips &amp; tricks: custom error pages in NGINX Ingress</a> ”; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/441964/">Transfer of resources working in a cluster under the management of Helm 2</a> "; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/432748/">On the allocation of sites and the load on the web application</a> "; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/427745/">Access to dev-sites</a> "; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/417509/">Accelerate the bootstrap of large databases.</a> " </li></ul></div><p>Source: <a href="https://habr.com/ru/post/446788/">https://habr.com/ru/post/446788/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../446776/index.html">Proof-of-work effective</a></li>
+<li><a href="../446780/index.html">How to create a dark theme and do no harm. Experience team Yandex. Mail</a></li>
+<li><a href="../446782/index.html">Yo ho ho and a bottle of rum</a></li>
+<li><a href="../446784/index.html">Backlog Grooming Grooming Backlog</a></li>
+<li><a href="../446786/index.html">Why did I give up on Disqus and you should go too</a></li>
+<li><a href="../446796/index.html">Non-Standard Circuitry: 7-Segment Indicator on ATtiny13</a></li>
+<li><a href="../446798/index.html">Apple’s electronics engineer’s departure caused a flurry among speculators. How to become like him?</a></li>
+<li><a href="../446802/index.html">Filling Matrix Cartridges - It's Interesting</a></li>
+<li><a href="../446806/index.html">Background: "Autonomous Runet" - what it is and who needs it</a></li>
+<li><a href="../446808/index.html">My Lisp compiler</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

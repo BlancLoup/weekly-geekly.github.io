@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Redis streams as pure data structure</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The new data structure Redis 5 called “streams” (streams) has aroused great interest in the community. Sometime I will talk to those who use threads i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Redis streams as pure data structure</h1><div class="post__text post__text-html js-mediator-article">  The new data structure Redis 5 called “streams” (streams) has aroused great interest in the community.  Sometime I will talk to those who use threads in production and write about it.  But now I want to consider a slightly different topic.  It starts to seem to me that many present the flows with some kind of surrealistic tool for solving terribly difficult tasks.  Indeed, this data structure * also * exchanges messages, but it will be an incredible simplification to assume that the functionality of Redis Streams is limited only to this. <br><br>  Flows are a terrific template and a “mental model” that can be used with great success in system design, but in fact flows, like most Redis data structures, are a more general structure and can be used to heap other tasks.  In this article, we will present streams as a pure data structure, completely ignoring blocking operations, recipient groups, and all other messaging functionality. <br><a name="habracut"></a><br><h1>  Streams are CSV on steroids </h1><br>  If you want to write a number of structured data elements and think that the database will be overkill here, you can simply open the file in <code>append only</code> mode and write each line as CSV (Comma Separated Value): <br><br><pre> <code class="plaintext hljs">(open data.csv in append only) time=1553096724033,cpu_temp=23.4,load=2.3 time=1553096725029,cpu_temp=23.2,load=2.1</code> </pre> <br>  It looks easy.  People did it a long time ago and still do: this is a reliable template, if you know what's what.  But what will be the equivalent in memory?  Much more advanced data processing becomes possible in memory, and many limitations of CSV files are automatically removed, such as: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  It is difficult (inefficient) to perform range requests. <br></li><li>  Too much redundant information: almost the same time in each record, and the fields are duplicated.  At the same time, deleting data will make the format less flexible if I want to switch to a different set of fields. <br></li><li>  Element offsets are simply a byte offset in the file: if we change the file structure, the offset will become wrong, so there is no real concept of a primary identifier.  Records are essentially impossible to present in any way unequivocally. <br></li><li>  Without the ability to collect garbage and without rewriting the log can not delete records, but only mark them as invalid.  Log rewriting usually sucks for several reasons, it is advisable to avoid it. </li></ol><br>  At the same time, such a CSV log is good in its own way: there is no fixed structure, the fields can vary, it is trivial to generate, and it is rather compact.  The idea behind the Redis streams was to preserve dignity, but overcome limitations.  The result is a hybrid data structure that is very similar to Redis sorted sets: they * look like * a fundamental data structure, but use several internal representations to get this effect. <br><br><h1>  Introduction to streams (you can skip if you are already familiar with the basics) </h1><br>  Redis streams are represented as delta-compressed macro nodes connected by a base tree.  As a result, you can very quickly search for random entries, get ranges, delete old elements, etc. At the same time, the interface for a programmer is very similar to a CSV file: <br><br><pre> <code class="plaintext hljs">&gt; XADD mystream * cpu-temp 23.4 load 2.3 "1553097561402-0" &gt; XADD mystream * cpu-temp 23.2 load 2.1 "1553097568315-0"</code> </pre> <br>  As you can see from the example, the XADD command automatically generates and returns a record identifier, which monotonously increases and consists of two parts: &lt;time&gt; - &lt;counter&gt;.  The time is in milliseconds, and the counter increases for entries with the same time. <br><br>  So, the first new abstraction for the idea of ​​a CSV file in <code>append only</code> mode is to use an asterisk as an ID argument for XADD: this is how we get a record identifier from the server for free.  This identifier is not only useful for pointing to a specific element in the stream, it is also associated with the time when the record is added to the stream.  In fact, using XRANGE, you can perform range queries or extract individual elements: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097561402-0 1553097561402-0 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3"</code> </pre> <br>  In this case, I used the same ID for the beginning and end of the range to identify one element.  However, I can use any range and COUNT argument to limit the number of results.  Similarly, there is no need to specify full identifiers for a range, I can simply use only unix-time to get items in a given time range: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097560000 1553097570000 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3" 2) 1) "1553097568315-0" 2) 1) "cpu-temp" 2) "23.2" 3) "load" 4) "2.1"</code> </pre> <br>  At the moment there is no need to show you other API features, there is documentation for this.  For now, let's just focus on this usage pattern: XADD to add, XRANGE (and also XREAD) to extract ranges (depending on what you want to do), and let's see why threads are so powerful as to call them a data structure. <br><br>  If you want to learn more about threads and APIs, be sure to read the <a href="https://redis.io/topics/streams-intro">tutorial</a> . <br><br><h1>  Tennis players </h1><br>  A few days ago, a friend and I, who started studying Redis, modeled an application to track local tennis courts, players and matches.  The way of modeling players is completely obvious, the player is a small object, so we need only a hash with <code>player:&lt;id&gt;</code> type keys <code>player:&lt;id&gt;</code> .  Then you will immediately realize that you need a way to track games in specific tennis clubs.  If <code>player:1</code> and <code>player:2</code> played each other and <code>player:1</code> won, we can send the following record to the stream: <br><br><pre> <code class="plaintext hljs">&gt; XADD club:1234.matches * player-a 1 player-b 2 winner 1 "1553254144387-0"</code> </pre> <br>  Such a simple operation gives us: <br><br><ol><li>  Unique identifier of the match: ID in the stream. <br></li><li>  There is no need to create an object to identify a match. <br></li><li>  Free range requests for paging matches or viewing matches at a specific date and time. </li></ol><br>  Before the advent of streams, we would have to create a sorted set by time: the elements of the sorted set will be match identifiers, which are stored in a different key as a hash value.  This is not only more work, but also more memory.  Much, much more memory (see below). <br><br>  Now our goal is to show that Redis streams are a sort of sorted set in <code>append only</code> mode, with keys in time, where each element is a small hash.  And in its simplicity it is a real revolution in the context of modeling. <br><br><h1>  Memory </h1><br>  The above usage example is not just a more seamless programming pattern.  Memory consumption in threads is so different from the old approach with a sorted set + hash for each object, that now some things start to work that previously it was impossible to implement at all. <br><br>  Here are statistics on the amount of memory to store a million matches in the configuration presented earlier: <br><br><pre> <code class="plaintext hljs">  +  = 220  (242 RSS)  = 16,8  (18.11 RSS)</code> </pre> <br>  The difference is more than an order of magnitude (namely, 13 times).  This means being able to work with tasks that were previously too expensive to perform in memory.  Now they are quite viable.  The magic lies in the representation of Redis streams: macro nodes can contain several elements that are very compactly encoded in a data structure called listpack.  This structure takes care, for example, of encoding integers in binary form, even if they are semantically strings.  In addition, we apply delta compression and compress the same fields.  However, it is still possible to search by ID or time, because such macro nodes are connected in the base tree, which is also designed with memory optimization.  All together, this explains the economical use of memory, but the interesting part is that, semantically, the user does not see any implementation details that make the threads so efficient. <br><br>  Now let's count.  If I can store 1 million entries in about 18 MB of memory, then I can store 10 million in 180 MB and 100 million in 1.8 GB.  With a total of 18 GB of memory, I can have 1 billion items. <br><br><h1>  Time series </h1><br>  It is important to note that the example above with tennis matches is semantically * very different from * the use of Redis streams for time series.  Yes, logically we still register some event, but there is a fundamental difference.  In the first case, we log and create records for rendering objects.  And in the time series, we simply measure something that happens outside, which in fact does not represent an object.  You may say that this distinction is trivial, but it is not.  It is important to understand the idea that Redis streams can be used to create small objects with a common order and assign identifiers to such objects. <br><br>  But even the simplest version of using time series, obviously, is a huge breakthrough, because before the advent of streams, Redis was practically powerless to do anything here.  Memory characteristics and flow flexibility, as well as the ability to limit capped threads (see XADD parameters) are very important tools in the hands of the developer. <br><br><h1>  findings </h1><br>  Streams are flexible and offer many uses, but I wanted to write a very short article to clearly show examples and memory consumption.  Perhaps to many readers such a use of threads was obvious.  However, conversations with developers in recent months have left me with the impression that many have a strong association between streams and streaming data, as if the data structure is good only there.  This is not true.  :-) </div><p>Source: <a href="https://habr.com/ru/post/444996/">https://habr.com/ru/post/444996/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../444984/index.html">Where do they get photos for testing face recognition systems</a></li>
+<li><a href="../444986/index.html">IETF ACME Approved - This is the standard for working with SSL certificates.</a></li>
+<li><a href="../444988/index.html">Synthesis as one of PostgreSQL performance improvement methods</a></li>
+<li><a href="../444992/index.html">Errors embedded in the system: their role in statistics</a></li>
+<li><a href="../444994/index.html">About disk drives and their use on modern computers</a></li>
+<li><a href="../444998/index.html">Critical vulnerability of implanted life support devices allows attackers to control them.</a></li>
+<li><a href="../445004/index.html">Is the SQL profiler dangerous?</a></li>
+<li><a href="../445006/index.html">Microelectronics for schoolchildren from the very beginning</a></li>
+<li><a href="../445008/index.html">Azure exams (revised and updated version)</a></li>
+<li><a href="../445012/index.html">Windows calculator will get a graphical mode</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Docker Remote API with certificate authentication with revocation checking</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Description of the problem 
+
+
+ For the needs of remote control of Docker, Docker can provide web API. 
+ This API can either not require authentication...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Docker Remote API with certificate authentication with revocation checking</h1><div class="post__text post__text-html js-mediator-article"><h1 id="opisanie-problemy">  Description of the problem </h1><br><p>  For the needs of remote control of Docker, Docker can provide web API. <br>  This API can either not require authentication at all (which is highly discouraged), or use certificate authentication. </p><br><p>  The problem is that native certificate authentication does not provide for certificate revocation checking.  And this can have serious consequences. </p><br><p>  I want to tell how I solved this problem. </p><a name="habracut"></a><br><h1 id="reshenie-problemy">  Solution to the problem </h1><br><p>  First you need to say what to say, I will be about Docker for Windows.  Maybe Linux is not so bad, but now is not about that. </p><br><p>  What we have?  We have a Docker, with this config: </p><br><pre><code class="plaintext hljs">{ "hosts": ["tcp://0.0.0.0:2376", "npipe://"], "tlsverify": true, "tlscacert": "C:\\ssl\\ca.cer", "tlscert": "C:\\ssl\\server.cer", "tlskey": "C:\\ssl\\server.key" }</code> </pre> <br><p>  Customers can connect with their certificates, but these certificates are not checked for revocation. </p><br><p>  The idea of ​​solving the problem is to write your own proxy service, which would act as an intermediary.  Our service will be installed on the same server as Docker, pick up port 2376 for itself, communicate with Docker via //./pipe/docker_engine. </p><br><p>  Without thinking, I created an ASP.NET Core project and did the simplest proxying: </p><br><div class="spoiler">  <b class="spoiler_title">Simple proxy code</b> <div class="spoiler_text"><pre> <code class="cs hljs">app.Run(<span class="hljs-keyword"><span class="hljs-keyword">async</span></span> (context) =&gt; { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> certificate = context.Connection.ClientCertificate; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (certificate != <span class="hljs-literal"><span class="hljs-literal">null</span></span>) { logger.LogInformation(<span class="hljs-string"><span class="hljs-string">$"Certificate subject: </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{certificate.Subject}</span></span></span><span class="hljs-string">, serial: </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{certificate.SerialNumber}</span></span></span><span class="hljs-string">"</span></span>); } <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> handler = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ManagedHandler(<span class="hljs-keyword"><span class="hljs-keyword">async</span></span> (host, port, cancellationToken) =&gt; { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> stream = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> NamedPipeClientStream(<span class="hljs-string"><span class="hljs-string">"."</span></span>, <span class="hljs-string"><span class="hljs-string">"docker_engine"</span></span>, PipeDirection.InOut, PipeOptions.Asynchronous); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> dockerStream = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> DockerPipeStream(stream); <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> stream.ConnectAsync(NamedPipeConnectTimeout.Milliseconds, cancellationToken); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> dockerStream; }); <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> client = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClient(handler, <span class="hljs-literal"><span class="hljs-literal">true</span></span>)) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> method = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpMethod(context.Request.Method); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> builder = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> UriBuilder(<span class="hljs-string"><span class="hljs-string">"http://dockerengine"</span></span>) { Path = context.Request.Path, Query = context.Request.QueryString.ToUriComponent() }; <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> request = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpRequestMessage(method, builder.Uri)) { request.Version = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Version(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">11</span></span>); request.Headers.Add(<span class="hljs-string"><span class="hljs-string">"User-Agent"</span></span>, <span class="hljs-string"><span class="hljs-string">"proxy"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (method != HttpMethod.Get) { request.Content = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> StreamContent(context.Request.Body); request.Content.Headers.ContentType = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> MediaTypeHeaderValue(context.Request.ContentType); } <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> response = <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted)) { context.Response.ContentType = response.Content.Headers.ContentType.ToString(); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> output = <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> response.Content.ReadAsStreamAsync(); <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> output.CopyToAsync(context.Response.Body, <span class="hljs-number"><span class="hljs-number">4096</span></span>, context.RequestAborted); } } } });</code> </pre> </div></div><br><p>  That was enough for simple GET and POST requests from the Docker API.  But this is not enough, because  for more complex operations (requiring user input), Docker uses something similar to WebSocket.  The ambush was that Kestrel flatly refused to accept requests that came from the Docker Client, arguing that the request with the Connection: Upgrade header could not have a body.  And it was. </p><br><p>  I had to abandon Kestrel and write a little more code.  In fact - your web server.  Independently open a port, create a TLS connection, parse HTTP headers, establish an internal connection with Docker and exchange I / O streams.  And it worked. </p><br><p>  The source can be found <a href="https://dev.azure.com/vitaliy-leschenko/docker-tls-proxy">here</a> . </p><br><p>  So, the application is written and it is necessary to start it somehow.  The idea is to create a container with our application, flip inside npine: // and publish port 2376 </p><br><h1 id="sborka-docker-obraza">  Build Docker Image </h1><br><p>  To build the image, we need a public certificate of the certification authority (ca.cer), which will issue certificates to users. </p><br><p>  This certificate will be installed in the trusted root certificate authorities of the container in which our proxy will run. </p><br><p>  Installing it is necessary for the certificate verification procedure. </p><br><p>  I did not bother with writing such a Docker file that I would build the application myself. <br>  Therefore, it must be collected independently.  From the folder with dockerfile run: </p><br><pre> <code class="plaintext hljs">dotnet publish -c Release -o ..\publish .\DockerTLS\DockerTLS.csproj</code> </pre> <br><p>  Now we should have: <code>Dockerfile</code> , <code>publish</code> , <code>ca.cer</code> .  We collect image: </p><br><pre> <code class="plaintext hljs">docker build -t vitaliyorg.azurecr.io/docker/proxy:1809 . docker push vitaliyorg.azurecr.io/docker/proxy:1809</code> </pre> <br><p>  Of course, the name of the image can be any. </p><br><h1 id="zapusk">  Launch </h1><br><p>  To run the container, we need the server <code>certificate.pfx</code> and the file with the password <code>password.txt</code> .  All file content is considered a password.  Therefore, there should be no extra line feeds. </p><br><p>  Let all this stuff be in the folder: <code>c:\data</code> on the server where Docker is installed. </p><br><p>  On the same server, run: </p><br><pre> <code class="plaintext hljs">docker run --name docker-proxy -d -v "c:/data:c:/data" -v \\.\pipe\docker_engine:\\.\pipe\docker_engine --restart always -p 2376:2376 vitaliyorg.azurecr.io/docker/proxy:1809</code> </pre> <br><h1 id="logirovanie">  Logging </h1><br><p>  With <code>docker logs</code> you can see who did what.  There you can also see connection attempts that failed. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/433176/">https://habr.com/ru/post/433176/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../433164/index.html">Fast & Furious: Forza Horizon 4 acceleration due to window shaders</a></li>
+<li><a href="../433166/index.html">Predicting the time to solve a ticket using machine learning</a></li>
+<li><a href="../433168/index.html">Why does a programmer have an internship in the kitchen - a conversation with “Dodo Pizza” about gembu, .NET and openness</a></li>
+<li><a href="../433170/index.html">How did we fail to remake the architecture of the company</a></li>
+<li><a href="../433172/index.html">Screwing multiplayer to the mobile game "Make a word from a word" on iOS and Android, written in C ++</a></li>
+<li><a href="../433178/index.html">How we recovered a corrupted .wav file</a></li>
+<li><a href="../433180/index.html">Solving data type problems in Ruby or Make data reliable again</a></li>
+<li><a href="../433182/index.html">Is it possible to train with reinforcements agent for trading in the stock market? R language implementation</a></li>
+<li><a href="../433184/index.html">ASP.NET Core 2.2 has been released. What's new? (2 of 3)</a></li>
+<li><a href="../433186/index.html">It is not enough to count polygons to optimize 3D models.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

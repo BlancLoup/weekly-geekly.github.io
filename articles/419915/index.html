@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Bonding and SSH server in initramfs</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Every system is a compromise between safety and usability. 
+
+
+ In the built NAS , there was a serious problem: it was impossible to reboot the system ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Bonding and SSH server in initramfs</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/mc/mz/-h/mcmz-h3bsxctbh1ka8wxdtdnvqs.png"></p><br><p>  Every system is a compromise between safety and usability. </p><br><p>  <a href="https://habr.com/post/359344">In the built NAS</a> , there was a serious problem: it was impossible to reboot the system without being present on site, which lowered the level of data availability. </p><br><p>  This problem was not critical, until the moment they started to turn off the electricity in emergency: in three months, two times for several hours.  The UPS is designed for short-term failures and does not assume battery operation for more than half an hour (although it is real for about an hour), and with each such shutdown, in order to turn the system back on, you had to travel to another city. </p><a name="habracut"></a><br><p>  Thanks to a <a href="https://habr.com/post/359344/">hint</a> from <a href="https://habr.com/users/valdikss/" class="user_link">ValdikSS</a> , this problem has been resolved.  But... </p><br><p><img src="https://habrastorage.org/webt/l0/xu/c3/l0xuc38iobnzstjrcx204y9opeg.jpeg"></p><br><p>  I needed interface bonding and remote unlocking over SSH.  And I couldn’t find the manual, which I can do right away so that I work as I need. </p><br><p>  Therefore, I present my solution with bonding and dynamic IP, in which the system can be unblocked, both locally and remotely. </p><br><p>  <strong>I remind you that in order to perform these settings, you must have local physical access to the NAS and backup capabilities to boot.</strong> </p><br><h1 id="bonding-v-initramfs">  Bonding in initramfs </h1><br><p>  Since, in NAS, two interfaces are combined into one channel, it was also decided to do this at boot time. </p><br><p>  From the question <a href="https://serverfault.com/questions/472349/using-nfs-root-with-bonded-interfaces">"Using NFS-root with bonded interfaces"</a> I took the script.  The article <a href="https://backdrift.org/manage-linux-bonding-without-ifenslave-using-sysfs">"How to manage linux bonding without ifenslave using sysfs"</a> helped in setting up a bonding. </p><br><p>  First you need to include modules in initramfs, which are used for network operation.  This is done by the following command: </p><br><pre><code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">while</span></span> <span class="hljs-built_in"><span class="hljs-built_in">read</span></span> m _; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> /sbin/modinfo -F filename <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$m</span></span></span><span class="hljs-string">"</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> &lt;/proc/modules | sed -nr <span class="hljs-string"><span class="hljs-string">"s@^/lib/modules/`uname -r`/kernel/drivers/net(/.*)?/([^/]+)\.ko\$@\2@p"</span></span> &gt;&gt; /etc/initramfs-tools/modules</code> </pre> <br><p>  Now copy the two scripts into <code>/etc/initramfs-tools/scripts/</code> . </p><br><p>  The first is needed in order to raise the interfaces in bonding: </p><br><div class="spoiler">  <b class="spoiler_title">/ etc / initramfs-tools / scripts / init-premount / 00_bonding_init</b> <div class="spoiler_text"><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh -e PREREQS="" case $1 in prereqs) echo "${PREREQS}"; exit 0;; esac echo "Network interfaces loaded: " echo `ls /sys/class/net` for x in $cmdline; do case $x in bondslaves=*) bondslaves="${x#bondslaves=}" ;; esac done IFS="," for x in $bondslaves; do echo "+$x" &gt; /sys/class/net/bond0/bonding/slaves done</span></span></code> </pre> </div></div><br><p>  Second, to deactivate the bonding interface while continuing to download: </p><br><div class="spoiler">  <b class="spoiler_title">/ etc / initramfs-tools / scripts / init-bottom / iface_down</b> <div class="spoiler_text"><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh -e PREREQS="" case $1 in prereqs) echo "${PREREQS}"; exit 0;; esac if [ ! -d /sys/class/net/bond0 ]; then exit 0 fi echo "Remove bonding interface..." for x in $cmdline; do case $x in bondslaves=*) bondslaves="${x#bondslaves=}" ;; esac done IFS="," for x in $bondslaves; do echo "-$x" &gt; /sys/class/net/bond0/bonding/slaves done echo "-bond0" &gt; /sys/class/net/bonding_masters</span></span></code> </pre> </div></div><br><p>  If this is not done, the network will not work after booting. </p><br><p>  Do not forget to give scripts permissions to execute: </p><br><pre> <code class="bash hljs">chmod +x /etc/initramfs-tools/scripts/init-premount/00_bonding_init /etc/initramfs-tools/scripts/init-bottom/iface_down</code> </pre> <br><p>  It remains only to specify the interfaces that will be included in the bonding and parameters for obtaining the address. <br>  The address will be obtained by DHCP, because  Bonding will have the same MAC as after the download, because the router will issue a fixed IP and forward ports. </p><br><p>  Interfaces I get automatically from those that join <code>bond0</code> while the NAS is running: </p><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">"s/\(GRUB_CMDLINE_LINUX_DEFAULT=\)\"\(.*\)\"/\1\"\2 </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$(echo -n ip=:::::bond0:dhcp bondslaves=$(sed -e 's/ /,/' /sys/class/net/bond0/bonding/slaves)</span></span></span><span class="hljs-string">)\"/"</span></span> /etc/default/grub</code> </pre> <br><p>  And finally, update the GRUB config and the initramfs image: </p><br><pre> <code class="bash hljs">update-grub update-initramfs -u -k $(uname -r)</code> </pre> <br><p>  That's all.  If everything is configured correctly, after rebooting and launching the startup script in initrmafs, pings on the IP NAS will go, despite the fact that the OS is not yet loaded. </p><br><p>  I note that setting up bonding in Dracut is made much easier, because there are <a href="">already scripts in the delivery</a> . </p><br><h1 id="ssh-server-v-initramfs">  SSH server in initramfs </h1><br><p>  Install the package to enable Dropbear SSH in initramfs: </p><br><pre> <code class="bash hljs">apt-get install dropbear-initramfs</code> </pre> <br><p>  Dropbear SSH will be enabled automatically in initrmafs, and it will start if at least one network interface with an IP address is picked up early in the boot process. </p><br><p>  After that, convert the Dropbear key to the OpenSSH format and close it with a password: </p><br><pre> <code class="bash hljs">/usr/lib/dropbear/dropbearconvert dropbear openssh \ /etc/dropbear/dropbear_rsa_host_key \ id_rsa dropbearkey -y -f /etc/dropbear/dropbear_rsa_host_key | \ grep <span class="hljs-string"><span class="hljs-string">"^ssh-rsa "</span></span> &gt; id_rsa.pub ssh-keygen -p -f id_rsa</code> </pre> <br><p>  <code>id_rsa</code> key to the machine with which the unlock will be performed.  I will assume that it will be copied to the <code>~/.ssh/dropbear</code> . </p><br><p>  The <code>/etc/dropbear-initramfs/authorized_keys</code> key fingerprints and parameters for each key must be specified. </p><br><p>  For now, it suffices to add a single-key fingerprint, for which the following command should be executed: </p><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'no-port-forwarding,no-agent-forwarding,no-X11-forwarding,command="/bin/unlock"'</span></span> $(cat id_rsa.pub) &gt;&gt; /etc/dropbear-initramfs/authorized_keys</code> </pre> <br><p>  No wrappers mentioned in the articles are needed, <code>/bin/unlock</code> is a system script (cryptroot-unlock). </p><br><p>  Something like this should look like <code>/etc/dropbear-initramfs/authorized_keys</code> in the end: </p><br><pre> <code class="hljs perl"><span class="hljs-keyword"><span class="hljs-keyword">no</span></span>-port-forwarding,<span class="hljs-keyword"><span class="hljs-keyword">no</span></span>-agent-forwarding,<span class="hljs-keyword"><span class="hljs-keyword">no</span></span>-X11-forwarding,command=<span class="hljs-string"><span class="hljs-string">"/bin/unlock"</span></span> ssh-rsa AAAA...XDa root@nas</code> </pre> <br><p>  Update the GRUB config and the initramfs image and reboot: </p><br><pre> <code class="bash hljs">update-grub update-initramfs -u -k $(uname -r) reboot</code> </pre> <br><p>  <em>From the machine where you copied the key it is</em> now possible to connect to the NAS and unlock it: </p><br><pre> <code class="hljs ruby">$ ssh -i .ssh/dropbear/id_rsa_initram -o UserKnownHostsFile=.ssh/dropbear/known_hosts root@nas.NAS.cloudns.cc Enter passphrase <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> key <span class="hljs-string"><span class="hljs-string">'.ssh/dropbear/id_rsa_initram'</span></span>: X11 forwarding request failed on channel <span class="hljs-number"><span class="hljs-number">0</span></span> Please unlock disk root_crypt1 (<span class="hljs-regexp"><span class="hljs-regexp">/dev/disk</span></span><span class="hljs-regexp"><span class="hljs-regexp">/by-id/ata</span></span>-Samsung_SSD_850_PRO_256GB-part3)<span class="hljs-symbol"><span class="hljs-symbol">:</span></span></code> </pre> <br><p>  After that, the console will constantly receive an error about the absence of an argument ( <code>ash: -gt: argument expected</code> ), but the unlock will go.  This is an error in the system unlock script, which does not affect anything (the error is corrected easily, but wrappers do not cure it). </p><br><p>  More details can be found in these articles: </p><br><ul><li>  <a href="https://hamy.io/post/0005/remote-unlocking-of-luks-encrypted-root-in-ubuntu-debian">Remote unlocking of LUKS-encrypted root in Ubuntu / Debian</a> . </li><li>  <a href="https://help.ubuntu.ru/wiki/unlock_luks_ssh">Unlocking through SSH fully encrypted ubuntu-server 12.04</a> . </li><li>  <a href="https://stinkyparkia.wordpress.com/2014/10/14/remote-unlocking-luks-encrypted-lvm-using-dropbear-ssh-in-ubuntu-server-14-04-1-with-static-ipst/">Remote unlocking LUKS encrypted LVM using Dropbear SSH in Ubuntu Server 14.04.1</a> . </li><li>  <a href="https://www.virtono.com/community/tutorial-how-to/unlock-full-encrypted-system-via-ssh/">Unlock full-encrypted system via SSH</a> . </li></ul><br><h1 id="otladka">  Debugging </h1><br><p>  For debugging, you can insert the <code>/bin/sh</code> call into the <code>00_bonding_init</code> script after: </p><br><pre> <code class="hljs bash"><span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-variable"><span class="hljs-variable">$1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> prereqs) <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${PREREQS}</span></span></span><span class="hljs-string">"</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">exit</span></span> 0;; <span class="hljs-keyword"><span class="hljs-keyword">esac</span></span></code> </pre> <br><p>  When the problems with bonding are resolved, replace the <code>authorized_keys</code> command <code>command="/bin/unlock"</code> with <code>command="/bin/sh"</code> . </p><br><p>  After connecting via SSH, you will be provided with a shell, which you can use for debugging. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/419915/">https://habr.com/ru/post/419915/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../419901/index.html">Is it possible to instantly transfer information? Experiments with quantum entangled particles</a></li>
+<li><a href="../419903/index.html">What annoys your users most according to Google</a></li>
+<li><a href="../419905/index.html">The UK launch industry is awakening and setting targets - half a century after Black Arrow</a></li>
+<li><a href="../419911/index.html">Building orbits of celestial bodies by means of Python</a></li>
+<li><a href="../419913/index.html">IKEA and smart home. Part 2</a></li>
+<li><a href="../419917/index.html">Neural networks: implementation of the task about mushrooms on Tensor Flow and Python</a></li>
+<li><a href="../419919/index.html">Version Control Inside SQL Server</a></li>
+<li><a href="../419921/index.html">How to drop 10 million packets per second</a></li>
+<li><a href="../419923/index.html">My time creativity, clock from motherboards</a></li>
+<li><a href="../419925/index.html">Version control of individual files using GitHub Gist</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

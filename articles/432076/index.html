@@ -1,0 +1,140 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Uncalled function slows down the program 5 times</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Slow Windows, Part 3: Completing Processes 
+
+
+
+ The author is engaged in optimizing the performance of Chrome in Google - approx. per. 
+
+ In the summe...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Uncalled function slows down the program 5 times</h1><div class="post__text post__text-html js-mediator-article">  <b>Slow Windows, Part 3: Completing Processes</b> <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b55/8f1/93c/b558f193cbc015bf35b2b068ff1c8e65.jpg"><br><br>  <font color="gray">The author is engaged in optimizing the performance of Chrome in Google - approx.</font>  <font color="gray">per.</font> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In the summer of 2017, I struggled with the Windows performance issue.  Completion of the processes was slow, serialized and blocked the system input queue, which led to multiple hangs of the mouse cursor when building Chrome.  The main reason was that at the end of the process, Windows spent a lot of time searching for GDI objects, while holding the system-global user32 critical section.  I talked about this in the article <a href="https://habr.com/post/332816/">"24-core processor, but I can not move the cursor</a> . <a href="https://habr.com/post/332816/">"</a> <br><br>  Microsoft fixed the bug, and I went back to my business, but then it turned out that the bug was back.  There were complaints about the slow performance of LLVM tests, with frequent input hangs. <br><br>  But in fact, the bug did not return.  The reason was to change our code. <br><a name="habracut"></a><br><h1>  2017 problem </h1><br><img src="https://habrastorage.org/getpro/habr/post_images/dcd/5f4/417/dcd5f4417f6d878a47d7d3c292a9304a.png" align="left">  Each Windows process contains several standard GDI object handles.  For processes that do nothing with graphics, these handles usually have a NULL value.  When the process is complete, Windows calls some functions for these descriptors, even if they are NULL.  It didn't matter — the functions worked quickly — until the release of Windows 10 Anniversary Edition, in which <a href="https://randomascii.wordpress.com/2017/07/27/what-is-windows-doing-while-hogging-that-lock/">some security changes made these functions slow</a> .  During operation, they held the same lock that was used for input events.  With the simultaneous completion of a large number of processes, each makes several calls to a slow function that holds this critical lock, which ultimately leads to blocking user input and the cursor to hang. <br><br>  The Microsoft patch was not to call these functions on processes without GDI objects.  I don't know the details, but I think the Microsoft fix was something like this: <br><br> <code>+ if (IsGUIProcess()) <br> + NtGdiCloseProcess(); <br> – NtGdiCloseProcess();</code> <br> <br>  That is, just skip GDI cleanup if the process is not a GUI / GDI process. <br><br>  Since compilers and other processes, which are quickly created and completed by us, did not use GDI objects, this patch was enough to fix the UI hangup. <br><br><h1>  Problem 2018 </h1><br>  It turned out that some standard GDI objects actually stand out very easily to processes.  If your process loads gdi32.dll, you will automatically receive GDI objects (DC, surfaces, regions, brushes, fonts, etc.), whether you need them or not (note that these standard GDI objects are not displayed in the Task Manager among the GDI objects for the process). <br><br>  But this should not be a problem.  I mean, why should the compiler load the gdi32.dll?  Well, it turned out that if you load user32.dll, shell32.dll, ole32.dll or many other DLLs, then you will automatically receive in addition gdi32.dll (with the above-mentioned standard GDI objects).  And it is very easy to accidentally load one of these libraries. <br><br>  LLVM tests, when loading each process, called <a href="https://docs.microsoft.com/en-us/windows/desktop/api/shellapi/nf-shellapi-commandlinetoargvw">CommandLineToArgvW</a> (shell32.dll), and sometimes called <a href="https://docs.microsoft.com/en-us/windows/desktop/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath">SHGetKnownFolderPath</a> (also shell32.dll). These calls were enough to pull out gdi32.dll and generate these scary standard GDI objects.  Since the LLVM test suite generates <i>a</i> lot of processes, it ultimately serializes when the processes end, causing huge delays and freezes of input, much worse than they were in 2017. <br><br>  But this time we knew about the main problem with blocking, so we immediately knew what to do. <br><br>  First of all, we got rid of the call to <i>CommandLineToArgvW</i> , <a href="https://reviews.llvm.org/D51941">manually parsing the command line</a> .  After this, the LLVM test suite rarely called any functions from any problematic DLL.  But we knew in advance that this would not affect the performance.  The reason was that even the remaining <i>conditional</i> call was enough to always pull out shell32.dll, which in turn pulled out gdi32.dll, creating standard GDI objects. <br><br>  The second fix was <a href="https://reviews.llvm.org/rL342002">deferred loading of shell32.dll</a> .  Delayed loading means that the library is loaded on demand — when the function is called — instead of loading when the process starts.  This meant that shell32.dll and gdi32.dll would rarely load, but not always. <br><br>  After this, the LLVM test suite began to run <i>five times</i> faster — in one minute instead of five.  And no more mouse hangs on the developers' machines, so that employees could work normally during the execution of tests.  This is a crazy acceleration for such a modest change, and the author of the patches was so grateful for my investigation that he pushed me to the <a href="https://www.quora.com/What-are-peer-bonuses-at-Google-How-do-they-work">corporate bonus</a> . <br><br>  Sometimes the smallest changes have the biggest consequences.  You just need to <a href="https://randomascii.wordpress.com/2015/01/19/knowing-where-to-type-zero/">know where to score "zero"</a> . <br><br><h1>  Execution path not accepted </h1><br><img src="https://habrastorage.org/getpro/habr/post_images/83d/1a9/e86/83d1a9e868d112a30dd4c37ea0caa9cb.jpg" align="left" width="350">  It is worth repeating that we paid attention to the code that was <i>not executed</i> - and this was a key change.  If you have a command line tool that does not access gdi32.dll, then adding code with a <i>conditional</i> function call will slow down the completion of processes many times if gdi32.dll is loaded.  In the example below, <i>CommandLineToArgvW is</i> never called, but even a simple presence in the code (without a call delay) negatively affects the performance: <br><br><pre> <code class="plaintext hljs">int main(int argc, char* argv[]) { if (argc &lt; 0) { CommandLineToArgvW(nullptr, nullptr); // shell32.dll, pulls in gdi32.dll } }</code> </pre> <br>  So yes, deleting a function call, even if the code is never executed, may be sufficient to significantly improve performance in some cases. <br><br><h1>  Pathology reproduction </h1><br><img src="https://habrastorage.org/getpro/habr/post_images/8ab/f3f/4aa/8abf3f4aac933be4fe7cdb400727b049.png" align="left">  When I investigated the initial error, I wrote a program ( <a href="https://github.com/randomascii/blogstuff/tree/master/ProcessCreateTests">ProcessCreateTests</a> ) that created 1000 processes and then killed them all in parallel.  This reproduced the hang, and when Microsoft fixed the error, I used a test program to test the patch: see the <a href="https://www.youtube.com/watch%3Fv%3Dcbg5O2Kbb9A">video</a> .  After the reincarnation of the bug, I changed my program by <a href="https://github.com/randomascii/blogstuff/commit/c37b972a3d473ab3ed4163650b33cb0ff4aac5e3">adding the option -user32</a> , which for each of the thousands of test processes loads user32.dll.  As expected, the completion time of all test processes increases dramatically with this option, and it is easy to detect mouse cursor hang-ups.  The process creation time also increases with the -user32 option, but there are no cursor hangs during the process creation process.  You can use this program and see how terrible the problem can be.  Here are some typical results of my quad / eight-threaded laptop after a week of uptime.  The option -user32 increases the time for everything, but <i>UserCrit locks</i> on completing processes are especially dramatic: <br><br> <code>&gt; ProcessCreatetests.exe <br> Process creation took 2.448 s (2.448 ms per process). <br> Lock blocked for 0.008 s total, maximum was 0.001 s. <br> <br> Process destruction took 0.801 s (0.801 ms per process). <br> Lock blocked for 0.004 s total, maximum was 0.001 s. <br> <br> &gt; ProcessCreatetests.exe -user32 <br> Testing with 1000 descendant processes with user32.dll loaded. <br> Process creation took 3.154 s (3.154 ms per process). <br> Lock blocked for 0.032 s total, maximum was 0.007 s. <br> <br> Process destruction took 2.240 s (2.240 ms per process). <br> Lock blocked for 1.991 s total, maximum was 0.864 s.</code> <br> <br><h1>  Digging deeper, just for fun </h1><br>  I thought about some of the ETW methods that can be used to study the problem in more detail, and have already begun to write them.  But he came across such inexplicable behavior, which he decided to devote to a separate article.  Suffice it to say that in this case Windows behaves even more strangely. <br><br>  Other articles of the cycle: <br><br><ul><li>  Slow Windows, Part 0: <a href="https://randomascii.wordpress.com/2011/08/05/making-virtualalloc-arbitrarily-slower/">Arbitrary Slowdown VirtualAlloc</a> </li><li>  Slow Windows, Part 1: <a href="https://habr.com/company/infopulse/blog/354324/">File Access</a> </li><li>  Slow Windows, Part 2: <a href="https://habr.com/post/427303/">Creating Processes</a> </li><li>  Slow Windows, Part 3: This </li></ul><br><h1>  Literature </h1><br><ul><li>  The first report on UI hangs: <a href="https://habr.com/post/332816/">"24-core processor, but I can not move the cursor"</a> </li><li>  The following article, which leads to an understanding of the problem: <a href="https://randomascii.wordpress.com/2017/07/27/what-is-windows-doing-while-hogging-that-lock/">"What * does * Windows, hold this lock"</a> </li><li>  An article about <i>another</i> UI blocking due to the interaction between Gmail, ASLR v8 workers, CFG memory allocation policies and slow WMI scanning: <a href="https://habr.com/post/420579/">"24-core CPU, but I can't type an email"</a> </li><li>  Downloading with the gdi32.dll compiler seems odd, but it is even stranger that the compiler loads mshtml.dll, which <a href="https://randomascii.wordpress.com/2014/03/31/you-got-your-web-browser-in-my-compiler/">VC ++ did before in some cases</a> </li><li>  Sometimes research weeks lead to small, but critical changes, as discussed in the article <a href="https://randomascii.wordpress.com/2015/01/19/knowing-where-to-type-zero/">“Know where to score zero”</a> </li><li>  <a href="https://www.youtube.com/watch%3Fv%3Dcbg5O2Kbb9A">Video</a> demonstrating the use of ProcessCreateTests and ETW to verify bug fixes </li><li>  The first change for LLVM by <a href="https://reviews.llvm.org/D51941">manual command line parsing</a> </li><li>  Second fix for LLVM using <a href="https://reviews.llvm.org/rL342002">shell32.dll delay boot</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/432076/">https://habr.com/ru/post/432076/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../432064/index.html">How to escape from the "hares". Instructions for dealing with ultraviolet</a></li>
+<li><a href="../432068/index.html">How to facilitate learning English: 5 useful services</a></li>
+<li><a href="../432070/index.html">Briefly about redux-saga channels</a></li>
+<li><a href="../432072/index.html">Three types of memory leaks</a></li>
+<li><a href="../432074/index.html">How players rip Spelunky's reality fabric with shotguns</a></li>
+<li><a href="../432078/index.html">Traffic at the end of the tunnel or DNS in pentest</a></li>
+<li><a href="../432080/index.html">Misconceptions players in assessing risks. Control random number generator in development</a></li>
+<li><a href="../432082/index.html">Microsoft AI chatbot released a collection of clothes for China</a></li>
+<li><a href="../432084/index.html">How we organized the competition of shifts between production workers (as in the USSR)</a></li>
+<li><a href="../432086/index.html">3D printing in the international school named after M. V. Lomonosov</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

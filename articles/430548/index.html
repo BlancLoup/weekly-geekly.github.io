@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Interrupts from external devices in the x86 system. Part 1. The evolution of interrupt controllers</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article I would like to consider the mechanisms for delivering interrupts from external devices on the x86 system and try to answer the follow...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Interrupts from external devices in the x86 system. Part 1. The evolution of interrupt controllers</h1><div class="post__text post__text-html js-mediator-article">  In this article I would like to consider the mechanisms for delivering interrupts from external devices on the x86 system and try to answer the following questions: <br><br><ul><li>  What is a PIC and what is it for? </li><li>  What is APIC and what is it for?  What are LAPIC and I / O APIC for? </li><li>  What is the difference between APIC, xAPIC and x2APIC? </li><li>  What is MSI?  What are the differences between MSI and MSI-X? </li><li>  How are the $ PIR, MPtable, ACPI tables associated with this? </li></ul><br>  If you are interested in an answer to any of these questions, or you just want to familiarize yourself with the evolution of the x86 interrupt controllers, welcome under cat. <br><a name="habracut"></a><br><h3>  Introduction </h3><br>  We all know what interruption is.  For those who do not, quote from Wikipedia: <br><br><blockquote>  Interrupt (eng. Interrupt) - a signal from the software or hardware, informing the processor of the occurrence of any event that requires immediate attention.  An interrupt notifies the processor of a high-priority event that requires the interruption of the current code executed by the processor.  The processor responds by suspending its current activity, maintaining its state and executing a function called an interrupt handler (or an interrupt handler) that reacts to the event and serves it, and then returns control to the interrupted code. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Depending on the source of the signal, interruptions are divided into: <br><br><ul><li>  asynchronous or external (hardware) - events that originate from external hardware devices (for example, peripheral devices) and can occur at any arbitrary moment: a signal from a timer, network card or disk drive, keyboard keys, mouse movement.  The fact that such an interruption occurs in the system is interpreted as an interrupt request (IRQ) - devices report that they require attention from the OS; </li><li>  synchronous, or internal - events in the processor itself as a result of violation of some conditions when executing machine code: dividing by zero or stack overflow, accessing invalid memory addresses or invalid operation code; </li></ul></blockquote>  In this article, I would like to discuss external interrupts IRQ. <br><br>  What are they needed for?  Suppose we want to perform some action with the input packet for the network card when it comes.  In order not to constantly ask the network card “do you have a new package?” And not to waste processor resources on it, you can use the IRQ interrupt.  The interrupt line of the device is connected to the INTR line of the processor, and when receiving a packet, the network card “pulls” this line.  The processor understands that there is information for it and reads the packet. <br><br>  But what if there are a lot of devices?  You will not get enough on all external devices of processor legs. <br><br><img src="https://habrastorage.org/webt/vg/3q/3v/vg3q3v7kx8vjttp43xo99o8pccs.png"><br><br>  In order to solve this problem, they invented a microcircuit - an interrupt controller. <br><br><h3>  Pic </h3><br>  ( <a href="https://en.wikipedia.org/wiki/Programmable_interrupt_controller">wiki</a> / <a href="https://wiki.osdev.org/8259_PIC">osdev</a> ) <br><br>  The first was an <a href="https://en.wikipedia.org/wiki/Intel_8259">Intel 8259 PIC</a> chip.  8 input lines (IRQ0-7), and one output, connecting the controller with the INTR line of the processor.  When an interrupt from a device occurs, the 8259 pulls the INTR line, the processor realizes that some device signals an interrupt and polls the PIC in order to understand which IRQx is causing the interrupt.  An additional delay for this poll appears, but the number of interrupt lines increases to 8. <br><br><img src="https://habrastorage.org/webt/le/yf/6e/leyf6enogyzp6flpijo2d0x1w9g.png"><br><br>  However, 8 lines quickly turned out to be small, and in order to increase their number they began to use 2 8259 controllers (master and slave) connected in cascade (Dual PIC). <br><br>  IRQs from 0 to 7 are processed by the first Intel 8259 PIC (master), and IRQs from 8 to 15 by the second 8259 PIC (slave).  The occurrence of a CPU interrupt is signaled only by master.  If an interrupt occurs on lines 8-15, the second PIC (slave) signals an interrupt to the master via IRQ 2, and the latter in turn signals the CPU.  This cascade interrupt takes away one of the 16 lines, but ultimately results in 15 available interrupts for devices. <br><br><img src="https://habrastorage.org/webt/xj/yn/dh/xjyndhabujjwz0alrbx831zfzt8.png"><br><br>  The scheme is established, and that is what they mean when they talk now about the PIC (Programm Interrupt Controller).  Subsequently, the 8259 controllers received some improvements, and they began to be called 8259A, and this scheme became part of the chipset.  At a time when the main bus for connecting external devices was the ISA bus, such a system as a whole was enough.  It was necessary only to ensure that different devices did not connect to the same IRQ line in order to avoid conflicts, since ISA interrupts are not shared. <br><br>  Typically, the layout of interrupts for devices was more or less standard. <br><br>  Example (taken <a href="https://en.wikipedia.org/wiki/Interrupt_request_(PC_architecture)">from here</a> ): <br>  IRQ 0 - system timer <br>  IRQ 1 - keyboard controller <br>  IRQ 2 - cascade (interrupt from slave controller) <br>  IRQ 3 - serial port COM2 <br>  IRQ 4 - serial port COM1 <br>  IRQ 5 - parallel port 2 and 3 or sound card <br>  IRQ 6 - floppy controller <br>  IRQ 7 - parallel port 1 <br>  IRQ 8 - RTC timer <br>  IRQ 9 - ACPI <br>  IRQ 10 - open / SCSI / NIC <br>  IRQ 11 - open / SCSI / NIC <br>  IRQ 12 - mouse controller <br>  IRQ 13 - math co-processor <br>  IRQ 14 - ATA channel 1 <br>  IRQ 15 - ATA channel 2 <br><br>  The configuration and work with chips 8259 is carried out through I / O ports: <br><table><tbody><tr><th>  Chip </th><th>  Register </th><th>  I / O port </th></tr><tr><td>  Master PIC </td><td>  Command </td><td>  0x0020 </td></tr><tr><td>  Master PIC </td><td>  Data </td><td>  0x0021 </td></tr><tr><td>  Slave pic </td><td>  Command </td><td>  0x00A0 </td></tr><tr><td>  Slave pic </td><td>  Data </td><td>  0x00A1 </td></tr></tbody></table><br>  → Documentation on the 8259A can be found <a href="https://pdos.csail.mit.edu/6.828/2005/readings/hardware/8259A.pdf">here.</a> <br><br>  The PCI bus has replaced the ISA bus.  And the number of devices clearly became higher than 15, plus, in contrast to the static ISA bus, in this case, devices can be added to the system dynamically.  But fortunately, in this bus interrupts can be shared (that is, several devices can be connected to the same IRQ line).  As a result, in order to solve the problem of lack of IRQ lines, it was decided to group interrupts from all PCI devices into PIRQ (Programmable Interrupt Request) lines. <br><br>  Suppose we have 4 interrupt lines freely on the PIC controller, and PCI devices 20 pieces.  We connect interrupts of 5 devices to the PIRQx line and connect the PIRQx lines to the controller.  When an interrupt occurs on the PIRQx line, the processor will have to interrogate all devices connected to this line in order to understand from whom the interruption has come, but in general it solves the problem.  The device interconnecting PCI interrupt lines on a PIRQ line is often called a PIR router. <br><br>  In this method, you must ensure that the PIRQx lines are not connected to the IRQx lines on which the ISA interrupts are already set up (as this will cause conflicts), and that the PIRQx lines are balanced (after all, the more devices we connected to one PIRQ line, the more devices we need will interrogate the processor to understand which of these devices caused the interruption). <br><br><img src="https://habrastorage.org/webt/u_/jr/u9/u_jru9pemdeda2xvvbqihvgtp3y.png"><br><br>  <b>Note</b> : in the picture, the mapping of the PCI device -&gt; PIR is depicted in the abstract, because in reality it is somewhat more complicated.  In reality, each PCI device has 4 interrupt lines (INTA, INTB, INTC, INTD).  Each PCI device (device) can have up to 8 functions (functions), and for each function there is already one INTx interrupt.  Which INTx will be pulled by each device function is determined by the chipset configuration. <br><br>  In essence, functions are separate logical blocks.  For example, in one PCI device there may be the Smbus controller function, the SATA controller function, the LPC bridge function.  On the OS side, each function is as a separate device with its own PCI Config configuration space. <br><br>  Information about routing interrupts on the PIC controller BIOS was transferred by the OS using the $ PIR table and using the 3Ch (INT_LN Interrupt Line (R / W)) and 3Dh (INT_PN Interrupt Pin (RO)) registers of the PCI configuration space for each function.  The specification for the $ PIR table used to be <a href="http://www.microsoft.com/whdc/archive/pciirq.mspx">on the Intel site</a> , but now it is no longer there.  The contents of the rows in the $ PIR table can be understood from the <a href="http://www.o3one.org/hwdocs/bios_doc/pci_bios_21.pdf">PCI BIOS Specification</a> [4.2.2.  Get PCI Interrupt Routing Options] or read <a href="http://ru.osdev.wikia.com/wiki/PCI_IRQ_Routing_Table_Specification">here.</a> <br><br><h3>  APIC </h3><br>  ( <a href="https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller">wiki</a> , <a href="https://wiki.osdev.org/APIC">osdev</a> ) <br><br>  The previous method worked until a multiprocessor system appeared.  The fact is that in its device PIC can transmit interrupts only to one main processor.  And I would like the load on processors from interrupt handling to be balanced.  The solution to this problem was the new APIC interface (Advanced PIC). <br><br>  For each processor, a special LAPIC controller (Local APIC) is added, and an <a href="https://wiki.osdev.org/IOAPIC">I / O APIC</a> controller is added to route interrupts from devices.  All of these controllers are combined into a common bus with the name APIC (new systems are now connected via a standard system bus). <br><br>  When an interrupt from the device arrives at the I / O APIC pin, the controller sends the interrupt to the LAPIC of one of the processors.  The presence of I / O APIC allows balanced distribution of interrupts from external devices between processors. <br><br>  The first APIC chip was <a href="https://4donline.ihs.com/images/VipMasterIC/IC/INTL/INTLD047/INTLD047-2-1259.pdf%3Fhkey%3DEF798316E3902B6ED9A73243A3159BB0">82489DX</a> , it was a separate chip that combines LAPIC and I / O APIC.  To create a system of 2 processors, 3 such chips were needed.  2 would function as LAPIC and one as I / O APIC.  Later, the LAPIC functionality was directly incorporated into the processors, and the I / O APIC functionality was framed in an 82093AA chip. <br><br>  The I / O APIC <a href="https://pdos.csail.mit.edu/6.828/2016/readings/ia32/ioapic.pdf">82093AA</a> contained 24 input pins, and the APIC could support up to 16 CPUs.  To maintain compatibility with older systems, interrupts 0 ~ 15 were taken under old ISA interrupts.  And interrupts from PCI devices began to output on the line IRQ 16-23.  Now you could not think about conflicts of interruptions from ISA and PCI devices.  Also, due to the increased number of free interrupt lines, it has also become possible to increase the number of PIRQx lines. <br><br><img src="https://habrastorage.org/webt/mc/ra/hj/mcrahjn-owk9qrcmyiixcmhomcq.png"><br><br>  The programming of the I / O APIC and LAPIC is carried out through the MMIO.  LAPIC registers are usually located at 0xFEE00000, I / O APIC registers at 0xFE00000.  Although, in principle, all these addresses can be reconfigured. <br><br>  As in the case of PIC, initially separate chips were later incorporated into the chipset. <br><br>  In the future, the APIC architecture was upgraded and the new version was called xAPIC (x - extended).  Preserved backward compatibility with the previous version.  The number of possible CPUs in the system has increased to 256. <br><br>  The next turn in the development of architecture is called <a href="https://www.intel.com/content/dam/doc/specification-update/64-architecture-x2apic-specification.pdf">x2APIC</a> .  The number of possible CPUs in the system has increased to 2 ^ 32.  The controllers can operate in the xAPIC compatibility mode, or in the new x2APIC mode, where LAPIC is programmed not through MMIO, but through MSR registers (which is much faster).  Judging <a href="https://blahg.josefsipek.net/%3Ftag%3DxAPIC">by this link,</a> IOMMU support is required for this mode to work. <br><br>  It should be noted that there may be several I / O APIC controllers in the system.  For example, one for 24 interrupts in the south bridge, the other for 32 in the north bridge.  In the context of I / O APIC, interrupts are often referred to as GSI (Global System Interrupt).  So in this system will be GSI 0-55. <br><br>  Is there a built-in LAPIC in the CPU and which architecture can be understood by the bit flags in CPUID. <br>  In order for the system to detect LAPIC and I / O APIC, the BIOS must provide information about them to the system either through the MPtable table (old method) or through the ACPI table (MADT table in this case).  In addition to general information, both MPtable and ACPI (this time in the DSDT table) should contain information on interrupt routing, that is, information on which device sits on which interrupt line (similar to $ PIR). <br><br>  You can read about MPTable in the official <a href="http://download.intel.com/design/archives/processors/pro/docs/24201606.pdf">specification</a> .  Previously, the specification was on the Intel site, and now it can only be found in the archive.  The ACPI specification is now located on the UEFI website (current version <a href="https://www.uefi.org/sites/default/files/resources/ACPI_6_2.pdf">6.2</a> ).  It should be noted that using ACPI, you can specify interrupt routing for systems without an APIC (instead of using the $ PIR table). <br><br><h3>  MSI </h3><br>  ( <a href="https://en.wikipedia.org/wiki/Message_Signaled_Interrupts">wiki</a> ) <br><br>  The previous version with APIC is good, but not without flaws.  All these interrupt lines from devices complicate the circuit, and increase the likelihood of errors.  PCI express came to replace the PCI bus, in which the interrupt lines were simply decided to be removed.  To maintain compatibility, interrupt signals (INTx #) are emulated by separate types of messages.  In this scheme, the logical addition of interrupt lines, which was previously made by the physical connection of wires, lay on the shoulders of PCI bridges.  However, legacy INTx support for interrupts is only support for backward compatibility with the PCI bus.  In fact, PCI express offered a new method for delivering interrupt messages - MSI (Message Signaled Interrupts).  In this method, to signal an interrupt, the device simply writes to the MMIO area allocated for the LAPIC processor. <br><br>  If earlier only one interrupt was allocated to one PCI device (that is, all its functions), now it is now possible to address up to 32 interrupts. <br><br>  In the case of MSI, there is no sharing for the lines, each interrupt corresponds to its device. <br><br>  MSI interrupts also solve another problem.  Suppose a device conducts a memory-write transaction, and wants to report its completion through an interrupt.  But the write transaction can be delayed on the bus during transmission (which the device does not know about), and the interrupt signal will come to the processor earlier.  Thus, the CPU will read more invalid data.  If MSI is used, information about MSI is transmitted in the same way as data, and it will not be able to arrive earlier. <br><br>  It should be noted that MSI interrupts cannot work without LAPIC, but using MSI can replace us with I / O APIC (design simplification). <br><br>  Subsequently, this method received an extension MSI-X.  Now each device can have up to 2048 interrupts.  And it became possible to specify individually each interrupt on which processor it should be executed.  This can be very useful for heavily loaded devices, such as network cards. <br><br>  MSI support does not require any additional BIOS tables.  But the device must report support for MSI in one of the Capability in its PCI Config, and the device driver must support operation with MSI. <br><br><h3>  Conclusion </h3><br>  In this article, we looked at the evolution of interrupt controllers, and obtained general theoretical information on the delivery of interrupts from external devices in the x86 system. <br><br>  In the <a href="https://habr.com/post/431372/">next part,</a> we will look at how to use each of the described controllers in Linux in practice. <br><br><h4>  References: </h4><br><ul><li>  <a href="https://people.freebsd.org/~jhb/papers/bsdcan/2007/article/node4.html">Interrupt Controllers (Stuff in the Middle)</a> </li><li>  <a href="https://electronics.stackexchange.com/questions/76867/what-do-the-different-interrupts-in-pcie-do-i-referring-to-msi-msi-x-and-intx">What do the different interrupts in PCIe do?</a> </li><li>  <a href="https://www.intel.com/content/dam/www/public/us/en/documents/white-papers/msg-signaled-interrupts-paper.pdf">Interrupts</a> </li><li>  <a href="https://dev64.wordpress.com/2012/05/23/interrupt-subsystem-architecture/">Interrupt architecture in Intel compatible systems</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/430548/">https://habr.com/ru/post/430548/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../430534/index.html">Creating a template for Zabbix using DVR Trassir SDK as an example</a></li>
+<li><a href="../430536/index.html">Designing window functions that sum up to a unit with a given level of overlap</a></li>
+<li><a href="../430538/index.html">Do you read Scaladoc for “obvious” collection methods? Or why laziness is not always good.</a></li>
+<li><a href="../430542/index.html">Open webinar "Infrastructure as a code"</a></li>
+<li><a href="../430546/index.html">"It was believed that the code will replace the UML-diagrams, and it will not be necessary to test": an interview with Alexey Barantsev</a></li>
+<li><a href="../430550/index.html">Build a system of reactive components using Kotlin</a></li>
+<li><a href="../430552/index.html">Startup of the day (September-October 2018)</a></li>
+<li><a href="../430554/index.html">Google patented VR-shoes in which you can walk forever</a></li>
+<li><a href="../430556/index.html">GeekBrains Launches Product Management Training Course</a></li>
+<li><a href="../430558/index.html">How scoring works in the car sharing industry. Part 1. Overview of popular tools on real data</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How PROCESS_DUP_HANDLE turns into PROCESS_ALL_ACCESS</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In MSDN's Process Security and Access Rights article there is an interesting remark: 
+ ... if it can be duplicated, it can duplicate it. 
+
+ If it is f...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How PROCESS_DUP_HANDLE turns into PROCESS_ALL_ACCESS</h1><div class="post__text post__text-html js-mediator-article"><p>  In MSDN's <a href="https://docs.microsoft.com/windows/desktop/procthread/process-security-and-access-rights">Process Security and Access Rights</a> article there is an interesting remark: </p><br><blockquote>  ... if it can be duplicated, it can duplicate it. </blockquote><p>  If it is free to translate it into Russian, then it says that having a descriptor to the process with the <strong>PROCESS_DUP_HANDLE</strong> access right we can, using the <a href="https://docs.microsoft.com/windows/desktop/api/handleapi/nf-handleapi-duplicatehandle">DuplicateHandle (...)</a> function, get a descriptor with the maximum allowed access masks for this process. </p><br><p><img src="https://habrastorage.org/webt/he/dk/aa/hedkaakxbluyrv2fmu3ttrpjodo.jpeg"></p><a name="habracut"></a><br><h3 id="demonstraciya">  Demonstration </h3><br><p>  The source code that exploits this feature is quite simple: </p><br><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;Windows.h&gt; int wmain(int argc, PWSTR argv[]) { HANDLE ProcessAllAccessHandle; HANDLE ProcessDuplicateHandle = OpenProcess(PROCESS_DUP_HANDLE, FALSE, _wtoi(argv[1])); if (ProcessDuplicateHandle) { if (DuplicateHandle(ProcessDuplicateHandle, GetCurrentProcess(), GetCurrentProcess(), &amp;ProcessAllAccessHandle, 0, FALSE, DUPLICATE_SAME_ACCESS)) { CloseHandle(ProcessAllAccessHandle); } CloseHandle(ProcessDuplicateHandle); } return 0; }</span></span></span></span></code> </pre> <br><p>  As a result of compilation and linking, we get a test utility that takes as an argument the target process identifier (PID).  Then the utility opens the specified process with the right <strong>PROCESS_DUP_HANDLE</strong> .  Thus, we model the necessary condition for the presence of a handle to a process with the right <strong>PROCESS_DUP_HANDLE</strong> (== 0x40). </p><br><p>  As a demonstration, I will be tracing the compiled utility in WinDbg: </p><br><pre> <code class="plaintext hljs">0:000&gt; lsa @$ip 0,3 &gt; 13: if (ProcessDuplicateHandle) 14: { 15: if (DuplicateHandle(ProcessDuplicateHandle, 0:000&gt; !handle @@C++(ProcessDuplicateHandle) 3 Handle 80 Type Process Attributes 0 GrantedAccess 0x40: None DupHandle HandleCount 9 PointerCount 260518</code> </pre> <br><p>  And then <del>  flick of the wrist </del>  By calling <strong>DuplicateHandle</strong> (...) we get the second descriptor for the same process, but with the broadest possible permissions: </p><br><pre> <code class="plaintext hljs">0:000&gt; lsa @$ip 0,3 &gt; 23: CloseHandle(ProcessAllAccessHandle); 24: } 25: CloseHandle(ProcessDuplicateHandle); 0:000&gt; !handle @@C++(ProcessAllAccessHandle) 3 Handle 84 Type Process Attributes 0 GrantedAccess 0x1fffff: Delete,ReadControl,WriteDac,WriteOwner,Synch Terminate,CreateThread,,VMOp,VMRead,VMWrite,DupHandle,CreateProcess,SetQuota,SetInfo,QueryInfo,SetPort HandleCount 10 PointerCount 292877</code> </pre> <br><p>  The key point is the GrantedAccess value, which in the new descriptor is 0x1fffff, which corresponds to <strong>PROCESS_ALL_ACCESS</strong> .  Unfortunately, WinDbg does not display the PID of the target process.  But to make sure that the descriptor is received for the desired process, you can look at the <a href="https://docs.microsoft.com/sysinternals/downloads/process-explorer">Process Explorer's handles</a> (after having specified the PID in the command line arguments in the debugger): </p><br><pre> <code class="plaintext hljs">0:000&gt; dx argv[1] argv[1] : 0x1b7c2e2412c : "21652" [Type: wchar_t *]</code> </pre> <br><p><img src="https://habrastorage.org/webt/e2/hv/oi/e2hvoimzekhaea4u4jw-mt0vba0.png"></p><br><p>  In the screenshot, the utility opens descriptors on the running notepad.exe. </p><br><h3 id="pochemu-tak-proishodit">  Why it happens? </h3><br><p>  Firstly, when duplicating a descriptor, if the object access mask does not expand (and we specifically specify the operation flag <strong>DUPLICATE_SAME_ACCESS</strong> ), it does not check that the process (in which the duplicated descriptor will be created) has access to this object.  It only checks that the process descriptors passed to the <strong>DuplicateHandle (...)</strong> function have the <strong>PROCESS_DUP_HANDLE</strong> access mask enabled.  And then the descriptor is copied between processes without checking the access rights (I repeat: if the new descriptor has a mask of permissions not wider than the original duplicate descriptor). </p><br><p>  And then it should be noted that the call to <a href="https://docs.microsoft.com/windows/desktop/api/processthreadsapi/nf-processthreadsapi-getcurrentprocess">GetCurrentProcess ()</a> returns a constant, the same pseudo-handle (pseudo handle) mentioned at the very beginning of this publication.  There are two documented pseudo-descriptors with constant values ​​that are physically absent from the process descriptor table.  But these descriptors are processed by all functions of the kernel (along with the usual descriptors from the process descriptor table): </p><br><table><thead><tr><th>  Macro </th><th>  Value </th><th>  Description </th></tr></thead><tbody><tr><td>  <a href="https://docs.microsoft.com/windows-hardware/drivers/kernel/mm-bad-pointer">ZwCurrentProcess / NtCurrentProcess</a> </td><td>  (HANDLE) -1 </td><td>  Current process descriptor </td></tr><tr><td>  <a href="https://docs.microsoft.com/windows-hardware/drivers/kernel/mm-bad-pointer">ZwCurrentThread / NtCurrentThread</a> </td><td>  (HANDLE) -2 </td><td>  Current thread descriptor </td></tr></tbody></table><br><p>  It is the value NtCurrentProcess (== -1) that returns the call to <a href="https://docs.microsoft.com/windows/desktop/api/processthreadsapi/nf-processthreadsapi-getcurrentprocess">GetCurrentProcess ()</a> . </p><br><p>  This pseudo-descriptor within the framework of a specific process means an object of this process itself with <strong>PROCESS_ALL_ACCESS</strong> rights (in fact, there are nuances, but the article is not about them).  It turns out such a link to himself, but through a descriptor: <br><img src="https://habrastorage.org/webt/rp/fu/nw/rpfunwrh4inhaiyouzsg4bgg_uk.png"></p><br><p>  That is, our DuplicateHandle call (ProcessDuplicateHandle, GetCurrentProcess (), ...) will be interpreted as follows: from the open (target) process, duplicate the descriptor with a value of -1.  And for the target process (the one to which we have the descriptor in the ProcessDuplicateHandle variable) the value is -1 and will refer to this very target process with <strong>PROCESS_ALL_ACCESS</strong> rights.  Therefore, as a result, we get a descriptor on the target process with maximum rights. </p><br><h3 id="vmesto-epiloga">  Instead of an epilogue </h3><br><p>  I repeat the idea written at the very beginning: if someone gets a descriptor to a process with the right <strong>PROCESS_DUP_HANDLE</strong> , then within the framework of the Windows security model, he can get another descriptor to the same process, but with the rights to <strong>PROCESS_ALL_ACCESS</strong> (and do whatever he wants with the process ). </p><br><p>  Thanks to everyone who read the publication to the end.  I invite everyone to take a survey to find out how such publications can be interesting / useful to the audience. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/448472/">https://habr.com/ru/post/448472/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../448458/index.html">Test Maturity Model: how a tester can evaluate a project and plan processes</a></li>
+<li><a href="../448460/index.html">OpenStreetMap: Past, Present and Future</a></li>
+<li><a href="../448462/index.html">AppCode 2019.1: Swift 5, improved backlight, navigation and autocompletion, moving expressions and more</a></li>
+<li><a href="../448464/index.html">Simple implementation of multithreading in PHP</a></li>
+<li><a href="../448470/index.html">Content marketing in the USA, Latin America and Asia: useful tips, links and tools for budget promotion</a></li>
+<li><a href="../448474/index.html">We are looking for memory leaks in Python applications</a></li>
+<li><a href="../448476/index.html">Expanding WDS Functionality: Adding Download Capability to UEFI</a></li>
+<li><a href="../448478/index.html">Moon mission "Bereshit" - the preliminary cause of the accident was announced</a></li>
+<li><a href="../448480/index.html">Docker user</a></li>
+<li><a href="../448482/index.html">Factory testing of modular data center</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

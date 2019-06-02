@@ -1,0 +1,139 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How Clang Compiles a Function</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I planned to write an article about how LLVM optimizes a function, but first you need to write how Clang translates C or C ++ to LLVM. 
+
+
+
+
+ Consider ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How Clang Compiles a Function</h1><div class="post__text post__text-html js-mediator-article">  I planned to write an article about how LLVM optimizes a function, but first you need to write how Clang translates C or C ++ to LLVM. <br><br><img src="https://habrastorage.org/webt/df/9y/a9/df9ya9didizcjaetap9tjvfymzo.jpeg" alt="image"><br><a name="habracut"></a><br><br>  Consider the high-level aspects, not plunging into the depths of Clang.  I want to draw attention to how the output of Clang relates to the input, while we will not consider the nontrivial possibilities of C ++.  We use this little function, which I borrowed from the excellent <a href="https://www.cs.cmu.edu/~fp/courses/15411-f13/lectures/17-loopopt.pdf">lectures on cycle optimization</a> : 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">is_sorted</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *a, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> n)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; n - <span class="hljs-number"><span class="hljs-number">1</span></span>; i++) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (a[i] &gt; a[i + <span class="hljs-number"><span class="hljs-number">1</span></span>]) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">true</span></span>; }</code> </pre> <br>  Since Clang does not make any optimizations, and since LLVM IR was originally designed to work with C and C ++, the conversion is relatively easy.  I will use Clang 6.0.1 (or a close version, since this one has not yet been released) on x86-64. <br><br>  The command line is as follows: <br><br><pre> <code class="bash hljs">clang++ is_sorted.cpp -O0 -S -emit-llvm</code> </pre> <br>  In other words: compile the is_sorted.cpp file as C ++ and then we say the following LLVM toolchain: do not optimize, output the assembler, as a textual representation of LLVM IR.  LLVM IR is volumetric, and cannot be quickly output or parsed, binary bitcode format is always preferable if a person does not need to look at this code.  <a href="https://blog.regehr.org/extra_files/is_sorted.ll.txt">Here</a> is the full LLVM IR, we will look at it in parts. <br><br>  Let's start with the top of the file: <br><br><pre> <code class="cpp hljs">; ModuleID = <span class="hljs-string"><span class="hljs-string">'is_sorted.cpp'</span></span> source_filename = <span class="hljs-string"><span class="hljs-string">"is_sorted.cpp"</span></span> target datalayout = <span class="hljs-string"><span class="hljs-string">"em:e-i64:64-f80:128-n8:16:32:64-S128"</span></span> target triple = <span class="hljs-string"><span class="hljs-string">"x86_64-unknown-linux-gnu"</span></span></code> </pre> <br>  The whole text between the semicolon and the end of the line is a comment, which means that the first line does nothing, but if you are interested, in LLVM a “module” is a compilation unit, a container for code and data.  The second line should not bother us either.  The third line describes some assumptions made by the compiler; they do not play a role in this article, but you can read more <a href="https://llvm.org/docs/LangRef.html">here</a> .  <a href="https://wiki.osdev.org/Target_Triplet">The target troika</a> is the legacy of gcc and we will not need it later. <br><br>  The LLVM function has optional attributes: <br><br><pre> <code class="cpp hljs">; Function Attrs: noinline nounwind optnone uwtable</code> </pre> <br>  Some of them (like these) are supported by the front end, others are added later by optimization passes.  These attributes have nothing to do with the meaning of the code, I will not discuss them here, but you can read about them <a href="https://llvm.org/docs/LangRef.html">here</a> if you are interested. <br><br>  And finally, our function: <br><br><pre> <code class="bash hljs">define zeroext i1 @_Z9is_sortedPii(i32* %a, i32 %n) <span class="hljs-comment"><span class="hljs-comment">#0 {</span></span></code> </pre> <br>  “Zeroext” means that the return value of the function (i1, one-bit integer) must be expanded with zeros in the backend, to the width that the ABI requires.  Then comes the “augmented” (mangled) function name, then the parameter list is basically the same as in C ++ code, except that i32 defines a 32-bit variable.  # 0 connects the function to <a href="https://llvm.org/docs/LangRef.html">the attribute group</a> at the end of the file. <br><br>  Here is the first base unit: <br><br><pre> <code class="cpp hljs">entry: %retval = alloca i1, align <span class="hljs-number"><span class="hljs-number">1</span></span> %a.addr = alloca i32*, align <span class="hljs-number"><span class="hljs-number">8</span></span> %n.addr = alloca i32, align <span class="hljs-number"><span class="hljs-number">4</span></span> %i = alloca i32, align <span class="hljs-number"><span class="hljs-number">4</span></span> store i32* %a, i32** %a.addr, align <span class="hljs-number"><span class="hljs-number">8</span></span> store i32 %n, i32* %n.addr, align <span class="hljs-number"><span class="hljs-number">4</span></span> store i32 <span class="hljs-number"><span class="hljs-number">0</span></span>, i32* %i, align <span class="hljs-number"><span class="hljs-number">4</span></span> br label %<span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.cond</code> </pre> <br>  Each LLVM instruction must be located inside the base unit: a set of instructions having one input at the beginning and one output at the end.  The last instruction of the base unit must be a <a href="https://llvm.org/docs/LangRef.html">terminating instruction</a> : “dropping” into the next base unit is not allowed.  Each function must have an input block that does not have predecessors (predecessors) that perform the transition to this block.  This and <a href="https://llvm.org/docs/LangRef.html">other properties</a> are checked when IR is parsed, these checks can also be invoked multiple times during the compilation process by the “module verifier”.  The verifier is useful for debugging when the pass generates the wrong IR. <br><br>  The first four instructions in this base block are alloca: allocating stack memory.  The first three create variables that are implicitly created during compilation, the fourth - a loop variable.  Variables allocated in this way can only be accessed via the load and store instructions.  The following three instructions initialize three stack slots, a.addr and n.addr are initialized using the values ​​passed to the function as parameters, and i is initialized to zero.  The return value does not need to be initialized, any code that is not undefined in C and C ++ will have to take care of this.  The last instruction is an unconditional transition to the next base unit (we are not worried about this yet, most of the unnecessary transitions will be deleted by the LLVM backend). <br><br>  You might ask: Why does Clang allocate stack slots for a and n?  Why doesn't he just use these values ​​directly?  In this function, since a and n do not change, such a strategy will work, but this case will be taken into account by the optimizer, and is outside the competence of Calng.  If a and n can be modified, they should be in memory, and should not be SSA-values, which, by definition, can take on value only at one point in the program.  Memory cells are outside the SSA world and can be modified at any time.  This may seem strange, but this solution allows you to organize the work of all parts of the compiler in a natural and effective way. <br><br>  I think of Clang as a degenerate SSA code generator that satisfies all SSA requirements, but only because the exchange of information between the basic blocks occurs through memory.  The generation of non-degenerate code requires some care and some analysis, and the Clang developers refused to do this in order to share the responsibilities of code generation and optimization.  I did not see the measurement results, but in my understanding, a lot of memory operations are generated, and then almost immediately most of them are deleted by the optimizer, without leading to a large overhead of compile time, <br><br>  Consider how the for loop is translated.  In general, it looks like this: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (initializer; condition; modifier) { body }</code> </pre> <br>  This translates to something like this: <br><br><pre> <code class="cpp hljs"> initializer <span class="hljs-keyword"><span class="hljs-keyword">goto</span></span> COND COND: <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (condition) <span class="hljs-keyword"><span class="hljs-keyword">goto</span></span> BODY <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-keyword"><span class="hljs-keyword">goto</span></span> EXIT BODY: body modifier <span class="hljs-keyword"><span class="hljs-keyword">goto</span></span> COND EXIT:</code> </pre> <br>  Of course, this translation is not Clang specific, any C and C ++ compiler does the same. <br><br>  In our example, the loop initializer is minimized to an input base unit.  The following basic block is a test of the cycle condition: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.cond: ; preds = %<span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.inc, %entry %<span class="hljs-number"><span class="hljs-number">0</span></span> = load i32, i32* %i, align <span class="hljs-number"><span class="hljs-number">4</span></span> %<span class="hljs-number"><span class="hljs-number">1</span></span> = load i32, i32* %n.addr, align <span class="hljs-number"><span class="hljs-number">4</span></span> %sub = sub nsw i32 %<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span> %cmp = icmp slt i32 %<span class="hljs-number"><span class="hljs-number">0</span></span>, %sub br i1 %cmp, label %<span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.body, label %<span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.end</code> </pre> <br>  Clang also makes a useful comment that this base block can be reached either from for.inc or from an input base block.  This block loads i and n from memory, decreases n (the nsw flag reflects the C property that the sign overflow is undefined; without this flag, LLVM uses the additional code semantics), compares the reduced value with i, using the slt command (signed less than, signed less than) and then finally branch to the for.body or for.end base unit. <br><br>  Logging into the loop body is possible only from the for.cond block: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.body: %<span class="hljs-number"><span class="hljs-number">2</span></span> = load i32*, i32** %a.addr, align <span class="hljs-number"><span class="hljs-number">8</span></span> %<span class="hljs-number"><span class="hljs-number">3</span></span> = load i32, i32* %i, align <span class="hljs-number"><span class="hljs-number">4</span></span> %idxprom = sext i32 %<span class="hljs-number"><span class="hljs-number">3</span></span> to i64 %arrayidx = getelementptr inbounds i32, i32* %<span class="hljs-number"><span class="hljs-number">2</span></span>, i64 %idxprom %<span class="hljs-number"><span class="hljs-number">4</span></span> = load i32, i32* %arrayidx, align <span class="hljs-number"><span class="hljs-number">4</span></span> %<span class="hljs-number"><span class="hljs-number">5</span></span> = load i32*, i32** %a.addr, align <span class="hljs-number"><span class="hljs-number">8</span></span> %<span class="hljs-number"><span class="hljs-number">6</span></span> = load i32, i32* %i, align <span class="hljs-number"><span class="hljs-number">4</span></span> %add = add nsw i32 %<span class="hljs-number"><span class="hljs-number">6</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span> %idxprom1 = sext i32 %add to i64 %arrayidx2 = getelementptr inbounds i32, i32* %<span class="hljs-number"><span class="hljs-number">5</span></span>, i64 %idxprom1 %<span class="hljs-number"><span class="hljs-number">7</span></span> = load i32, i32* %arrayidx2, align <span class="hljs-number"><span class="hljs-number">4</span></span> %cmp3 = icmp sgt i32 %<span class="hljs-number"><span class="hljs-number">4</span></span>, %<span class="hljs-number"><span class="hljs-number">7</span></span> br i1 %cmp3, label %<span class="hljs-keyword"><span class="hljs-keyword">if</span></span>.then, label %<span class="hljs-keyword"><span class="hljs-keyword">if</span></span>.end</code> </pre> <br>  The first two lines load a and i into SSA registers;  i then expands to 64 bits and can participate in the address calculation.  The <a href="https://llvm.org/docs/LangRef.html">getelementptr</a> team (or gep for short) is the well-known LLVM command, it even has its own <a href="https://llvm.org/docs/GetElementPtr.html">help section</a> .  Unlike machine language, LLVM does not treat pointers as integers.  This facilitates alias analysis and other memory optimizations.  This code loads a [i] and a [i + 1], compares them and performs branching depending on the result. <br><br>  The if.then block stores 0 in the stack slot for the return value of the function and performs an unconditional transition to the output block of the function: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span>.then: store i1 <span class="hljs-literal"><span class="hljs-literal">false</span></span>, i1* %retval, align <span class="hljs-number"><span class="hljs-number">1</span></span> br label %<span class="hljs-keyword"><span class="hljs-keyword">return</span></span></code> </pre> <br>  The else block is trivial: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span>.end: br label %<span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.inc</code> </pre> <br>  And the block for adding one to the loop variable is also very simple: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.inc: %<span class="hljs-number"><span class="hljs-number">8</span></span> = load i32, i32* %i, align <span class="hljs-number"><span class="hljs-number">4</span></span> %inc = add nsw i32 %<span class="hljs-number"><span class="hljs-number">8</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span> store i32 %inc, i32* %i, align <span class="hljs-number"><span class="hljs-number">4</span></span> br label %<span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.cond</code> </pre> <br>  This code goes back to the loop condition check. <br><br>  If the loop ends normally, we return true: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span>.end: store i1 <span class="hljs-literal"><span class="hljs-literal">true</span></span>, i1* %retval, align <span class="hljs-number"><span class="hljs-number">1</span></span> br label %<span class="hljs-keyword"><span class="hljs-keyword">return</span></span></code> </pre> <br>  Finally, what we loaded into the stack return value slot is loaded and returned: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">return</span></span>: %<span class="hljs-number"><span class="hljs-number">9</span></span> = load i1, i1* %retval, align <span class="hljs-number"><span class="hljs-number">1</span></span> ret i1 %<span class="hljs-number"><span class="hljs-number">9</span></span></code> </pre> <br>  There is nothing special at the end of the function.  The post turned out longer than I thought, in the next post we will look at the optimization of the IR level for this function. <br><br>  (Thanks to Xi Wang and Alex Rosenberg for the fixes sent) </div><p>Source: <a href="https://habr.com/ru/post/431688/">https://habr.com/ru/post/431688/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../431670/index.html">Zen and the art of clean code support</a></li>
+<li><a href="../431676/index.html">Tactful robot: can listen and does not interrupt</a></li>
+<li><a href="../431678/index.html">There is a mobile developer in the forest, he sees - Kotlin is on fire. He sat down in Kotlin and burned</a></li>
+<li><a href="../431682/index.html">Marriott leaked personal data to 500 million customers</a></li>
+<li><a href="../431686/index.html">In addition to IoT: Mirai botnet started attacking machines on Linux</a></li>
+<li><a href="../431690/index.html">We solve crackme from Kaspersky Lab</a></li>
+<li><a href="../431692/index.html">The success of immunotherapy in the treatment of multiple sclerosis</a></li>
+<li><a href="../431694/index.html">Sort "Tower of Hanoi"</a></li>
+<li><a href="../431696/index.html">Kodein. The basics</a></li>
+<li><a href="../431698/index.html">Analysis of issues at the hh.ru stand at # HolyJS18</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

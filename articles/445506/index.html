@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>OS1: primitive kernel on Rust for x86</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I decided to write an article, and if it works out, then a series of articles, in order to share my experience of independent research of both the Bar...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>OS1: primitive kernel on Rust for x86</h1><div class="post__text post__text-html js-mediator-article"><p>  I decided to write an article, and if it works out, then a series of articles, in order to share my experience of independent research of both the Bare Bone x86 device and the organization of operating systems.  At the moment, my crafts cannot even be called an operating system - it is a small kernel that can boot from Multiboot (GRUB), manage real and virtual memory, and perform several useless functions in multitasking mode on a single processor. </p><br><p>  When developing, I didn’t set myself goals to write a new Linux (although, I confess, I dreamed about it 5 years ago) or to impress someone, so please don’t look particularly impressionable.  What I really wanted to do was figure out how the i386 architecture works at the most basic level, and how exactly the operating systems do their magic, well, dig a hyip Rust. </p><br><p>  In my notes, I will try to share not only source texts (they can be found on GitLab) and bare theory (it can be found on many resources), but also the path that I went through to find unobvious answers.  Specifically, in this article I will talk about the <strong>layout of the kernel file, its loading and initialization</strong> . </p><br><p>  My goals are to structure the information in my head, as well as help those who follow a similar path.  I understand that similar materials and blogs are already online, but to come to my current position, I had to gather them together for a long time.  All sources (in any case, which I remember), I will share right now. </p><a name="habracut"></a><br><h1 id="literatura-i-istochniki">  Literature and sources </h1><br><p>  Most of the time I drew, of course, from the excellent <a href="https://www.osdev.org/">OSDev</a> resource - both from the wiki and from the forum.  In the second place I will call Philip Opperman with his <a href="https://os.phil-opp.com/">blog</a> - a large amount of information about the Rust and iron bond. </p><br><p>  Some moments are peeped in the Linux kernel, Minix - with the help of special literature, such as Tanenbaum's book “ <em>Operating Systems.</em>  <em>Design and Implementation,</em> ”Robert Love’s book,“ <em>The Linux Kernel.</em>  <em>Description of the development process</em> .  Difficult questions about the organization of x86 architecture were solved with the help of the manual “ <em>Intel 64 and IA-32 Architects Software Developer’s Manual Volume 3 (3A, 3B, 3C &amp; 3D): System Programming Guide</em> ”.  In the understanding of the format of binaries, layout - guides by ld, llvm, nm, nasm, make. <br>  UPD.  Thanks to <a href="https://habr.com/ru/users/coreteamtech/" class="user_link">CoreTeamTech</a> for reminding you about the wonderful Redox OS system.  From its <a href="https://gitlab.redox-os.org/redox-os">source</a> I did not get out.  Unfortunately, the official GitLab system is not available from Russian IP, so you can look <a href="https://github.com/redox-os/">at GitHub</a> . </p><br><h1 id="esche-odno-predislovie">  Another preface </h1><br><p>  I realize that I am not a good programmer on Rust, moreover - this is my first project in this language (not the best way to start an acquaintance, is it?).  Therefore, the implementation may seem completely incorrect to you - I want to ask in advance for a condescension to my code and I will be happy for comments and suggestions.  If a dear reader can tell me where and how to proceed, I will also be very grateful.  Some code snippets can be copied from tutorials as they are and slightly modified, but I will try to give the most clear explanations to such sites so that you do not have the same questions as I did when analyzing them.  I also do not pretend to use the right approaches in design, so if my memory manager makes you want to write angry comments, I understand perfectly why. </p><br><h1 id="instrumentariy">  Tools </h1><br><p>  So, I'll start with the immersion in the development tools that I used.  As a medium, I chose a good and convenient VS Code code editor with plug-ins for Rust and the GDB debugger.  VS Code is sometimes not very good with RLS, especially when redefining it in a particular directory, so after every update of Rust nightly I had to reinstall RLS. </p><br><p>  Rust was chosen for several reasons.  First, its growing popularity and pleasing philosophy.  Secondly, its ability to work from a low level but less likely to “shoot itself in the foot.”  Thirdly, as a fan of Java and Maven, I am very addicted to build systems and dependency management, and cargo is already built into the language toolchain.  Fourthly, I just wanted something new, not like C. </p><br><p>  For low-level code, I took NASM, because  I feel confident in the Intel-syntax, and I feel comfortable working with its directives.  I deliberately refused to assembler inserts in Rust, to clearly separate the work with iron and high-level logic. <br>  Make and linker from LLVM LLD supply (as a faster and higher quality linker) are used as a general assembly and layout - this is a matter of taste.  You could get along with the build scripts for cargo. </p><br><p>  Qemu is used to launch - I like its speed, interactive mode and the ability to attach GDB.  To load and immediately have all the information about the hardware - of course GRUB (Legacy is more simple in organizing the header, so we take it). </p><br><h1 id="linkovka-i-komponovka">  Linking and layout </h1><br><p>  Oddly enough, for me it turned out to be one of the most difficult topics.  It was extremely difficult to realize after long trials with x86 segment registers that segments and sections are not the same thing.  In programming for the existing environment, there is no need to think about how to place the program in memory - for each platform and format, the linker already has a ready-made recipe, so there is no need to write a linker script. </p><br><p>  For bare metal, on the contrary, it is necessary to specify exactly how to place and address the program code in memory.  Here I want to emphasize that this is a linear (virtual) address using the page mechanism.  OS1 uses a paging mechanism, but I will focus on it separately in the appropriate section of the article. </p><br><div class="spoiler">  <b class="spoiler_title">Logical, linear, virtual, physical ...</b> <div class="spoiler_text"><p>  Logical, linear, virtual, physical addresses.  I broke my head on this issue, so for details I want to address this <a href="https://habr.com/ru/company/intel/blog/238091/">excellent article.</a> </p></div></div><br><p>  For operating systems that use page organization of memory, in a 32-bit environment each task has 4 GB of address memory space, even if you have 128 MB of RAM installed.  This happens just due to the page organization of the memory, the lack of pages in the RAM is handled accordingly. </p><br><p>  In this case, in fact, applications are usually available somewhat less than 4 GB.  This is explained by the fact that the OS must handle interrupts, system calls, which means that at least their handlers must be located in this address space.  We are faced with the question: where exactly should the kernel addresses be placed in these 4 GB so that the programs can work correctly? </p><br><p>  In the modern world of programs, this concept is used: each task believes that it reigns supremely of the processor and is the only program running on a computer (at this stage we do not speak about communication between processes).  If you look at exactly how compilers assemble programs at the linking stage, you will see that they start with a linear address of zero or near zero.  This means that if the kernel image occupies the memory space near zero, programs assembled in this way will not be able to be executed, any jmp program instruction will lead to entry into the protected kernel memory and a protection error.  Therefore, if we want to use not only self-written programs in the future, it is reasonable to give the application as large a piece of memory as possible near zero, and place the kernel image higher. </p><br><p>  This concept is called the Higher-half kernel (here I refer you to osdev.org if you want related information).  Which chunk of memory to choose depends only on your appetites.  Someone needs 512 MB, but I decided to grab 1 GB, so my kernel is located at 3 GB + 1 MB (+ 1 MB is required to keep the lower-higher memory limits, GRUB loads us into physical memory after 1 MB) . <br>  It is also important for us to specify the entry point to our executable file.  For my executable file, this will be the _loader function, written in assembler, which I will discuss in more detail in the next section. </p><br><div class="spoiler">  <b class="spoiler_title">About entry point</b> <div class="spoiler_text"><p>  Did you know that all your life you have been lying about the fact that main () is the entry point to the program?  In fact, main () is a convention of the C language and the languages ​​it spawned.  If you dig, it turns out about the following. </p><br><p>  First, each platform has its own specification and entry point name: for linux, this is usually _start, for Windows - mainCRTStartup.  Secondly, these points can be redefined, but then it will not be possible to use the advantages of libc.  Third, the compiler provides these entry points by default and they are in the files crt0..crtN (CRT - C RunTime, N - the number of main arguments). </p><br><p> Actually, what gcc or vc compilers do is choose a platform-dependent linking script that contains the standard entry point, select the desired object file with the finished C runtime initialization function and the main function call and link it to the output in the desired format file with the standard entry point. </p><br><p>  So, for our purposes, the standard entry point and the initialization of CRT need to be disabled, since we have nothing at all but bare iron. </p></div></div><br><p>  What else you need to know for linking?  How data sections (.rodata, .data), uninitialized variables (.bss, common) will be located, and also remember that GRUB requires the location of multiboot headers in the first 8 KB of the binary. </p><br><p>  So now we can write the linker script! </p><br><pre><code class="plaintext hljs">ENTRY(_loader) OUTPUT_FORMAT(elf32-i386) SECTIONS { . = 0xC0100000; .text ALIGN(4K) : AT(ADDR(.text) - 0xC0000000) { *(.multiboot1) *(.multiboot2) *(.text) } .rodata ALIGN(4K) : AT(ADDR(.rodata) - 0xC0000000) { *(.rodata*) } .data ALIGN (4K) : AT(ADDR(.data) - 0xC0000000) { *(.data) } .bss : AT(ADDR(.bss) - 0xC0000000) { _sbss = .; *(COMMON) *(.bss) _ebss = .; } }</code> </pre> <br><h1 id="zagruzka-posle-grub">  Download after GRUB </h1><br><p>  As mentioned above, the Multiboot specification requires that the header be in the first 8 KB of the boot image.  The full specification can be found <a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html">here</a> , but I will focus only on the details of interest. </p><br><ul><li>  Alignment to 32 bits (4 bytes) must be maintained. </li><li>  There should be a magic number 0x1BADB002 </li><li>  You need to tell the multi-bootloader what information we want to get and how to place the modules (in my case, I want the kernel module aligned to 4K page, and also to get a memory card to save time and effort) </li><li>  Provide a checksum (checksum + magic number + flags should give zero) </li></ul><br><pre> <code class="plaintext hljs">MB1_MODULEALIGN equ 1&lt;&lt;0 MB1_MEMINFO equ 1&lt;&lt;1 MB1_FLAGS equ MB1_MODULEALIGN | MB1_MEMINFO MB1_MAGIC equ 0x1BADB002 MB1_CHECKSUM equ -(MB1_MAGIC + MB1_FLAGS) section .multiboot1 align 4 dd MB1_MAGIC dd MB1_FLAGS dd MB1_CHECKSUM</code> </pre> <br><p>  After downloading Multiboot guarantees some conditions that we must take into account. </p><br><ul><li>  The EAX register contains the magic number 0x2BADB002, which says that the download was successful. </li><li>  The EBX register contains the physical address of the structure with information about the download results (we’ll talk about it much later) </li><li>  The processor is in protected mode, the page memory is turned off, the segment registers and the stack are in an undefined (for us) state, GRUB used them for their own needs and it is necessary to redefine them as soon as possible. </li></ul><br><p>  The first thing we need to do is turn on the paging organization of the memory, set up the stack, and finally transfer control to the high-level Rust code. <br>  I will not dwell in detail on the page organization of memory, the Page Directory and the Page Table, because excellent articles have been written about this ( <a href="https://habr.com/ru/company/embox/blog/256191/">one of them</a> ).  The main thing I want to share - the pages are not segments!  Please do not repeat my mistake and do not load the address of the page table in GDTR!  For the page table is a register CR3!  A page can have a different size in different architectures, for ease of operation (to have only one page table), I chose a size of 4 MB by including PSE. </p><br><p>  So we want to enable virtual page memory.  For this we need a page table, and its physical address loaded into CR3.  In this case, our binary file was linked to work in a virtual address space with an offset of 3 GB.  This means that all addresses of variables and labels have an offset of 3 GB.  The page table is just an array, in which the index of the page contains its real address, aligned with the page size, as well as access and status flags.  Since I use 4 MB pages, I only need one PD page table with 1024 entries: </p><br><pre> <code class="plaintext hljs">section .data align 0x1000 BootPageDirectory: dd 0x00000083 times (KERNEL_PAGE_NUMBER - 1) dd 0 dd 0x00000083 times (1024 - KERNEL_PAGE_NUMBER - 1) dd 0</code> </pre> <br><p>  What is in the table? </p><br><ol><li>  The very first page should lead to the current code segment (0-4 MB of physical memory), since all addresses in the processor are physical and virtual translation is not yet performed.  The absence of this page descriptor will lead to an immediate crash, as the processor will not be able to take the next instruction after turning on the pages.  Flags: bit 0 - the table is present, bit 1 - page to be written, bit 7 - page size 4 MB.  After turning on the pages, the entry will be reset. </li><li>  Up to 3 GB pass - zeroes ensure that the page is not in memory </li><li>  The 3 GB mark is our kernel in virtual memory, referring to 0 in physical.  After the inclusion of the pages we will work here.  Flags are similar to the first entry. </li><li>  Pass up to 4 GB. </li></ol><br><p>  So, we declared the table and now we want to load its physical address in CR3.  Do not forget about the address offset in 3 GB at the linking stage.  Attempting to download the address as it is will send us to the real address of 3 GB + variable offset and lead to an immediate crash.  Therefore, we take the address BootPageDirectory and subtract 3 GB from it, put it in CR3.  We include PSE in the CR4 register, we include work with pages in the CR0 register: </p><br><pre> <code class="plaintext hljs"> mov ecx, (BootPageDirectory - KERNEL_VIRTUAL_BASE) mov cr3, ecx mov ecx, cr4 or ecx, 0x00000010 mov cr4, ecx mov ecx, cr0 or ecx, 0x80000000 mov cr0, ecx</code> </pre> <br><p>  So far so good, but as soon as we reset the first page to finally move to the top half of 3 GB, everything will collapse, since the EIP register still has a physical address in the first megabyte area.  To fix this, we carry out a simple manipulation: in the nearest place we put a label, load its address (it is already with an offset of 3 GB, remember this) and make an unconditional transition to it.  After that, the unnecessary page can be zeroed for future applications. </p><br><pre> <code class="plaintext hljs"> lea ecx, [StartInHigherHalf] jmp ecx StartInHigherHalf: mov dword [BootPageDirectory], 0 invlpg [0]</code> </pre> <br><p>  Now it’s quite small: initialize the stack, transfer the GRUB structures and suffice the assembler! </p><br><pre> <code class="plaintext hljs"> mov esp, stack+STACKSIZE push eax push ebx lea ecx, [BootPageDirectory] push ecx call kmain hlt section .bss align 32 stack: resb STACKSIZE</code> </pre> <br><p>  What you need to know about this part of the code: </p><br><ol><li>  According to the C call convention (it is also applicable to Rust), the variables in the function are passed through the stack in the reverse order.  All variables are aligned by 4 bytes in x86. </li><li>  The stack grows from the end, so the stack pointer must lead to the end of the stack (we add STACKSIZE to the address).  The size of the stack I took 16 KB, should suffice. </li><li>  The following is transferred to the core: the magic number Multiboot, the physical address of the bootloader structure (there is a valuable memory card for us), the virtual address of the page table (somewhere in the space of 3 GB) </li></ol><br><p>  Also, do not forget to declare that kmain is extern, and _loader is global. </p><br><h1 id="dalneyshie-shagi">  Further steps </h1><br><p>  In the following notes, I will talk about setting up the segment registers, briefly go over the output of information through the VGA buffer, tell you how to organize work with interruptions, page management, and the sweetest - multitasking - leave for dessert. </p><br><p>  The full project code <a href="https://gitlab.com/sickfar/os1/tree/master">is available on GitLab</a> . </p><br><p>  Thanks for attention! </p><br><p>  UPD2: <a href="https://habr.com/ru/post/445584/">Part 2</a> <br>  UPD2: <a href="https://habr.com/ru/post/446214/">Part 3</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/445506/">https://habr.com/ru/post/445506/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445488/index.html">Monads from the point of view of programmers (and some category theory)</a></li>
+<li><a href="../445494/index.html">As a fragment of CSS markup broke C ++ compiler</a></li>
+<li><a href="../445500/index.html">About Open Distros, Open Source, and the creation of Elastic</a></li>
+<li><a href="../445502/index.html">Vivaldi 2.4 - Moving the buttons with both hands</a></li>
+<li><a href="../445504/index.html">IT Service Management (ITSM) has become even more efficient with machine learning tools.</a></li>
+<li><a href="../445510/index.html">Manage expectations or How to say no</a></li>
+<li><a href="../445512/index.html">How we made PHP 7 twice as fast as PHP 5. Part 2: Bytecode optimization in PHP 7.1</a></li>
+<li><a href="../445514/index.html">The most interesting at the exhibition Securika Moscow 2019</a></li>
+<li><a href="../445516/index.html">Neural Quantum States - representation of the wave function of the neural network</a></li>
+<li><a href="../445518/index.html">Old iron: electronic tools that are lost in the depths of history</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

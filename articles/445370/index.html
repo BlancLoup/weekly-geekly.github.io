@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>TSDB Analysis in Prometheus 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The time series database (TSDB, time series database) in Prometheus 2 is an excellent example of an engineering solution that offers significant impro...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>TSDB Analysis in Prometheus 2</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/vd/66/kh/vd66khzvg2fd68xtdpwyq462zm0.png"><br><br>  The time series database (TSDB, time series database) in Prometheus 2 is an excellent example of an engineering solution that offers significant improvements in comparison with the v2 storage in Prometheus 1 in terms of data acquisition and query performance, resource efficiency.  We implemented Prometheus 2 in Percona Monitoring and Management (PMM), and I had the opportunity to deal with the performance of Prometheus 2 TSDB.  In this article I will talk about the results of these observations. <br><a name="habracut"></a><br><h3>  Medium Prometheus workload </h3><br>  For those who are used to dealing with general-purpose databases, the usual Prometheus workload is rather curious.  The rate of data accumulation tends to a stable value: usually the services that you monitor send approximately the same number of metrics, and the infrastructure changes relatively slowly. <br><br>  Requests for information may come from different sources.  Some of them, such as alerts, also tend to be stable and predictable.  Others, such as user requests, can cause bursts, although this is not typical of most of the workload. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h3>  Load test </h3><br>  During testing, I focused on the ability to accumulate data.  I deployed Prometheus 2.3.2 compiled with Go 1.10.1 (as part of PMM 1.14) on the Linode service using this script: <a href="https://www.linode.com/stackscripts/view/338458">StackScript</a> .  For the most realistic load generation, with the help of this <a href="https://www.linode.com/stackscripts/view/339810">StackScript</a> I launched several MySQL nodes with real load (Sysbench TPC-C Test), each of which emulated 10 Linux / MySQL nodes. <br><br>  All of the following tests were performed on a Linode server with eight virtual cores and 32 GB of memory running 20 load simulations of monitoring two hundred MySQL instances.  Or, in terms of Prometheus, 800 targets (targets), 440 charges (scrapes) per second, 380 thousand records (samples) per second and 1.7 million active time series. <br><br><h3>  Design </h3><br>  The conventional approach to traditional databases, including the one that used Prometheus 1.x, is to <a href="https://www.percona.com/blog/2018/09/20/prometheus-2-times-series-storage-performance-analyses/">limit the memory</a> .  If it is not enough to withstand the load, you will encounter large delays, and some requests will not be fulfilled. <br>  Memory usage in Prometheus 2 is configured via the <code>storage.tsdb.min-block-duration</code> key, which determines how long the recordings will be stored in memory before being flushed to disk (the default is 2 hours).  The amount of memory needed will depend on the number of time series, labels, and the intensity of data collection (scrapes) in total with the net incoming flow.  In terms of disk space, Prometheus tends to use 3 bytes per record (sample).  On the other hand, the memory requirements are much higher. <br><br>  Although it is possible to configure the block size, it is not recommended to adjust it manually, so you are faced with the need to give Prometheus as much memory as it asks for your load. <br><br>  If there is not enough memory to support the incoming flow of metrics, Prometheus will drop from out of memory or OOM killer will get to it. <br><br>  Adding a swap to delay the fall, when Prometheus runs out of memory, doesn’t really help, because using this feature causes explosive memory consumption.  I think it's about Go, his garbage collector and how he works with swap. <br><br>  Another interesting approach is setting the reset of the head block to the disk at a certain time, instead of counting it from the start of the process. <br><br><img src="https://habrastorage.org/webt/bl/pi/qv/blpiqvwimzifjmfyzbrplkagkcg.png"><br><br>  As you can see from the graph, flushes to disk occur every two hours.  If you change the min-block-duration parameter for one hour, then these drops will occur every hour, starting in half an hour. <br><br>  <i>If you want to use this and other graphs in your Prometheus installation, you can use this <a href="https://grafana.com/dashboards/7901">dashboard</a> .</i>  <i>It was designed for PMM, but, with minor modifications, fits any Prometheus installation.</i> <br><br>  We have an active block, called a head block, which is stored in memory;  blocks with older data are available via <code>mmap()</code> .  This removes the need to configure the cache separately, but also means that you need to leave enough space for the operating system cache if you want to make requests to data older than those that the head block holds. <br><br>  And it also means that the consumption of Prometheus virtual memory will look quite high, which is not worth worrying about. <br><br><img src="https://habrastorage.org/webt/ls/sl/qp/lsslqpxvg2lgzvpvbnupee0qbik.png"><br><br>  Another interesting design point is the use of WAL (write ahead log).  As can be seen from the documentation on the repository, Prometheus uses WAL to avoid losses during falls.  Specific mechanisms to ensure data survivability, unfortunately, are not well documented.  Prometheus version 2.3.2 resets WAL to disk every 10 seconds, and this parameter is not user configurable. <br><br><h3>  Seals (Compactions) </h3><br>  Prometheus TSDB is designed in the same way as LSM storage (Log Structured merge - log-structured tree with merge): the head block is flushed periodically to disk, while the compaction mechanism combines several blocks together to avoid scanning too many blocks when queried.  Here you can see the number of blocks that I observed on the test system after a day of load. <br><br><img src="https://habrastorage.org/webt/4o/96/oy/4o96oyaps3brdaqea7n1qyerpgw.png"><br><br>  If you want to learn more about the repository, you can examine the meta.json file, which has information about the available blocks and how they appeared. <br><br><pre> <code class="json hljs">{       <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPZDPD1D9R019JS87TPV5MPE"</span></span>,       <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536472800000</span></span>,       <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536494400000</span></span>,       <span class="hljs-attr"><span class="hljs-attr">"stats"</span></span>: {               <span class="hljs-attr"><span class="hljs-attr">"numSamples"</span></span>: <span class="hljs-number"><span class="hljs-number">8292128378</span></span>,               <span class="hljs-attr"><span class="hljs-attr">"numSeries"</span></span>: <span class="hljs-number"><span class="hljs-number">1673622</span></span>,               <span class="hljs-attr"><span class="hljs-attr">"numChunks"</span></span>: <span class="hljs-number"><span class="hljs-number">69528220</span></span>       },       <span class="hljs-attr"><span class="hljs-attr">"compaction"</span></span>: {               <span class="hljs-attr"><span class="hljs-attr">"level"</span></span>: <span class="hljs-number"><span class="hljs-number">2</span></span>,               <span class="hljs-attr"><span class="hljs-attr">"sources"</span></span>: [                       <span class="hljs-string"><span class="hljs-string">"01CPYRY9MS465Y5ETM3SXFBV7X"</span></span>,                       <span class="hljs-string"><span class="hljs-string">"01CPYZT0WRJ1JB1P0DP80VY5KJ"</span></span>,                       <span class="hljs-string"><span class="hljs-string">"01CPZ6NR4Q3PDP3E57HEH760XS"</span></span>               ],               <span class="hljs-attr"><span class="hljs-attr">"parents"</span></span>: [                       {                               <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPYRY9MS465Y5ETM3SXFBV7X"</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536472800000</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536480000000</span></span>                       },                       {                               <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPYZT0WRJ1JB1P0DP80VY5KJ"</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536480000000</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536487200000</span></span>                       },                       {                               <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPZ6NR4Q3PDP3E57HEH760XS"</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536487200000</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536494400000</span></span>                       }               ]       },       <span class="hljs-attr"><span class="hljs-attr">"version"</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> }</code> </pre> <br>  Prometheus seals are tied to the time the head block is flushed to disk.  At this point there may be several such operations. <br><br><img src="https://habrastorage.org/webt/ux/a4/85/uxa485qrm1zltefalsn54euc0ei.png"><br><br>  Apparently, seals are in no way limited and can cause large disk I / O jumps during execution. <br><br><img src="https://habrastorage.org/webt/kw/bt/ty/kwbttykmjwhoopodhlsl5mbm0-i.png"><br><br>  CPU downloads <br><br><img src="https://habrastorage.org/webt/zk/ls/x2/zklsx2x0txpjym_defuhn0qkoqi.png"><br><br>  Of course, this rather negatively affects the speed of the system, and is also a serious challenge for LSM storages: how to make seals to support high-speed queries and at the same time not cause a too strong overhead? <br><br>  Memory usage in the process of seals also looks pretty curious. <br><br><img src="https://habrastorage.org/webt/vb/bn/ei/vbbneip1p05brkhxasvmglr6-ts.png"><br><br>  We can see how, after compression, most of the memory changes its state from Cached to Free: it means that potentially valuable information was removed from there.  It is curious whether <code>fadvice()</code> or some other minimization technique is used here, or is it caused by the fact that the cache was freed from the blocks destroyed during compaction? <br><br><h3>  Disaster recovery </h3><br>  Recovery from failure takes time, and it is justified.  For an incoming stream of one million records per second, I had to wait about 25 minutes while the recovery was taking into account the SSD disk. <br><br><pre> <code class="plaintext hljs">level=info ts=2018-09-13T13:38:14.09650965Z caller=main.go:222 msg="Starting Prometheus" version="(version=2.3.2, branch=v2.3.2, revision=71af5e29e815795e9dd14742ee7725682fa14b7b)" level=info ts=2018-09-13T13:38:14.096599879Z caller=main.go:223 build_context="(go=go1.10.1, user=Jenkins, date=20180725-08:58:13OURCE)" level=info ts=2018-09-13T13:38:14.096624109Z caller=main.go:224 host_details="(Linux 4.15.0-32-generic #35-Ubuntu SMP Fri Aug 10 17:58:07 UTC 2018 x86_64 1bee9e9b78cf (none))" level=info ts=2018-09-13T13:38:14.096641396Z caller=main.go:225 fd_limits="(soft=1048576, hard=1048576)" level=info ts=2018-09-13T13:38:14.097715256Z caller=web.go:415 component=web msg="Start listening for connections" address=:9090 level=info ts=2018-09-13T13:38:14.097400393Z caller=main.go:533 msg="Starting TSDB ..." level=info ts=2018-09-13T13:38:14.098718401Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536530400000 maxt=1536537600000 ulid=01CQ0FW3ME8Q5W2AN5F9CB7R0R level=info ts=2018-09-13T13:38:14.100315658Z caller=web.go:467 component=web msg="router prefix" prefix=/prometheus level=info ts=2018-09-13T13:38:14.101793727Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536732000000 maxt=1536753600000 ulid=01CQ78486TNX5QZTBF049PQHSM level=info ts=2018-09-13T13:38:14.102267346Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536537600000 maxt=1536732000000 ulid=01CQ78DE7HSQK0C0F5AZ46YGF0 level=info ts=2018-09-13T13:38:14.102660295Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536775200000 maxt=1536782400000 ulid=01CQ7SAT4RM21Y0PT5GNSS146Q level=info ts=2018-09-13T13:38:14.103075885Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536753600000 maxt=1536775200000 ulid=01CQ7SV8WJ3C2W5S3RTAHC2GHB level=error ts=2018-09-13T14:05:18.208469169Z caller=wal.go:275 component=tsdb msg="WAL corruption detected; truncating" err="unexpected CRC32 checksum d0465484, want 0" file=/opt/prometheus/data/.prom2-data/wal/007357 pos=15504363 level=info ts=2018-09-13T14:05:19.471459777Z caller=main.go:543 msg="TSDB started" level=info ts=2018-09-13T14:05:19.471604598Z caller=main.go:603 msg="Loading configuration file" filename=/etc/prometheus.yml level=info ts=2018-09-13T14:05:19.499156711Z caller=main.go:629 msg="Completed loading of configuration file" filename=/etc/prometheus.yml level=info ts=2018-09-13T14:05:19.499228186Z caller=main.go:502 msg="Server is ready to receive web requests."</code> </pre> <br>  The main problem of the recovery process is high memory consumption.  Despite the fact that in a normal situation, the server can work stably with the same amount of memory, if it falls, it may not rise due to OOM.  The only solution I found was to disable data collection, raise the server, allow it to recover and reboot already with the collection turned on. <br><br><h3>  Warming up </h3><br>  Another behavior that should be remembered during warm-up is the ratio of low productivity and high resource consumption right after the start.  During some, but not all starts, I observed a serious load on the CPU and memory. <br><br><img src="https://habrastorage.org/webt/kj/lr/2d/kjlr2dlj8mqn0od1dvwlu5sxxdu.png"><br><br><img src="https://habrastorage.org/webt/k_/ua/-y/k_ua-yqqzwh9elxbcoceu6tsrry.png"><br><br>  Memory failures suggest that Prometheus cannot configure all charges from the start, and some information is lost. <br><br>  I did not find out the exact reasons for the high load on the processor and memory.  I suspect that this is due to the creation of new time series in the head block with a high frequency. <br><br><h3>  CPU load jumps </h3><br>  In addition to the seals, which create a rather high I / O load, I noticed serious processor load jumps every two minutes.  The bursts last longer with high incoming flow and it looks like they are caused by the Go garbage collector, at least some of the cores are fully loaded. <br><br><img src="https://habrastorage.org/webt/uv/jp/os/uvjposyjmeulwwpvafsdqw_dn20.png"><br><br><img src="https://habrastorage.org/webt/rd/pp/se/rdppsepllvvc85uijh14zwzbsqc.png"><br><br>  These races are not so insignificant.  It appears that when they occur, the internal entry point and the Prometheus metrics become inaccessible, which causes data gaps at the same time intervals. <br><br><img src="https://habrastorage.org/webt/_h/aw/cn/_hawcnvkbwin1kzi8opatkmgbku.png"><br><br>  You may also notice that the exporter Prometheus shuts down for one second. <br><br><img src="https://habrastorage.org/webt/i7/5s/3g/i75s3g5_1bemugg59bgcuiiv-xq.png"><br><br>  We may notice correlations with garbage collection (GC). <br><br><img src="https://habrastorage.org/webt/vx/sn/_y/vxsn_ykevsbir37pexcvjunszn8.png"><br><br><h3>  Conclusion </h3><br>  TSDB in Prometheus 2 is fast, able to cope with millions of time series and at the same time with thousands of records per second, using rather modest hardware.  Recycling the CPU and disk I / O is also impressive.  My example showed up to 200,000 metrics per second per core used. <br><br>  To plan expansion, you need to remember about enough memory, and it must be real memory.  The amount of used memory, which I observed, was about 5 GB per 100,000 entries per second of the incoming stream, which in total with the operating system cache was about 8 GB of occupied memory. <br><br>  Of course, there is still a lot of work to be done to tackle CPU bursts and disk I / O, and this is not surprising considering how young the TSDB Prometheus 2 is still compared to InnoDB, TokuDB, RocksDB, WiredTiger, but they all had similar problems at the beginning of the life cycle. </div><p>Source: <a href="https://habr.com/ru/post/445370/">https://habr.com/ru/post/445370/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445358/index.html">Organization of the event system in Unity - through the eyes of game designer</a></li>
+<li><a href="../445360/index.html">5 typical tasks for interviews on JavaScript: analysis and solutions</a></li>
+<li><a href="../445362/index.html">The book "Distributed Systems. Design Patterns »</a></li>
+<li><a href="../445366/index.html">How to speed up encryption in accordance with GOST 28147-89 on a Baikal-T1 processor due to a SIMD unit</a></li>
+<li><a href="../445368/index.html">Load testing games with a couple of hundreds of thousands of virtual users</a></li>
+<li><a href="../445372/index.html">Machine Vision vs Human Intuition: Algorithms for Disruption of Object Recognition</a></li>
+<li><a href="../445378/index.html">Labyrinths: classification, generation, search for solutions</a></li>
+<li><a href="../445380/index.html">Modern PHP is beautiful and productive.</a></li>
+<li><a href="../445384/index.html">Mission "Chang'e-4" - scientific equipment on the landing module and the satellite transponder</a></li>
+<li><a href="../445390/index.html">Idea normal person or why we chose Monaco</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

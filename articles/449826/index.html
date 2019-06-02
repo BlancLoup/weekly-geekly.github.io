@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>[Translation] Envoy threading model (Envoy threading model)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr! I present to you the translation of the article "Envoy threading model" by Matt Klein. 
+
+ This article seemed to me quite interesting, and s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>[Translation] Envoy threading model (Envoy threading model)</h1><div class="post__text post__text-html js-mediator-article">  Hi, Habr!  I present to you the translation of the article <a href="https://blog.envoyproxy.io/envoy-threading-model-a8d44b922310">"Envoy threading model"</a> by Matt Klein. <br><br>  This article seemed to me quite interesting, and since Envoy is most often used as part of “istio” or simply as “ingress controller” kubernetes, therefore most people do not have the same direct interaction with it as for example with typical Nginx or Haproxy settings.  However, if something breaks, it would be good to understand how it is arranged from the inside.  I tried to translate as much text as possible into Russian, including special words; for those who are pained to look at this, I left the originals in brackets.  Welcome under cat. <br><a name="habracut"></a><br>  Low-level technical documentation on the Envoy codebase is currently rather poor.  To fix this, I plan to do a series of blog posts about various Envoy subsystems.  Since this is the first article, please let me know what you think and what you might be interested in in the following articles. <br><br>  One of the most common technical questions I get about Envoy is a request for a low-level description of the threading model used.  In this post, I will describe how Envoy maps connections to threads, as well as a description of the Thread Local Storage system, which is used internally to make the code more parallel and high-performance. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h1>  Threading description (Threading overview) </h1><br><img src="https://habrastorage.org/webt/jy/46/yw/jy46ywgcjdk8zvrpwyeisan8hzm.png"><br><br>  <b>Envoy uses three different types of threads:</b> <br><br><ul><li>  <b>Main (Main):</b> This flow controls the start and end of the process, all XDS (xDiscovery Service) API processing, including DNS, health checking, general cluster management and service run time, statistics reset, administration and general management processes - Linux signals, hot restart (hot restart), etc. Everything that happens in this stream is asynchronous and non-blocking.  In general, the main thread coordinates all critical functionality processes, which do not require a large number of CPUs.  This allows most control code to write as if it were single-threaded. </li><li>  <b>Worker:</b> By default, Envoy creates a worker thread for each hardware thread in the system, this can be controlled using the <code>--concurrency</code> option.  Each workflow starts a “non-blocking” event loop, which is responsible for listening (listening) to each listener (listener), at the time of this writing (July 29, 2017) there is no segmentation (sharding) of a listener (listener), receiving new connections, creating an instance of a stack of filters for connecting and processing all input-output (IO) operations during the connection.  Again, this allows most of the connection handling code to be written as if it were single-threaded. </li><li>  <b>File (flusher):</b> Each file that Envoy writes, mostly access logs, currently has an independent blocking stream.  This is due to the fact that writing to files cached by the file system even when using <code>O_NONBLOCK</code> can sometimes be blocked (sigh).  When workflows need to be written to a file, the data is actually moved to a buffer in memory, where it is eventually dropped through the <b>file flush</b> stream.  This is one area of ​​code in which technically all worker threads (worker threads) can block (block) the same lock (lock), trying to fill the memory buffer. </li></ul><br><h1>  Connection handling </h1><br>  As discussed briefly above, all worker threads listen to all listeners without any segmentation.  Thus, the kernel is used to correctly send received sockets to worker threads.  Modern kernels in general are very good at this, they use functions such as I / O priority (IO) boosting to try to fill the thread with work before starting to use other threads that also listen on the same socket, and not use cyclic blocking (Spinlock) to handle each request. <br><br>  Once a connection is made on a worker thread (worker thread), it never leaves this thread (thread).  All further processing of the connection is fully processed in the worker thread, including any forwarding behavior. <br><br>  <b>This has several important consequences:</b> <br><br><ul><li>  <u>All connection pools in Envoy are related to the workflow.</u>  <u>Thus, while HTTP / 2 connection pools make only one connection with each upstream host at a time, if there are four worker threads, there will be four HTTP / 2 connections per upstream host in a steady state.</u> </li><li>  The reason Envoy works in this way is that, while keeping everything in one working thread, almost all the code can be written without blocking and as if it is single-threaded.  This design simplifies writing a large amount of code and scales incredibly well for an almost unlimited number of worker threads. </li><li>  However, one of the main conclusions is that, in terms of the efficiency of the memory pool and connections, it is actually very important to configure the <code>--concurrency</code> parameter.  Having more worker threads than necessary will lead to memory loss, creating more idle connections and reducing the rate of hitting the connection pool.  In Lyft, our envoy sidecar containers work with very low concurrency, so the performance roughly corresponds to the services they sit next to.  We run Envoy as a border proxy (edge) only with maximum concurrency (concurrency). </li></ul><br><h1>  What does non-blocking means mean? </h1><br>  The term “non-blocking” has so far been used several times when discussing how the main and worker threads work.  All code is written with the proviso that nothing is ever blocked.  However, this is not entirely true (which is not quite true?). <br><br>  <b>Envoy uses several long process locks:</b> <br><br><ul><li>  As already mentioned, when writing access logs, all worker threads get the same lock before filling the log buffer in memory.  The lock hold time should be very low, but it is possible that this lock will be challenged with high parallelism and high bandwidth. </li><li>  Envoy uses a very complex system for processing statistics that is local to the stream.  This will be the topic of a separate post.  However, I will briefly mention that as part of the local processing of flow statistics, it is sometimes necessary to obtain a lock for the central “statistics store”.  This lock should never be required. </li><li>  The main thread periodically needs coordination with all worker threads.  This is done by “publishing” from the main thread to the worker threads, and sometimes from the worker threads back to the main thread.  A block is required for sending so that the published message can be placed in a queue for subsequent delivery.  These locks should never be seriously rivaled, but they can still be technically blocked. </li><li>  When Envoy writes a log to the system error stream (standard error), it acquires a lock on the entire process.  In general, Envoy local logging is considered terrible in terms of performance, so much attention is not paid to its improvement. </li><li>  There are several other random locks, but none of them is critical for performance and should never be disputed. </li></ul><br><h1>  Local thread storage (Thread local storage) </h1><br>  Because of the way Envoy separates the responsibilities of the main thread from those of the workflow, there is a requirement that complex processing can be performed in the main thread and then provided to each workflow with a high degree of parallelism.  This section describes the high level Envoy Thread Local Storage (TLS) system.  In the next section, I will describe how it is used to manage the cluster. <br><br><img src="https://habrastorage.org/webt/hc/e4/bs/hce4bsjgfljckbekacfilceotyq.png"><br><br>  As already described, the main thread handles almost all management functions and control plane functionality in the Envoy process.  The control plane here is a bit overloaded, but if we consider it within the framework of the Envoy process itself and compare it with the shipment that the workflows perform, this seems reasonable.  As a general rule, the main thread process does some work, and then it needs to update each workflow according to the result of this work, <u>and the</u> workflow <u>does not need to set a lock on every access</u> . <br><br>  <b>The TLS (Thread local storage) Envoy system works like this:</b> <br><br><ul><li>  Code running in the main thread can allocate a TLS slot for the entire process.  Although it is abstracted, in practice it is an index in the vector that provides O (1) access. </li><li>  The main thread can set arbitrary data in its slot.  When this is done, data is published in each workflow as a normal event of the event loop. </li><li>  Workflows can read from their TLS slot and retrieve any local stream data available there. </li></ul><br>  Although this is a very simple and incredibly powerful paradigm that is very similar to the concept of RCU blocking (Read-Copy-Update).  Essentially, workflows never see any data changes in TLS slots during job execution.  The change occurs only during the rest period between work events. <br><br>  <b>Envoy uses it in two different ways:</b> <br><br><ul><li>  By storing different data on each workflow, access to this data is carried out without any blocking. </li><li>  Keeping a global pointer to global data in read-only mode on each workflow.  Thus, each workflow has a data reference count, which cannot be reduced during job execution.  Only when all workers calm down and upload new common data will old data be destroyed.  This is identical to RCU. </li></ul><br><h1>  Cluster update threading </h1><br>  In this section, I will describe how TLS (Thread local storage) is used to manage a cluster.  Cluster management includes the processing of the xDS and / or DNS API, as well as health checking. <br><br><img src="https://habrastorage.org/webt/by/jw/4q/byjw4qhlo9xjsprdu9ngi9dop_y.png"><br><br>  <b>Cluster flow control includes the following components and steps:</b> <br><br><ol><li>  The cluster manager is a component within Envoy that manages all known upstream clusters, the CDS (Cluster Discovery Service) API, the Secret Discovery Service (SDS) and Endpoint Discovery Service (SDS) APIs, and active external checks health (health checking).  He is responsible for creating a “eventually agreed” (eventually consistent) view of each upstream (upstream) cluster, which includes the detected hosts, as well as the health status. </li><li>  The health checker performs an active health check and reports changes in the health state to the cluster dispatcher. </li><li>  CDS (Cluster Discovery Service) / SDS (Secret Discovery Service) / EDS (Endpoint Discovery Service) / DNS are performed to determine cluster membership.  The state change is returned to the cluster manager. </li><li>  Each worker thread continuously performs an event loop. </li><li>  When the cluster manager determines that the state for the cluster has changed, it creates a new read-only cluster snapshot and sends it to each workflow. </li><li>  During the next rest period, the worker thread will update the snapshot in the dedicated TLS slot. </li><li>  During an I / O event that the host must determine for load balancing, the load balancer will query the TLS slot (Thread local storage) for host information.  No locks are required for this.  Note also that TLS can also trigger events during an update, so load balancers and other components can recalculate caches, data structures, etc.  This is outside the scope of this post, but is used in various places in the code. </li></ol><br>  Using the above procedure, Envoy can process each request without any locks (other than those described earlier).  In addition to the complexity of the TLS code itself, most of the code does not need to understand how multithreading works, and it can be written in single-threaded mode.  This makes it easier to write most of the code in addition to excellent performance. <br><br><h1>  Other subsystems using TLS (Other subsystems that make use of TLS) </h1><br>  TLS (Thread local storage) and RCU (Read Copy Update) are widely used in Envoy. <br><br>  <b>Examples of using:</b> <br><br><ul><li>  <b>The mechanism for changing the functionality during execution: The</b> current list of the included functionality is calculated in the main thread.  Each worker thread is then provided with a read-only snapshot using RCU semantics. </li><li>  <b>Replacing route tables</b> : For route tables provided by RDS (Route Discovery Service), route tables are created in the main flow.  The read-only snapshot will later be provided to each worker thread using the RCU semantics (Read Copy Update).  This makes changing route tables atomic efficient. </li><li>  <b>HTTP header caching:</b> As it turns out, calculating the HTTP header for each request (when performing ~ 25K + RPS per core) is quite expensive.  Envoy centrally calculates a header about every half second and provides it to each worker through TLS and RCU. </li></ul><br>  There are other cases, but previous examples should provide a good understanding of what TLS is used for. <br><br><h1>  Known performance pitfalls </h1><br>  Although Envoy works quite well overall, there are several known areas that need attention when it is used with very high concurrency and throughput: <br><br><ul><li>  As already described in this article, currently all worker threads get a lock when they are written to the memory buffer of the access log.  With high concurrency and high bandwidth, you will need to package the access logs for each workflow due to unorganized delivery when writing to the final file.  Alternatively, you can create a separate access log for each workflow. </li><li>  Although the statistics are very much optimized, with very high concurrency and throughput, there will probably be atomic competition on individual statistics.  The solution to this problem is counters for one workflow with periodic reset of central counters.  This will be discussed in a subsequent post. </li><li>  The existing architecture will not work well if Envoy is deployed in a scenario in which there are very few connections that require significant resources for processing.  There is no guarantee that connections will be evenly distributed between workflows.  This can be solved by implementing balancing work connections, in which the possibility of exchanging connections between worker threads will be realized. </li></ul><br><h1>  Conclusion </h1><br>  The Envoy threading model is designed to provide ease of programming and massive parallelism through the potentially wasteful use of memory and connections if they are not configured correctly.  This model allows it to work very well with a very high number of flows and throughput. <br><br>  As I briefly mentioned on Twitter, the design can also run on top of a full-featured network stack in user mode, such as the DPDK (Data Plane Development Kit), which can result in normal servers processing millions of requests per second with full L7 processing.  It will be very interesting to see what will be built in the next few years. <br><br>  One last quick comment: I was asked many times why we chose C ++ for Envoy.  The reason still is that this is still the only widely spoken industrial language on which to build the architecture described in this post.  C ++ is definitely not suitable for all or even many projects, but for certain use cases it is still the only tool to do the job (to get the job done). <br><br><h1>  Links to code (Links to code) </h1><br>  <b>Links to files with interfaces and header implementation discussed in this post:</b> <br><br><ul><li>  <a href="">github.com/lyft/envoy/blob/master/include/envoy/thread_local/thread_local.h</a> </li><li>  <a href="">github.com/lyft/envoy/blob/master/source/common/thread_local/thread_local_impl.h</a> </li><li>  <a href="">github.com/lyft/envoy/blob/master/include/envoy/upstream/cluster_manager.h</a> </li><li>  <a href="">github.com/lyft/envoy/blob/master/source/common/upstream/cluster_manager_impl.h</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/449826/">https://habr.com/ru/post/449826/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../449808/index.html">Experiment at Positive Hack Days 9: How critical thinking helps in life and work</a></li>
+<li><a href="../44981/index.html">NVIDIA introduced the expensive, but "sticky" Tesla supercomputer</a></li>
+<li><a href="../449814/index.html">Windows XP is officially dead, now finally</a></li>
+<li><a href="../44982/index.html">GridView, and what it is eaten with (part two, large)</a></li>
+<li><a href="../449824/index.html">The adventures of an iron startup in Russia: the gathering team</a></li>
+<li><a href="../449828/index.html">“Mice cried and pricked ..” Import substitution in practice. Part 4 (theoretical, final). Systems and Services</a></li>
+<li><a href="../44983/index.html">Google suggests keywords for SEO</a></li>
+<li><a href="../449836/index.html">Dell U2419HC: a stylish 24-inch monitor with Full HD and USB-C</a></li>
+<li><a href="../449838/index.html">Artificial intelligence, great and terrible. Part two</a></li>
+<li><a href="../44984/index.html">Size converter function from * KB, * MB, * GB</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

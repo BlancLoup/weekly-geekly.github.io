@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Building blocks distributed applications. Second approximation</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Announcement 
+
+
+ Colleagues, in the middle of summer I plan to release another series of articles on the design of queuing systems: “VTrade Experiment...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Building blocks distributed applications. Second approximation</h1><div class="post__text post__text-html js-mediator-article"><p>  <strong>Announcement</strong> </p><br><p>  <em>Colleagues, in the middle of summer I plan to release another series of articles on the design of queuing systems: “VTrade Experiment” - an attempt to write a framework for trading systems.</em>  <em>In the cycle, the theory and practice of building an exchange, an auction and a store will be analyzed.</em>  <em>At the end of the article I propose to vote for the most interesting topics for you.</em> <em><br></em> </p><br><p><img src="https://habrastorage.org/webt/ee/vo/mu/eevomuwv9mtkcyoawxhqzjjj9iu.jpeg"></p><br><p>  This is the final article of the cycle on distributed reactive applications on Erlang / Elixir.  In the <a href="https://habr.com/ru/post/446028/">first article</a> you can find the theoretical foundations of reactive architecture.  <a href="https://habr.com/ru/post/446108/">The second article</a> illustrates the basic patterns and mechanisms for constructing such systems. </p><br><p>  Today we will raise the issues of development of the code base and projects in general. </p><a name="habracut"></a><br><h2 id="organizaciya-servisov">  Service organization </h2><br><p>  In real life, when developing a service, it is often necessary to combine several interaction patterns in one controller.  For example, the users service, which solves the problem of managing user profiles for a project, should respond to requests for req-resp and report on profile updates via pub-sub.  This case is quite simple: there is one controller for messaging, which implements the service logic and publishes updates. </p><br><p>  The situation is complicated when we need to implement a fault-tolerant distributed service.  Imagine that the requirements for users have changed: </p><br><ol><li>  now the service should process requests on 5 nodes of the cluster, </li><li>  be able to perform background processing tasks, </li><li>  and also be able to dynamically manage subscription lists for profile updates. </li></ol><br><p>  <em>Note:</em> We do not consider the issue of consistent storage and data replication.  Suppose that these issues are resolved earlier and a reliable and scalable storage layer already exists in the system, and the handlers have mechanisms for interacting with it. </p><br><p>  The formal description of the users service has become complicated.  From the point of view of the programmer, thanks to the use of messaging, the changes are minimal.  To satisfy the first requirement, we need to adjust the balancing on the req-resp exchange point. </p><br><p>  The requirement to process background tasks occurs frequently.  In users, this can be the verification of user documents, the processing of downloaded media, or the synchronization of data with social media.  by networks.  These tasks need to be somehow distributed within the cluster and monitored the progress.  Therefore, we have two solutions: either use the task distribution template from the previous article, or, if it does not fit, write a custom task scheduler that will be necessary for us to manage the pool of handlers. </p><br><p>  Point 3 requires an extension of the pub-sub pattern.  And for implementation, after creating the pub-sub exchange point, we need to additionally run the controller of this point as part of our service.  Thus, we seem to take out the logic of processing a subscription and unsubscribing from the messaging layer to the users implementation. </p><br><p>  As a result, the decomposition of the task showed that in order to meet the requirements we need to run 5 instances of the service on different nodes and create an additional entity - the pub-sub controller responsible for the subscription. <br>  To run 5 handlers there is no need to change the service code.  The only additional action is to set up balancing rules on the exchange point, which we will talk about later. <br>  Also, there was an additional difficulty: the pub-sub controller and the custom task scheduler should work in a single copy.  Again, the messaging service, as fundamental, must provide a leader selection mechanism. </p><br><h3 id="vybor-lidera">  Leader selection </h3><br><p>  In distributed systems, the choice of a leader is the procedure for assigning a single process that is responsible for planning the distributed processing of a load. </p><br><p>  In systems that are not prone to centralization, universal algorithms and algorithms based on consensus, such as paxos or raft, are used. <br>  Since messaging is a broker and a central element, it knows about all service controllers — candidates for leadership.  Messaging can appoint a leader without a vote. </p><br><p> All services after starting and connecting to the exchange point receive the system message <code>#'$leader'{exchange = ?EXCHANGE, pid = LeaderPid, servers = Servers}</code> .  If the <code>LeaderPid</code> matches the <code>pid</code> current process, it is assigned the leader, and the <code>Servers</code> list includes all nodes and their parameters. <br>  At the time of the emergence of a new and disconnected cluster node, all service controllers receive <code>#'$slave_up'{exchange = ?EXCHANGE, pid = SlavePid, options = SlaveOpts}</code> and <code>#'$slave_down'{exchange = ?EXCHANGE, pid = SlavePid, options = SlaveOpts}</code> respectively. </p><br><p>  Thus, all components are aware of all changes, and in a cluster at one time moment one leader is guaranteed. </p><br><h2 id="posredniki">  Mediators </h2><br><p>  To implement complex distributed processing processes, as well as in optimization problems of an existing architecture, it is convenient to use intermediaries. <br>  In order not to change the service code and solve, for example, additional processing, routing or message logging tasks, you can enable the proxy handler before the service, which will do all the extra work. </p><br><p>  A classic example of a pub-sub optimization is a distributed application with a business core that generates update events, such as a price change in the market, and an access layer — N servers that provide the websocket API for web clients. <br>  If you decide "in the forehead," customer service is as follows: </p><br><ul><li>  the client is connecting to the platform.  On the server side, which terminates traffic, the process that starts this connection is launched. </li><li>  in the context of the serving process, authorization and subscription to updates take place.  The process calls the subscribe method for topics. </li><li>  after generating an event in the kernel, it is delivered to the processes serving the connections. </li></ul><br><p>  Imagine that we have 50,000 subscribers to the topic “news”.  Subscribers are distributed across 5 servers evenly.  As a result, each update, coming to the exchange point, will be replicated 50,000 times: 10,000 times to each server, according to the number of subscribers on it.  Not exactly an effective scheme, right? <br>  To improve the situation, we introduce a proxy, having the same name with the exchange point.  A global name registrar should be able to return the closest process by name, this is important. </p><br><p>  We will run this proxy on the access layer servers, and all our processes serving websocket api will subscribe to it, and not to the original pub-sub exchange point in the kernel.  Proxy subscribes to the kernel only in case of a unique subscription and replicates the received message to all its subscribers. <br>  As a result, 5 messages will be forwarded between the kernel and access servers, instead of 50,000. </p><br><h2 id="marshrutizaciya-i-balansirovka">  Routing and balancing </h2><br><h3 id="req-resp">  Req-resp </h3><br><p>  In the current messaging implementation, there are 7 query distribution strategies: </p><br><ul><li>  <code>default</code> .  The request is transmitted to all controllers. </li><li>  <code>round-robin</code> .  The search and cyclic distribution of requests among controllers is carried out. </li><li>  <code>consensus</code> .  Controllers serving the service are divided into leader and slave.  Requests are transmitted only to the leader. </li><li>  <code>consensus &amp; round-robin</code> .  The group has a leader, but requests are shared among all members. </li><li>  <code>sticky</code> .  The hash function is computed and assigned to a specific handler.  Subsequent requests with this signature go to the same handler. </li><li>  <code>sticky-fun</code> .  When the exchange point is initialized, the function of calculating the hash for <code>sticky</code> balancing is additionally transferred. </li><li>  <code>fun</code> .  Similar to sticky-fun, only you can additionally redirect, reject, or preprocess it. </li></ul><br><p>  The distribution strategy is set when the exchange point is initialized. </p><br><p>  In addition to balancing messaging allows you to tag entities.  Consider the types of tags in the system: </p><br><ul><li>  Connection tag.  It allows you to understand what connection the events came through.  Used when the controller process connects to the same exchange point, but with different routing keys. </li><li>  Service tag.  Allows for one service to aggregate handlers into groups and expand the possibilities of routing and balancing.  For req-resp pattern routing is linear.  We send a request to the exchange point, then it sends it to the service.  But if we need to break handlers into logical groups, then splitting is done with the help of tags.  When specifying the tag, the request will be sent to a specific group of controllers. </li><li>  Request tag  Allows you to distinguish the answers.  Since our system is asynchronous, to process the responses of the service, you need to be able to specify RequestTag when sending a request.  According to it, we can understand the answer to which request came to us. </li></ul><br><h3 id="pub-sub">  Pub sub </h3><br><p>  For pub-sub everything is a bit easier.  We have a point of exchange for which messages are published.  The exchange point distributes messages between subscribers who have subscribed to the routing keys they need (we can say that this is an analogue of those). </p><br><h2 id="masshtabiruemost-i-otkazoustoychivost">  Scalability and resiliency </h2><br><p>  The scalability of the system as a whole depends on the degree of scalability of the layers and components of the system: </p><br><ul><li>  Services are scaled by adding additional nodes to the cluster with handlers for this service.  During trial operation, you can select the optimal balancing policy. </li><li>  The very same messaging service within a separate cluster in the general case is scaled either by moving specially loaded exchange points to separate cluster nodes, or by adding proxy processes to specially loaded areas of the cluster. </li><li>  The scalability of the entire system as a characteristic depends on the flexibility of the architecture and the possibility of combining individual clusters into a common logical entity. </li></ul><br><p>  The success of a project often depends on simplicity and speed of scaling.  Messaging in the current performance grows with the application.  Even if we lack a cluster of 50-60 cars, we can resort to the federation.  Unfortunately, the topic of federation is beyond the scope of this article. </p><br><h2 id="rezervirovanie">  Reservation </h2><br><p>  When parsing load balancing, we have already discussed the redundancy of service controllers.  However, messaging must also be reserved.  In the event of a node or machine crash, messaging should automatically recover, and in the shortest possible time. </p><br><p>  In my projects I use additional nodes that pick up the load in case of a fall.  In Erlang, there is a standard distributed mode implementation for OTP applications.  Distributed mode performs the restoration in the event of a failure by running the fallen application on another previously running node.  The process is transparent, after a failure, the application moves automatically to the failover node.  You can read more about this functionality <a href="http://erlang.org/doc/design_principles/distributed_applications.html">here</a> . </p><br><h2 id="proizvoditelnost">  Performance </h2><br><p>  Let's try to at least approximately compare the performance of rabbitmq and our custom messaging. <br>  I found the <a href="https://docs.openstack.org/developer/performance-docs/test_results/mq/rabbitmq/cmsm/index.html">official</a> rabbitmq test results from the openstack team. </p><br><p>  In clause 6.14.1.2.1.2.2.  The original document presents the result of RPC CAST: <br><img src="https://habrastorage.org/webt/bz/qq/us/bzqqussv9flqi-wvzhgj8i43wcw.png"></p><br><p>  We will not make any additional settings in the OS kernel or erlang VM.  Conditions for testing: </p><br><ul><li>  erl opts: + A1 + sbtu. </li><li>  A test within one erlang node runs on a laptop with an old i7 in a mobile version. </li><li>  Cluster tests are performed on servers with 10G network. </li><li>  The code works in docker containers.  Network in NAT mode. </li></ul><br><p>  Test code: </p><br><pre> <code class="erlang hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">req_resp_bench</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(_)</span></span></span><span class="hljs-function"> -&gt;</span></span> W = perftest:comprehensive(<span class="hljs-number"><span class="hljs-number">10000</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">fun</span></span>() -&gt; messaging:request(?EXCHANGE, default, ping, self()), <span class="hljs-keyword"><span class="hljs-keyword">receive</span></span> #'$msg'{message = pong} -&gt; ok <span class="hljs-keyword"><span class="hljs-keyword">after</span></span> <span class="hljs-number"><span class="hljs-number">5000</span></span> -&gt; throw(timeout) <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> ), <span class="hljs-literal"><span class="hljs-literal">true</span></span> = lists:any(<span class="hljs-keyword"><span class="hljs-keyword">fun</span></span>(E) -&gt; E &gt;= <span class="hljs-number"><span class="hljs-number">30000</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>, W), ok.</code> </pre> <br><p>  <em>Scenario 1:</em> The test runs on a laptop with an old i7 mobile performance.  Test, messaging and service are performed on one node in the same docker-container: </p><br><pre> <code class="plaintext hljs">Sequential 10000 cycles in ~0 seconds (26987 cycles/s) Sequential 20000 cycles in ~1 seconds (26915 cycles/s) Sequential 100000 cycles in ~4 seconds (26957 cycles/s) Parallel 2 100000 cycles in ~2 seconds (44240 cycles/s) Parallel 4 100000 cycles in ~2 seconds (53459 cycles/s) Parallel 10 100000 cycles in ~2 seconds (52283 cycles/s) Parallel 100 100000 cycles in ~3 seconds (49317 cycles/s)</code> </pre> <br><p>  <em>Scenario 2</em> : 3 nodes running on different machines under docker (NAT). </p><br><pre> <code class="plaintext hljs">Sequential 10000 cycles in ~1 seconds (8684 cycles/s) Sequential 20000 cycles in ~2 seconds (8424 cycles/s) Sequential 100000 cycles in ~12 seconds (8655 cycles/s) Parallel 2 100000 cycles in ~7 seconds (15160 cycles/s) Parallel 4 100000 cycles in ~5 seconds (19133 cycles/s) Parallel 10 100000 cycles in ~4 seconds (24399 cycles/s) Parallel 100 100000 cycles in ~3 seconds (34517 cycles/s)</code> </pre> <br><p>  In all cases, CPU utilization did not exceed 250%. </p><br><h2 id="itogi">  Results </h2><br><p>  I hope this cycle does not look like a consciousness dump and my experience will bring real benefits to both distributed system researchers and practitioners who are at the very beginning of building distributed architectures for their business systems and look at Erlang / Elixir with interest, but they doubt is it worth ... </p><br><p>  Photo <a href="https://unsplash.com/photos/Q4bmoSPJM18">@chuttersnap</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/446344/">https://habr.com/ru/post/446344/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../446334/index.html">Thinking about IT careers and tips for beginners</a></li>
+<li><a href="../446336/index.html">How to disable standard passwords and make everyone hate you</a></li>
+<li><a href="../446338/index.html">SVG 3D: create, rotate and animate</a></li>
+<li><a href="../446340/index.html">Operating Systems: Three Easy Pieces. Part 1: Intro (translation)</a></li>
+<li><a href="../446342/index.html">The Impact of Transparent Huge Pages on System Performance</a></li>
+<li><a href="../446346/index.html">Develop applications for Android - as if to be (demonetized) by YouTube</a></li>
+<li><a href="../446348/index.html">Simple JSON-RPC-like API for PHP</a></li>
+<li><a href="../446350/index.html">What eventually killed AirPower</a></li>
+<li><a href="../446352/index.html">Protection without protection</a></li>
+<li><a href="../446354/index.html">Security Week 14: ShadowHammer and supply chain</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Simplest command line on NASM and QEMU</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="So, immediately to the point. We will write under Linux, on NASM and using QEMU. Installing this is easy, so skip this step. 
+
+
+ It is understood that...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Simplest command line on NASM and QEMU</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/-m/3u/a3/-m3ua33_7vl-xeb4pg1o8qacclg.png" alt="image"></p><br><p>  So, immediately to the point.  We will write under Linux, on NASM and using QEMU.  Installing this is easy, so skip this step. </p><br><p>  It is understood that the reader is familiar with the syntax of NASM at least at a basic level (however, there will be nothing particularly complicated here) and understands what registers are. </p><a name="habracut"></a><br><h2 id="bazovaya-teoriya">  Basic theory </h2><br><p>  The first thing that starts the processor when the computer is turned on is the BIOS code (or UEFI, but here I will only talk about the BIOS), which is "sewn up" in the motherboard's memory (specifically - at 0xFFFFFFF0). </p><br><p>  Immediately after powering on, the BIOS launches Power-On Self-Test (POST) - a self-test after powering on.  The BIOS checks the memory, detects and initializes the connected devices, checks the registers, determines the size of the memory, and so on and so on. </p><br><p>  The next step is to define a boot disk from which you can boot the OS.  A boot disk is a disk (or any other drive) whose last 2 bytes of the first sector (the first sector means the first 512 bytes of the drive, since 1 sector = 512 bytes) is 55 and AA (in hexadecimal).  Once the boot disk is found, the BIOS will load its first 512 bytes into RAM at 0x7c00 and transfer control to the processor at that address. </p><br><p>  Of course, in these 512 bytes will not work to fit a full-fledged operating system.  Therefore, it is usually in this sector that the primary loader is put, which loads the main OS code into RAM and transfers control to it. </p><br><p>  From the very beginning, the processor operates in Real Mode (= 16-bit mode).  This means that it can work only with 16-bit data and uses segment addressing of memory, and can also address only 1 MB of memory.  But we will not use the second one here.  The picture below shows the state of the RAM when control is transferred to our code (the picture is taken <a href="http://www.cs.bham.ac.uk/~exr/lectures/opsys/10_11/lectures/os-dev.pdf">from here</a> ). </p><br><p><img src="https://habrastorage.org/webt/qs/xb/jr/qsxbjr6em-78cr7d6xj7_nh86bg.png" alt="image"></p><br><p>  The last thing to say before the practical part is the interruption.  An interrupt is a special signal (for example, from an input device, such as a keyboard or mouse) to a processor that says you need to immediately interrupt the execution of the current code and execute the code for the interrupt handler.  All addresses of interrupt handlers are in the Interrupt Descriptor Table (IDT) in RAM.  Each interrupt has its own interrupt handler.  For example, when you press a keyboard key, an interrupt is triggered, the processor stops, remembers the address of the interrupted instruction, saves all values ​​of its registers (on the stack), and proceeds to execute the interrupt handler.  As soon as its execution ends, the processor restores the values ​​of the registers and goes back to the interrupted instruction and continues execution. </p><br><p>  For example, the BIOS uses the 0x10 interrupt (hexadecimal format), and the 0x16 interrupt is used to wait for a key to be pressed.  In fact, these are all interruptions that we need here. </p><br><p>  Also, each interrupt has its own subfunction, which determines the peculiarity of its behavior.  To display something on the screen in text format (!), You need to enter the value 0x0e in the AH register.  In addition, interrupts have their own parameters.  0x10 takes values ​​from ah (defines a specific subfunction) and al (the character to be output).  In this way, </p><br><pre><code class="plaintext hljs">mov ah, 0x0e mov al, 'x' int 0x10</code> </pre> <br><p>  will display the character 'x'.  0x16 takes a value from ah (a specific sub-function) and loads into the register al the value of the entered key.  We will use the function 0x0. </p><br><h2 id="prakticheskaya-chast">  Practical part </h2><br><p>  Let's start with the auxiliary code.  We will need two-line comparison functions and a line output function on the screen.  I tried to describe as clearly as possible the operation of these functions in the comments. </p><br><p>  str_compare.asm: </p><br><pre> <code class="plaintext hljs">compare_strs_si_bx: push si ;         push bx push ax comp: mov ah, [bx] ;     , cmp [si], ah ;      ah jne not_equal ;    ,     cmp byte [si], 0 ;    ,    je first_zero ;    inc si ;     bx  si inc bx jmp comp ;   first_zero: cmp byte [bx], 0 ;    bx != 0,  ,   jne not_equal ;  ,    not_equal mov cx, 1 ;     ,  cx = 1 pop si ;     pop bx pop ax ret ;     not_equal: mov cx, 0 ;  ,  cx = 0 pop si ;    pop bx pop ax ret ;    </code> </pre> <br><p>  The function takes the SI and BX registers as parameters.  If the lines are equal, then CX is set to 1, otherwise - 0. </p><br><p>  It is also worth noting that the registers AX, BX, CX and DX are divided into two single-byte parts: AH, BH, CH, and DH for the high byte, and AL, BL, CL and DL for the low byte. </p><br><p>  Initially, it is implied that bx and si are pointers (!) (That is, stores the address in memory) to some address in the memory where the beginning of the line is located.  Operation [bx] takes a pointer from bx, passes to that address, and takes some value from there.  inc bx means that the pointer will now refer to the address immediately following the original address. </p><br><p>  print_string.asm: </p><br><pre> <code class="plaintext hljs">print_string_si: push ax ;  ax   mov ah, 0x0e ;  ah  0x0e,    call print_next_char ;  pop ax ;  ax ret ;   print_next_char: mov al, [si] ;    cmp al, 0 ;  si  jz if_zero ;     int 0x10 ;     al inc si ;    jmp print_next_char ;   ... if_zero: ret</code> </pre> <br><p>  As a parameter, the function accepts the SI register and prints a string, byte by byte. </p><br><p>  We now turn to the main code.  To begin with, let's define all variables (this code will be located at the very end of the file): </p><br><pre> <code class="plaintext hljs">; 0x0d -   , 0xa -    wrong_command: db "Wrong command!", 0x0d, 0xa, 0 greetings: db "The OS is on. Type 'help' for commands", 0x0d, 0xa, 0xa, 0 help_desc: db "Here's nothing to show yet. But soon...", 0x0d, 0xa, 0 goodbye: db 0x0d, 0xa, "Goodbye!", 0x0d, 0xa, 0 prompt: db "&gt;", 0 new_line: db 0x0d, 0xa, 0 help_command: db "help", 0 input: times 64 db 0 ;   - 64  times 510 - ($-$$) db 0 dw 0xaa55</code> </pre> <br><p>  The carriage return character moves the carriage to the left edge of the screen, that is, at the beginning of the line. </p><br><pre> <code class="plaintext hljs">input: times 64 db 0</code> </pre> <br><p>  means that we allocate 64 bytes for the input buffer and fill them with zeros. </p><br><p>  The remaining variables are needed to display some information, then you will understand by the code why they are all needed. </p><br><pre> <code class="plaintext hljs">times 510 - ($-$$) db 0 dw 0xaa55</code> </pre> <br><p>  means that we explicitly set the size of the output file (with the .bin extension) as 512 bytes, fill the first 510 bytes with zeros (of course, they are filled before the execution of the entire code), and the last two bytes - with the same "magic" bytes 55 and AA .  $ means the address of the current instruction, and $$ - the address of the very first instruction of our code. </p><br><p>  Let's go to the actual code: </p><br><pre> <code class="plaintext hljs">org 0x7c00 ; (1) bits 16 ; (2) jmp start ;    start %include "print_string.asm" ;     %include "str_compare.asm" ; ==================================================== start: mov ah, 0x00 ;   (3) mov al, 0x03 int 0x10 mov sp, 0x7c00 ;   (4) mov si, greetings ;    call print_string_si ;      mainloop</code> </pre> <br><p>  (one).  This command makes it clear to NASM that we are executing code, starting at address 0x7c00.  This allows it to automatically offset all addresses relative to this address, so that we do not explicitly do this. <br>  (2).  This command instructs NASM to operate in 16-bit mode. <br>  (3).  When launching, QEMU prints on the screen a lot of unnecessary information to us.  To do this, set to ah 0x00, to al 0x03 and call 0x10 to clear the screen of everything. <br>  (four).  To save registers on the stack, you need to specify at what address its vertex will be located using the stack pointer SP.  SP will indicate the area in memory in which the next value will be written.  Add a value to the stack - SP goes down through memory by 2 bytes (since we are in Real Mode, where all the register operands are 16-bit, that is, two-byte values).  We specified 0x7c00, so the values ​​in the stack will be stored right next to our code in memory.  Once again - the stack grows down (!).  This means that the more values ​​there are in the stack, the smaller the memory pointer will be indicated by the stack pointer SP. </p><br><pre> <code class="plaintext hljs">mainloop: mov si, prompt ;   call print_string_si call get_input ;     jmp mainloop ;  mainloop...</code> </pre> <br><p>  The main loop.  Here, with each iteration, we print the character "&gt;", after which we call the get_input function, which implements work with keyboard interruption. </p><br><pre> <code class="plaintext hljs">get_input: mov bx, 0 ;  bx      input_processing: mov ah, 0x0 ;    0x16 int 0x16 ;  ASCII  cmp al, 0x0d ;   enter je check_the_input ;   ,   ,  ;    cmp al, 0x8 ;   backspace je backspace_pressed cmp al, 0x3 ;   ctrl+c je stop_cpu mov ah, 0x0e ;     -   ;     int 0x10 mov [input+bx], al ;       inc bx ;   cmp bx, 64 ;  input  je check_the_input ;    ,    enter jmp input_processing ;   </code> </pre> <br><p>  (1) [input + bx] means that we take the address of the beginning of the input input buffer and add bx to it, that is, we get to bx + the 1st element of the buffer. </p><br><pre> <code class="plaintext hljs">stop_cpu: mov si, goodbye ;   call print_string_si jmp $ ;    ; $    </code> </pre> <br><p>  Everything is simple here - if you press Ctrl + C, the computer just infinitely performs the jmp $ function. </p><br><pre> <code class="plaintext hljs">backspace_pressed: cmp bx, 0 ;  backspace ,  input ,  je input_processing ;    mov ah, 0x0e ;  backspace.  ,   int 0x10 ;   ,      mov al, ' ' ;      ,  int 0x10 ;   mov al, 0x8 ;       int 0x10 ;     backspace dec bx mov byte [input+bx], 0 ;    input   jmp input_processing ;   </code> </pre> <br><p>  In order not to erase the '&gt;' character when pressing the backspace, we check if the input is empty.  If not, we do nothing. </p><br><pre> <code class="plaintext hljs">check_the_input: inc bx mov byte [input+bx], 0 ;     ,   ;  (  '\0'  ) mov si, new_line ;     call print_string_si mov si, help_command ;  si     help mov bx, input ;   bx -   call compare_strs_si_bx ;  si  bx (  help) cmp cx, 1 ; compare_strs_si_bx   cx 1,  ;     je equal_help ;  =&gt;    ;  help jmp equal_to_nothing ;   ,   "Wrong command!"</code> </pre> <br><p>  Here, I think everything is clear from the comments. </p><br><pre> <code class="plaintext hljs">equal_help: mov si, help_desc call print_string_si jmp done equal_to_nothing: mov si, wrong_command call print_string_si jmp done</code> </pre> <br><p>  Depending on what was entered, we output either the text of the variable help_desc, or the text of the variable wrong_command. </p><br><pre> <code class="plaintext hljs">; done    input done: cmp bx, 0 ;     input   je exit ;   ,    mainloop dec bx ;  ,      mov byte [input+bx], 0 jmp done ;       exit: ret</code> </pre> <br><p>  Actually, the whole code is: </p><br><p>  prompt.asm: </p><br><pre> <code class="plaintext hljs">org 0x7c00 bits 16 jmp start ;    start %include "print_string.asm" %include "str_compare.asm" ; ==================================================== start: cli ;  ,    ;     mov ah, 0x00 ;   mov al, 0x03 int 0x10 mov sp, 0x7c00 ;   mov si, greetings ;    call print_string_si ;      mainloop mainloop: mov si, prompt ;   call print_string_si call get_input ;     jmp mainloop ;  mainloop... get_input: mov bx, 0 ;  bx      input_processing: mov ah, 0x0 ;    0x16 int 0x16 ;  ASCII  cmp al, 0x0d ;   enter je check_the_input ;   ,   ,  ;    cmp al, 0x8 ;   backspace je backspace_pressed cmp al, 0x3 ;   ctrl+c je stop_cpu mov ah, 0x0e ;     -   ;     int 0x10 mov [input+bx], al ;       inc bx ;   cmp bx, 64 ;  input  je check_the_input ;    ,    enter jmp input_processing ;    stop_cpu: mov si, goodbye ;   call print_string_si jmp $ ;    ; $     backspace_pressed: cmp bx, 0 ;  backspace ,  input ,  je input_processing ;    mov ah, 0x0e ;  backspace.  ,   int 0x10 ;   ,      mov al, ' ' ;      ,  int 0x10 ;   mov al, 0x8 ;       int 0x10 ;     backspace dec bx mov byte [input+bx], 0 ;    input   jmp input_processing ;    check_the_input: inc bx mov byte [input+bx], 0 ;     ,   ;  (  '\0'  ) mov si, new_line ;     call print_string_si mov si, help_command ;  si     help mov bx, input ;   bx -   call compare_strs_si_bx ;  si  bx (  help) cmp cx, 1 ; compare_strs_si_bx   cx 1,  ;     je equal_help ;  =&gt;    ;  help jmp equal_to_nothing ;   ,   "Wrong command!" equal_help: mov si, help_desc call print_string_si jmp done equal_to_nothing: mov si, wrong_command call print_string_si jmp done ; done    input done: cmp bx, 0 ;     input   je exit ;   ,    mainloop dec bx ;  ,      mov byte [input+bx], 0 jmp done ;       exit: ret ; 0x0d -   , 0xa -    wrong_command: db "Wrong command!", 0x0d, 0xa, 0 greetings: db "The OS is on. Type 'help' for commands", 0x0d, 0xa, 0xa, 0 help_desc: db "Here's nothing to show yet. But soon...", 0x0d, 0xa, 0 goodbye: db 0x0d, 0xa, "Goodbye!", 0x0d, 0xa, 0 prompt: db "&gt;", 0 new_line: db 0x0d, 0xa, 0 help_command: db "help", 0 input: times 64 db 0 ;   - 64  times 510 - ($-$$) db 0 dw 0xaa55</code> </pre><br><p>  To compile all of this, enter the command: </p><br><pre> <code class="plaintext hljs">nasm -f bin prompt.asm -o bootloader.bin</code> </pre> <br><p>  And we get a binary with our code at the output.  Now run the QEMU emulator with this file (-monitor stdio allows you to print the register value at any time using the print $ reg command): </p><br><pre> <code class="plaintext hljs">qemu-system-i386 bootloader.bin -monitor stdio</code> </pre> <br><p>  And we get the output: </p><br><p><img src="https://habrastorage.org/webt/fq/h2/_7/fqh2_7m_r8mnne4pfo7x4sqvc4k.png" alt="image"></p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/442428/">https://habr.com/ru/post/442428/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../442408/index.html">Universal machine for carrying out tests do yourself part 1</a></li>
+<li><a href="../442414/index.html">Studying at a foreign university from the first person</a></li>
+<li><a href="../442416/index.html">Digest of research and development of ITMO University: discussing trends and new achievements of scientists</a></li>
+<li><a href="../442422/index.html">The enthusiast recreated the Sound Blaster 1.0 sound card - we tell you what the project is notable for.</a></li>
+<li><a href="../442424/index.html">YouTube closes comments on videos with young children</a></li>
+<li><a href="../442430/index.html">The digest of interesting materials for the mobile developer # 288 (February 24 - March 3)</a></li>
+<li><a href="../442432/index.html">[On the docks] Flutter. Part 1. For Android developers</a></li>
+<li><a href="../442434/index.html">7 recommendations on the analysis of the top 70 growth parameters of the site in 2019 in Yandex</a></li>
+<li><a href="../442438/index.html">A first glance at JavaScript through the eyes of a Java developer</a></li>
+<li><a href="../442440/index.html">Create Android apps using Anko Layouts and Anko Coroutines</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

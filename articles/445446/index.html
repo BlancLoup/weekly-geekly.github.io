@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How we used deferred replication for disaster recovery with PostgreSQL</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Replication is not a backup. Or not? This is how we used deferred replication for recovery by accidentally deleting shortcuts. 
+
+
+ Infrastructure spec...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How we used deferred replication for disaster recovery with PostgreSQL</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/d5/ij/ht/d5ijhtuldyyxn2aomtg2r4sdvum.jpeg"></p><br><p>  Replication is not a backup.  Or not?  This is how we used deferred replication for recovery by accidentally deleting shortcuts. </p><br><p>  <a href="https://about.gitlab.com/handbook/engineering/infrastructure/">Infrastructure specialists</a> at GitLab are responsible for running <a href="https://gitlab.com/">GitLab.com</a> - the largest instance of GitLab in nature.  There are 3 million users and almost 7 million projects, and this is one of the largest open source SaaS sites with dedicated architecture.  Without the PostgreSQL database system, the GitLab.com infrastructure will not go far, and what we are not doing for fault tolerance in case of any failures when data can be lost.  It is unlikely that such a catastrophe will happen, but we are well prepared and stocked up with different backup and replication mechanisms. </p><br><p> Replication is not a database backup tool ( <a href="https://about.gitlab.com/2019/02/13/delayed-replication-for-disaster-recovery-with-postgresql/">see below</a> ).  But now we will see how to quickly restore accidentally deleted data using deferred replication: on <a href="https://gitlab.com/">GitLab.com, the</a> user <a href="https://gitlab.com/gitlab-com/gl-infra/production/issues/509">removed the shortcut</a> for the <a href="https://gitlab.com/gitlab-org/gitlab-ce/"><code>gitlab-ce</code></a> project and lost connections with merge-requests and tasks. </p><br><p>  With a deferred replica, we recovered the data in just 1.5 hours.  See how it was. </p><a name="habracut"></a><br><h3 id="vosstanovlenie-na-moment-vremeni-s-postgresql">  Point-in-Time Recovery with PostgreSQL </h3><br><p>  PostgreSQL has a built-in function that restores the state of the database to a specific point in time.  It is called <a href="https://www.postgresql.org/docs/current/continuous-archiving.html">Point-in-Time Recovery</a> (PITR) and uses the same mechanisms that keep the replica current: starting with a reliable snapshot of the entire database cluster (basic backup), we apply a number of state changes up to a certain point in time. </p><br><p>  To use this feature for cold backup, we regularly make a basic backup of the database and store it in the archive (GitLab archives live in <a href="https://cloud.google.com/storage/">the Google cloud storage</a> ).  We also keep track of changes in the state of the database by archiving the <a href="https://www.postgresql.org/docs/current/wal-intro.html">write-ahead log</a> (WAL).  And with all of this, we can perform PITR for disaster recovery: we start with a snapshot taken before the error and apply the changes from the WAL archive to the point of failure. </p><br><h3 id="chto-takoe-otlozhennaya-replikaciya">  What is deferred replication? </h3><br><p>  Delayed replication is the application of changes from WAL with a delay.  That is, the transaction occurred at hour <code>X</code> , but in the replica it appears with a delay of <code>d</code> per hour <code>X + d</code> . </p><br><p>  PostgreSQL has 2 ways to set up a physical replica of the database: recovery from the archive and streaming replication.  <a href="https://www.postgresql.org/docs/current/archive-recovery-settings.html">Recovery from the archive</a> , in fact, works like PITR, but continuously: we constantly retrieve changes from the WAL archive and apply them to the replica.  And <a href="https://wiki.postgresql.org/wiki/Streaming_Replication">streaming replication</a> directly extracts the WAL stream from the upstream database host.  We prefer to restore from the archive - it is easier to manage and it has normal performance, which is not far behind the working cluster. </p><br><h3 id="kak-nastroit-otlozhennoe-vosstanovlenie-iz-arhiva">  How to configure deferred recovery from the archive </h3><br><p>  <a href="https://www.postgresql.org/docs/current/recovery-config.html">Recovery options are</a> described in the file <code>recovery.conf</code> .  Example: </p><br><pre> <code class="plaintext hljs">standby_mode = 'on' restore_command = '/usr/bin/envdir /etc/wal-ed/env /opt/wal-e/bin/wal-e wal-fetch -p 4 "%f" "%p"' recovery_min_apply_delay = '8h' recovery_target_timeline = 'latest'</code> </pre> <br><p>  With these parameters, we set up a deferred replica with recovery from the archive.  Here, <a href="https://github.com/wal-e/wal-e">wal-e is used</a> to extract WAL segments ( <code>restore_command</code> ) from the archive, and the changes will be applied after eight hours ( <code>recovery_min_apply_delay</code> ).  The replica will track changes in the timeline in the archive, for example, due to failover in the cluster ( <code>recovery_target_timeline</code> ). </p><br><p>  With <code>recovery_min_apply_delay</code> you can configure streaming replication with a delay, but there are a couple of tricks that are associated with replication slots, hot spare feedback and so on.  The WAL archive allows you to avoid them. </p><br><p>  The <code>recovery_min_apply_delay</code> appeared only in PostgreSQL 9.3.  In previous versions, for deferred replication, you need to configure a combination <a href="https://www.postgresql.org/docs/9.3/functions-admin.html">of recovery management functions</a> ( <code>pg_xlog_replay_pause(), pg_xlog_replay_resume()</code> ) or keep WAL segments in the archive for the duration of the delay. </p><br><h3 id="kak-postgresql-eto-delaet">  How does PostgreSQL do it? </h3><br><p>  It's interesting to see how PostgreSQL implements deferred recovery.  Let's look at <a href=""><code>recoveryApplyDelay(XlogReaderState)</code></a> .  It is called from the <a href="">main repeat cycle</a> for each entry from the WAL. </p><br><pre> <code class="plaintext hljs">static bool recoveryApplyDelay(XLogReaderState *record) { uint8 xact_info; TimestampTz xtime; long secs; int microsecs; /* nothing to do if no delay configured */ if (recovery_min_apply_delay &lt;= 0) return false; /* no delay is applied on a database not yet consistent */ if (!reachedConsistency) return false; /* * Is it a COMMIT record? * * We deliberately choose not to delay aborts since they have no effect on * MVCC. We already allow replay of records that don't have a timestamp, * so there is already opportunity for issues caused by early conflicts on * standbys. */ if (XLogRecGetRmid(record) != RM_XACT_ID) return false; xact_info = XLogRecGetInfo(record) &amp; XLOG_XACT_OPMASK; if (xact_info != XLOG_XACT_COMMIT &amp;&amp; xact_info != XLOG_XACT_COMMIT_PREPARED) return false; if (!getRecordTimestamp(record, &amp;xtime)) return false; recoveryDelayUntilTime = TimestampTzPlusMilliseconds(xtime, recovery_min_apply_delay); /* * Exit without arming the latch if it's already past time to apply this * record */ TimestampDifference(GetCurrentTimestamp(), recoveryDelayUntilTime, &amp;secs, &amp;microsecs); if (secs &lt;= 0 &amp;&amp; microsecs &lt;= 0) return false; while (true) { // Shortened: // Use WaitLatch until we reached recoveryDelayUntilTime // and then break; } return true; }</code> </pre> <br><p>  The bottom line is that the delay is based on the physical time recorded in the time stamp of the transaction commit ( <code>xtime</code> ).  As you can see, the delay is applied only to commits and does not touch other entries - all changes are applied directly, and the commit is postponed, so that we will see changes only after the configured delay. </p><br><h3 id="kak-ispolzovat-otlozhennuyu-repliku-dlya-vosstanovleniya-dannyh">  How to use deferred replica for data recovery </h3><br><p>  Suppose we have a database cluster and a replica with an eight-hour delay in production.  Let's see how to recover data using the example of <a href="https://gitlab.com/gitlab-com/gl-infra/production/issues/509">accidental deletion of shortcuts</a> . </p><br><p>  When we learned about the problem, we <a href="https://www.postgresql.org/docs/9.3/functions-admin.html">suspended the restore from the archive</a> for the deferred replica: </p><br><pre> <code class="plaintext hljs">SELECT pg_xlog_replay_pause();</code> </pre> <br><p>  With a pause, we had no risk that the replica would repeat the <code>DELETE</code> request.  A useful thing if you need time to figure it out. </p><br><p>  The bottom line is that the deferred replica should go to the point before the <code>DELETE</code> request.  We roughly knew the physical removal time.  We removed <code>recovery_min_apply_delay</code> and added <code>recovery_target_time</code> to <code>recovery.conf</code> .  So the replica comes to the right moment without delay: </p><br><pre> <code class="plaintext hljs">recovery_target_time = '2018-10-12 09:25:00+00'</code> </pre> <br><p>  With time stamps it is better to reduce the excess, so as not to miss.  True, the more the decrease, the more data we lose.  Again, if we skip the <code>DELETE</code> request, everything will be deleted again and you will have to start over (or even take a cold backup for PITR). </p><br><p>  We restarted the postponed Postgres instance, and the WAL segments were repeated until the specified time.  You can track progress at this stage by asking: </p><br><pre> <code class="plaintext hljs">SELECT -- current location in WAL pg_last_xlog_replay_location(), -- current transaction timestamp (state of the replica) pg_last_xact_replay_timestamp(), -- current physical time now(), -- the amount of time still to be applied until recovery_target_time has been reached '2018-10-12 09:25:00+00'::timestamptz - pg_last_xact_replay_timestamp() as delay;</code> </pre> <br><p>  If the timestamp no longer changes, recovery is complete.  You can configure the <a href="https://www.postgresql.org/docs/current/recovery-target-settings.html"><code>recovery_target_action</code></a> action to close, promote, or pause the instance after the replay (by default, it pauses). </p><br><p>  The database has come to a state before that ill-fated query.  Now you can, for example, export data.  We exported the deleted label data and all links to tasks and merge requests and transferred them to the working database.  If the losses are massive, you can simply push the line and use it as the main one.  But then all changes will be lost after the moment before which we are restored. </p><br><p>  Instead of time stamps, it is better to use transaction IDs.  It is useful to write these IDs, for example, for DDL statements (of type <code>DROP TABLE</code> ), using <code>log_statements = 'ddl'</code> .  If we had a transaction ID, we would have taken <code>recovery_target_xid</code> and drove everything down to the transaction before the <code>DELETE</code> request. </p><br><p>  Back to work is very simple: remove all changes from <code>recovery.conf</code> and restart Postgres.  Soon an eight-hour delay will reappear in the replica, and we are ready for future trouble. </p><br><h3 id="preimuschestva-dlya-vosstanovleniya">  Benefits for Recovery </h3><br><p>  With a deferred replica instead of a cold backup, you do not have to spend hours restoring the entire snapshot from the archive.  We, for example, need five hours to get the entire basic 2 TB backup.  And then you have to apply the entire daily WAL to recover to the desired state (in the worst case). </p><br><p>  Deferred replica is better than cold backup in two points: </p><br><ol><li>  No need to get the entire base backup from the archive. </li><li>  There is a fixed eight-hour window of WAL segments that need to be repeated. </li></ol><br><p>  And we are constantly checking whether it is possible to make a PITR from WAL, and we would quickly notice damage or other problems with the WAL archive, keeping track of the lag of the delayed replica. </p><br><p>  In this example, it took us 50 minutes to restore, that is, the speed was 110 GB of WAL data per hour (the archive was still on <a href="https://aws.amazon.com/s3/">AWS S3</a> ).  In total, we solved the problem and restored the data in 1.5 hours. </p><br><h3 id="itogi-gde-prigoditsya-otlozhennaya-replika-a-gde-net">  Results: where a deferred replica is useful (and where not) </h3><br><p>  Use deferred replication as a first aid tool if you accidentally lose data and notice this trouble within the configured delay. </p><br><blockquote>  But note: replication is not a backup. </blockquote><p>  Backup and replication have different goals.  A cold backup is useful if you accidentally make a <code>DELETE</code> or <code>DROP TABLE</code> .  We backup from cold storage and restore the previous state of the table or the entire database.  But at the same time, the <code>DROP TABLE</code> request is almost instantly reproduced in all replicas on the working cluster, so normal replication will not save here.  By itself, replication keeps the database available when individual servers are handed over and distributes the workload. </p><br><p>  Even with a deferred replica, we sometimes really need cold backups in a safe place if a data center crash, hidden damage, or other events that you don’t immediately notice.  There is no sense from one replication. </p><br><p>  <strong>Note</strong>  At <a href="https://gitlab.com/">GitLab.com,</a> we now protect against data loss only at the system level and do not recover data at the user level. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/445446/">https://habr.com/ru/post/445446/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445434/index.html">The best worst job in the world: we are looking for a habra</a></li>
+<li><a href="../445436/index.html">Retraining in DevOps - what to prepare for yourself</a></li>
+<li><a href="../445438/index.html">Introduction to lit-element and web components based on it</a></li>
+<li><a href="../445440/index.html">Code review: bad advice for contributor and reviewer</a></li>
+<li><a href="../445444/index.html">Upgrade of high performance solar modules from REC and Trina (Solar)</a></li>
+<li><a href="../445448/index.html">Configuring automatic receipt of letsencrypt certificates using docker for linux</a></li>
+<li><a href="../445450/index.html">Browser extension for the site toster.ru</a></li>
+<li><a href="../445452/index.html">Useful repositories with Eloquent?</a></li>
+<li><a href="../445454/index.html">Raspberry Pi Zero inside Handy Tech Active Star 40 Braille Display</a></li>
+<li><a href="../445456/index.html">Search at a speed of 1 TB / s</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

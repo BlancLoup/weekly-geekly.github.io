@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>OutOfLine - memory placement pattern for high performance C ++ applications</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="While working at Headlands Technologies, I was lucky to write several utilities to simplify the creation of high-performance C ++ code. This article o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>OutOfLine - memory placement pattern for high performance C ++ applications</h1><div class="post__text post__text-html js-mediator-article"><p> While working at Headlands Technologies, I was lucky to write several utilities to simplify the creation of high-performance C ++ code.  This article offers a general overview of one of these utilities, <a href=""><code>OutOfLine</code></a> . </p><a name="habracut"></a><br><p>  Let's start with an illustrative example.  Suppose you have a system that deals with a large number of file system objects.  This may be ordinary files, named UNIX sockets or pipes.  For some reason, you open a lot of file descriptors at startup, then work intensively with them, and at the end close the descriptors and delete the links to the files (note lane means <a href="https://linux.die.net/man/2/unlink">unlink</a> function). </p><br><p>  The initial (simplified) version may look like this: </p><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">UnlinkingFD</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span> path; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> fd; UnlinkingFD(<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&amp; p) : path(p) { fd = open(p.c_str(), O_RDWR, <span class="hljs-number"><span class="hljs-number">0</span></span>); } ~UnlinkingFD() { close(fd); unlink(path.c_str()); } UnlinkingFD(<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> UnlinkingFD&amp;) = <span class="hljs-keyword"><span class="hljs-keyword">delete</span></span>; };</code> </pre> <br><p>  And this is a good, logical design.  It relies on <a href="https://ru.wikipedia.org/wiki/%25D0%259F%25D0%25BE%25D0%25BB%25D1%2583%25D1%2587%25D0%25B5%25D0%25BD%25D0%25B8%25D0%25B5_%25D1%2580%25D0%25B5%25D1%2581%25D1%2583%25D1%2580%25D1%2581%25D0%25B0_%25D0%25B5%25D1%2581%25D1%2582%25D1%258C_%25D0%25B8%25D0%25BD%25D0%25B8%25D1%2586%25D0%25B8%25D0%25B0%25D0%25BB%25D0%25B8%25D0%25B7%25D0%25B0%25D1%2586%25D0%25B8%25D1%258F">RAII</a> to automatically free the handle and delete the link.  You can create a large array of such objects, work with them, and when the array ceases to exist, the objects themselves will clear everything that was needed in the process. </p><br><p>  But what about performance?  Suppose <code>fd</code> used very often, and <code>path</code> only when deleting an object.  Now the array consists of objects of 40 bytes in size, but often only 4 bytes are used.  This means there will be more misses in the cache, since you need to “skip” 90% of the data. </p><br><p>  One of the frequent solutions to this problem is the transition from an array of structures to an array structure.  This will provide the desired performance, but at the cost of eliminating RAII.  Is there an option combining the advantages of both approaches? </p><br><p>  A simple compromise is replacing <code>std::string</code> , 32 bytes in size with <code>std::unique_ptr&lt;std::string&gt;</code> , which is only 8 bytes in size.  This will reduce the size of our object from 40 bytes to 16 bytes, which is a great achievement.  But this solution still loses the use of multiple arrays. </p><br><p>  <code>OutOfLine</code> is a tool that allows you to completely move rarely used (cold) fields outside an object without abandoning RAII.  OutOfLine is used as the base class <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D1%2582%25D1%2580%25D0%25B0%25D0%25BD%25D0%25BD%25D0%25BE_%25D1%2580%25D0%25B5%25D0%25BA%25D1%2583%25D1%2580%25D1%2581%25D0%25B8%25D0%25B2%25D0%25BD%25D1%258B%25D0%25B9_%25D1%2588%25D0%25B0%25D0%25B1%25D0%25BB%25D0%25BE%25D0%25BD">CRTP</a> , therefore the first argument of the template must be a child class.  The second argument is the type of rarely used (cold) data that is associated with the frequently used (main) object. </p><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">UnlinkingFD</span></span></span><span class="hljs-class"> :</span></span> <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> OutOfLine&lt;UnlinkingFD, <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&gt; { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> fd; UnlinkingFD(<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&amp; p) : OutOfLine&lt;UnlinkingFD, <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&gt;(p) { fd = open(p.c_str(), O_RDWR, <span class="hljs-number"><span class="hljs-number">0</span></span>); } ~UnlinkingFD(); UnlinkingFD(<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> UnlinkingFD&amp;) = <span class="hljs-keyword"><span class="hljs-keyword">delete</span></span>; };</code> </pre> <br><p>  So what is this class like? </p><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">template</span></span> &lt;<span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">FastData</span></span></span><span class="hljs-class">, </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">ColdData</span></span></span><span class="hljs-class">&gt; </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">OutOfLine</span></span></span><span class="hljs-class"> {</span></span></code> </pre> <br><p>  The basic idea of ​​implementation is to use a global associative container that maps pointers to main objects and pointers to objects containing cold data. </p><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">inline</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">map</span></span>&lt;OutOfLine <span class="hljs-keyword"><span class="hljs-keyword">const</span></span>*, <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">unique_ptr</span></span>&lt;ColdData&gt;&gt; global_map_;</code> </pre> <br><p>  <code>OutOfLine</code> can be used with any type of cold data, an instance of which is created and associated with the main object automatically. </p><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">template</span></span> &lt;<span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class">... </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TArgs</span></span></span><span class="hljs-class">&gt; </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">explicit</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">OutOfLine</span></span></span><span class="hljs-class">(</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TArgs</span></span></span><span class="hljs-class">&amp;&amp;... </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">args</span></span></span><span class="hljs-class">) {</span></span> global_map_[<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>] = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::make_unique&lt;ColdData&gt;(<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::forward&lt;TArgs&gt;(args)...); }</code> </pre> <br><p>  Deleting the main object automatically deletes the associated cold object: </p><br><pre> <code class="cpp hljs"> ~OutOfLine() { global_map_.erase(<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>); }</code> </pre> <br><p>  When moving (move constructor / move assignment operator) of the main object, the corresponding cold object will be automatically associated with the new main successor object.  As a result, do not refer to the cold data of the moved-from object. </p><br><pre> <code class="cpp hljs"> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">explicit</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">OutOfLine</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(OutOfLine&amp;&amp; other)</span></span></span><span class="hljs-function"> </span></span>{ *<span class="hljs-keyword"><span class="hljs-keyword">this</span></span> = other; } OutOfLine&amp; <span class="hljs-keyword"><span class="hljs-keyword">operator</span></span>=(OutOfLine&amp;&amp; other) { global_map_[<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>] = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(global_map_[&amp;other]); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> *<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>; }</code> </pre> <br><p>  In <a href="https://ru.wikipedia.org/wiki/YAGNI">the</a> example implementation, <code>OutOfLine</code> is made uncopyable for simplicity.  If necessary, copying operations are easy to add, they just need to create and link a copy of a cold object. </p><br><pre> <code class="cpp hljs">OutOfLine(OutOfLine <span class="hljs-keyword"><span class="hljs-keyword">const</span></span>&amp;) = <span class="hljs-keyword"><span class="hljs-keyword">delete</span></span>; OutOfLine&amp; <span class="hljs-keyword"><span class="hljs-keyword">operator</span></span>=(OutOfLine <span class="hljs-keyword"><span class="hljs-keyword">const</span></span>&amp;) = <span class="hljs-keyword"><span class="hljs-keyword">delete</span></span>;</code> </pre> <br><p>  Now, for this to be really useful, it’s good to have access to cold data.  When inheriting from <code>OutOfLine</code> class gets the constant and non-constant <code>cold()</code> methods: </p><br><pre> <code class="cpp hljs"> <span class="hljs-function"><span class="hljs-function">ColdData&amp; </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cold</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">noexcept</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> *global_map_[<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>]; } <span class="hljs-function"><span class="hljs-function">ColdData </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">const</span></span></span><span class="hljs-function">&amp; </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cold</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">const</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">noexcept</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> *global_map_[<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>]; }</code> </pre> <br><p>  They return the appropriate type of cold data reference. </p><br><p>  That's almost all.  This version of <code>UnlinkingFD</code> will be 4 bytes in size, will provide cache-friendly access to the <code>fd</code> field and retain the advantages of RAII.  All work related to the life cycle of an object is fully automated.  When the primary frequently used object moves, rarely used cold data moves with it.  When the main object is deleted, the corresponding cold object is also deleted. </p><br><p>  Sometimes, however, your data conspires to complicate your life - and you are faced with a situation in which the basic data must be created first.  For example, they are needed to construct cold data.  There is a need to create objects in the reverse order of what <code>OutOfLine</code> offers.  For such cases, we need a “spare run” to control the order of initialization and deinitialization. </p><br><pre> <code class="cpp hljs"> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TwoPhaseInit</span></span></span><span class="hljs-class"> {</span></span>}; OutOfLine(TwoPhaseInit){} <span class="hljs-keyword"><span class="hljs-keyword">template</span></span> &lt;<span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class">... </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TArgs</span></span></span><span class="hljs-class">&gt; </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">void</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">init_cold_data</span></span></span><span class="hljs-class">(</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TArgs</span></span></span><span class="hljs-class">&amp;&amp;... </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">args</span></span></span><span class="hljs-class">) {</span></span> global_map_.find(<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>)-&gt;second = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::make_unique&lt;ColdData&gt;(<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::forward&lt;TArgs&gt;(args)...); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">release_cold_data</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ global_map_[<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>].reset(); }</code> </pre> <br><p>  This is another <code>OutOfLine</code> constructor that can be used in child classes, it accepts a tag of type <code>TwoPhaseInit</code> .  If you create an <code>OutOfLine</code> in this way, the cold data will not be initialized, and the object will remain half constructed.  To complete a two-phase construction, call the <code>init_cold_data</code> method (passing in the arguments necessary to create an object of type <code>ColdData</code> ).  Remember that you cannot call <code>.cold()</code> on an object whose cold data has not yet been initialized.  By analogy, cold data can be deleted ahead of schedule, before the <code>~OutOfLine</code> destructor <code>~OutOfLine</code> , by calling <code>release_cold_data</code> . </p><br><pre> <code class="cpp hljs">}; <span class="hljs-comment"><span class="hljs-comment">// end of class OutOfLine</span></span></code> </pre> <br><p>  Now that's it.  So what do these 29 lines of code give us?  They represent another possible tradeoff between performance and ease of use.  In cases when you have an object, some of whose members are used much more often than others, <code>OutOfLine</code> can be an easy-to-use way to optimize the cache, at the cost of significantly slowing down access to rarely used data. </p><br><p>  We were able to apply this technique in several places - quite often there is a need to supplement the heavily used working data with additional metadata that is needed when completing the work in rare or unexpected situations.  Whether it is information about the users who established the connection, the trading terminal from which the order came, or the descriptor of the hardware accelerator engaged in processing the exchange data - <code>OutOfLine</code> keeps the cache clean when you are in the critical path. </p><br><p>  I prepared a <a href="">test</a> so that you can see and appreciate the difference. </p><br><table><thead><tr><th>  Scenario </th><th>  Time (ns) </th></tr></thead><tbody><tr><td>  Cold data in the main object (initial version) </td><td>  34684547 </td></tr><tr><td>  Cold data completely deleted (best scenario) </td><td>  2938327 </td></tr><tr><td>  Using OutOfLine </td><td>  2947645 </td></tr></tbody></table><br><p>  I got about 10 times faster when using <code>OutOfLine</code> .  Obviously, this test is designed to demonstrate the potential of <code>OutOfLine</code> , but it also shows how much cache optimization can have a significant impact on performance, as well as the fact that <code>OutOfLine</code> allows <code>OutOfLine</code> to get this optimization.  Keeping the cache free from sparsely used data can provide a difficult-to-measure comprehensive improvement in the rest of the code.  As always when optimizing, trust the measurements more than you expect, nonetheless I hope that <code>OutOfLine</code> will be a useful tool in your piggy bank of utilities. </p><br><h2 id="primechanie-ot-perevodchika">  <em>Note from the translator</em> </h2><br><p>  <em>The code given in the article serves to demonstrate the idea and is not representative of the production code.</em> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/421475/">https://habr.com/ru/post/421475/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../421465/index.html">Mobile DevOps in practice</a></li>
+<li><a href="../421467/index.html">Developing a golf ball collecting robot</a></li>
+<li><a href="../421469/index.html">Telegram agreed to transfer to the special services [but not Russian] IP-addresses and numbers of some users</a></li>
+<li><a href="../421471/index.html">Ad Exchange Server - not like others</a></li>
+<li><a href="../421473/index.html">What is Korutina in Kotlin?</a></li>
+<li><a href="../421477/index.html">What is written in the .ssh / known_hosts file</a></li>
+<li><a href="../421481/index.html">Microphones, screenshots and local video: how the Voximplant Web SDK manages media in a browser</a></li>
+<li><a href="../421483/index.html">The court rejected the first claim to Roskomnadzor for the recovery of damage due to carpet blocking</a></li>
+<li><a href="../421485/index.html">Important notice for Gitlab Pages users</a></li>
+<li><a href="../421487/index.html">How to strengthen technical support - 6 secret ways</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

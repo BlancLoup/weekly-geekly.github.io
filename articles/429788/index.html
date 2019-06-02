@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Another reason why Docker containers are slowing down</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the last post I talked about Kubernetes, about how ThoughtSpot uses it for its own needs to support development. Today I would like to continue the...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Another reason why Docker containers are slowing down</h1><div class="post__text post__text-html js-mediator-article"><p>  In the last <a href="https://hackernoon.com/kubernetes-for-dev-infrastructure-40b9175cb8c0">post</a> I talked about Kubernetes, about how <a href="https://www.thoughtspot.com/">ThoughtSpot</a> uses it for its own needs to support development.  Today I would like to continue the conversation about a short but not less interesting debugging story that happened just recently.  The article is based on the fact that containerization! = Virtualization.  In addition, it clearly shows how containerized processes compete for resources, even with optimal cgroup restrictions and high machine performance. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/297/09a/dfa/29709adfa1fa1830ee869e441e343fcf.png" alt="image"></p><a name="habracut"></a><br><p>  Earlier, we launched a <a href="https://hackernoon.com/kubernetes-for-dev-infrastructure-40b9175cb8c0">series of operations related to the development of b CI / CD</a> in the internal cluster Kubernetes.  Everything would be fine, but when you launch a “docked” application, performance unexpectedly dropped dramatically.  We did not stint: in each of the containers there were restrictions on computing power and memory (5 CPU / 30 GB RAM), set through the configuration of Pod.  On a virtual machine with these parameters, all our requests from a tiny data set (10 Kb) for tests would fly.  However, in Docker &amp; Kubernetes with 72 CPU / 512 GB RAM, we managed to run 3-4 copies of the product, and then the brakes started.  Requests that previously ended in a couple of milliseconds now hung 1-2 seconds, and this caused all sorts of failures in the CI task pipeline.  I had to come to grips with debugging. </p><br><p>  As a rule, under suspicion - all sorts of configuration errors when packaging the application in Docker.  However, we did not find anything that could cause at least some slowdown (if compared with installations on bare hardware or virtual machines).  It looks all right.  Next, we tried all sorts of tests from the <a href="https://github.com/akopytov/sysbench">Sysbench</a> package.  We checked the performance of the CPU, disk, memory - everything was the same as on bare hardware.  Some services of our product store detailed information about all actions: it can then be used in performance profiling.  As a rule, when there is a shortage of any resource (CPU, RAM, disk, network), some calls show a significant time failure - this is how we discover what is slowing down and where.  However, in this case nothing happened.  The time proportions did not differ from the correct configuration - with the only difference that each call was much slower than on bare metal.  Nothing pointed to the real source of the problem.  We were ready to surrender, when we suddenly <a href="https://sysdig.com/blog/container-isolation-gone-wrong/">found this</a> . </p><br><p>  In this article, the author analyzes a similar mysterious case, when two, in theory, light processes killed each other when running inside the Docker on the same machine, and the resource limits were set at very modest values.  We made two important conclusions: </p><br><ol><li> The main reason lay in the very core of Linux.  Because of the structure of the dentry cache objects in the kernel, the behavior of one process was severely inhibited by calling the kernel <code>__d_lookup_loop</code> , which directly affected the performance of another. </li><li>  The author used <code>perf</code> to detect a kernel bug.  Excellent debugging tool that we have never used before (which is a pity!). </li></ol><br><blockquote>  perf (sometimes called perf_events or perf-tools; formerly known as Performance Counters for Linux, PCL) is a Linux performance analysis tool, available from kernel version 2.6.31.  The user space management utility, perf, is available from the command line and is a set of subcommands. </blockquote><br><blockquote>  It performs statistical profiling of the whole system (kernel and user space).  This tool supports performance counters for hardware and software (for example, hrtimer) platforms, trace points, and dynamic samples (say, kprobes or uprobes).  In 2012, two IBM engineers recognized perf (along with OProfile) as one of the two most widely used tools for profiling performance counters in Linux. </blockquote><p>  So we thought: maybe we have the same thing?  We ran hundreds of different processes in containers, and all had the same core.  We sensed that we attacked the trail!  Armed with <code>perf</code> , we repeated the debugging, and in the end we had a most interesting discovery. </p><br><p>  Below are the records of the <code>perf</code> first 10 seconds of ThoughtSpot, working on a healthy (fast) car (left) and inside the container (right). <br><img src="https://habrastorage.org/getpro/habr/post_images/82a/5a4/2a3/82a5a42a3c8de024901a4d21108469a4.png" alt="image"></p><br><p>  We immediately see that on the right the first 5 calls are connected with the core.  Time is mainly spent on kernel space, while on the left - most of the time is spent on its own processes running in user space.  But the most interesting thing is that the <code>posix_fadvise</code> call takes all the time. </p><br><blockquote>  Programs use posix_fadvise (), declaring their intention to access file data using a specific pattern in the future.  This gives the kernel the opportunity to perform the necessary optimization. </blockquote><p>  The call is used for any situations, therefore it does not explicitly indicate the source of the problem.  However, after digging into the code, I found only one place, which, theoretically, affected every process in the system: </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/12d/2ef/c14/12d2efc144b5e9e9babfb05180726c7b.png" alt="image"></p><br><p>  This is a third-party logging library called <code>glog</code> .  We used it for the project.  Specifically, this line (in <code>LogFileObject::Write</code> ) is probably the most critical path of the entire library.  It is called for all events “log to file” (log to file), and many instances of our product write the log quite often.  A quick glance at the source code suggests that the fadvise part can be turned off by setting the <code>--drop_log_memory=false</code> parameter: </p><br><pre> <code class="hljs php"> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (file_length_ &gt;= logging::kPageSize) { <span class="hljs-comment"><span class="hljs-comment">// don't evict the most recent page uint32 len = file_length_ &amp; ~(logging::kPageSize — 1); posix_fadvise(fileno(file_), 0, len, POSIX_FADV_DONTNEED); } }</span></span></code> </pre> <br><p>  which we, of course, did and ... on the bullseye! </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/07c/945/bb2/07c945bb2d23ede3c4bf64823120d2a3.png" alt="image"></p><br><p>  The fact that it used to take a couple seconds is now executed in <b>8</b> (eight!) Milliseconds.  Googling a little bit, we found this: <a href="https://issues.apache.org/jira/browse/MESOS-920">https://issues.apache.org/jira/browse/MESOS-920</a> and yet this: <a href="https://github.com/google/glog/pull/145">https://github.com/google/glog/pull/145</a> , which once again confirmed our conjecture about the true cause of inhibition.  Most likely, the same thing happened on the virtual machine / bare hardware, but since we had 1 copy of the process for each machine / core, the intensity of the fadvise call was significantly lower, which explained the lack of additional resource consumption.  Increasing the logging process 3-4 times and highlighting one common core for them, we saw that this really stopped fadvise. </p><br><p>  In conclusion: </p><br><p>  This information is not new, but for some reason many people forget the main thing: in cases with containers, “isolated” processes compete for <b>all core resources</b> , and not just for <b>CPU</b> , <b>RAM</b> , <b>disk space</b> and <b>network</b> .  And since the kernel is an extremely complex structure, failures can occur anywhere (as, for example, in <code>__d_lookup_loop</code> from the <a href="https://sysdig.com/blog/container-isolation-gone-wrong/">Sysdig article</a> ).  This, however, does not mean that containers are worse or better than traditional virtualization.  They are a great tool for solving their problems.  Just remember: the kernel is a shared resource, and get ready to debug unexpected conflicts in the kernel space.  In addition, such conflicts are a great opportunity for attackers to break through the "thinned" isolation and create hidden channels between containers.  And finally, there is <code>perf</code> - an excellent tool that will show what is happening in the system, and help debug any performance problems.  If you plan to launch high-load applications in Docker, then be sure to take the time to learn <code>perf</code> . </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/429788/">https://habr.com/ru/post/429788/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../429776/index.html">Summary of the report “Monolith for hundreds of client versions” (HL2018, Badoo, Vladimir Yants)</a></li>
+<li><a href="../429778/index.html">The concept of a voice interface for managing a computing system to help people with speech disorders</a></li>
+<li><a href="../429780/index.html">Modern C ++! = (Most) New Standard</a></li>
+<li><a href="../429782/index.html">The story of how we accelerated tests 12 times</a></li>
+<li><a href="../429786/index.html">Fast Sin and Cos on Delphi Embedded ASM</a></li>
+<li><a href="../429790/index.html">Julia and the movement of a charged particle in an electromagnetic field</a></li>
+<li><a href="../429792/index.html">Artificial intelligence, engaged in physics, can deduce the laws of imaginary universes</a></li>
+<li><a href="../429794/index.html">Google tells how the "exponential" growth of AI changes the very nature of computing</a></li>
+<li><a href="../429796/index.html">How DeviceLock DLP prevents leakage of sensitive data on GitHub</a></li>
+<li><a href="../429798/index.html">Sales of plug-in electric vehicles in the USA (with charts): October 2018</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

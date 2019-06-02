@@ -1,0 +1,141 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How we found the critical vulnerability of AspNetCore.Mvc and switched to our own serialization</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr! 
+
+ In this article we want to share our experience in optimizing performance and exploring the features of AspNetCore.Mvc. 
+
+
+
+ Prehistory 
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How we found the critical vulnerability of AspNetCore.Mvc and switched to our own serialization</h1><div class="post__text post__text-html js-mediator-article">  Hi, Habr! <br><br>  In this article we want to share our experience in optimizing performance and exploring the features of AspNetCore.Mvc. <br><br><img src="https://habrastorage.org/webt/da/rm/2b/darm2bah850jodxea3wgdjr60qk.jpeg">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h2>  Prehistory </h2><br>  A few years ago, at one of our busy services, we noticed a significant consumption of CPU resources.  It looked strange, since the task of the service was to actually take the message and put it into a queue, having previously performed some operations on it, such as validation, data addition, etc. <br><br>  As a result of profiling, we found that most of the CPU time is “eaten up” by deserialization.  We threw out the standard serializer and wrote ours on Jil, as a result of which the consumption of resources decreased significantly.  Everything worked as it should, and we managed to forget about it. <br><a name="habracut"></a><br><h2>  Problem </h2><br>  We are constantly improving our service in all directions, including security, performance and fault tolerance, therefore, the “security guards” conduct various kinds of tests of our services.  And some time ago an alert about an error in the log “arrives” to us - somehow we missed the invalid message further in turn. <br><br>  With a detailed analysis, everything looked rather strange.  There is a request-model (here I will give a simplified example of code): <br><br><pre><code class="json hljs">public class RequestModel { public string Key { get; set; } FromBody] Required] public PostRequestModelBody Body { get; set; } } public class PostRequestModelBody { [Required] [MinLength(1)] public IEnumerable&lt;long&gt; ItemIds { get; set; } }</code> </pre> <br>  There is a controller with action Post, for example: <br><br><pre> <code class="json hljs">[Route(<span class="hljs-string"><span class="hljs-string">"api/[controller]"</span></span>)] public class HomeController : Controller { [HttpPost] public async Task&lt;ActionResult&gt; Post(RequestModel request) { if (this.ModelState.IsValid) { return this.Ok(); } return this.BadRequest(); } }</code> </pre> <br>  Everything seems logical.  If the request comes with a Body view <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  The API will return BadRequest, and there are tests for it. <br><br>  However, in the log we see the opposite.  We took a message from the logs, sent it to the API and got the status OK ... and ... a new error in the log.  Not believing our eyes, we took it easy and made sure that yes, indeed ModelState.IsValid == true.  At the same time, we paid attention to the unusually long request execution time - about 500ms, while the usual response time rarely exceeds 50ms and this is in production, which serves thousands of requests per second! <br><br>  The difference between this query and our tests was that the query contained 600+ empty lines ... <br><br>  Next will be a lot of code-bukaf. <br><br><h2>  Cause </h2><br>  Began to understand what is wrong here.  To eliminate the error, they wrote a clean application (whence I gave an example), with which they reproduced the situation described.  In total, we spent a couple of man-days on research, tests, mental debagging the AspNetCore.Mvc code and it turned out that the problem is in <a href="">JsonInputFormatter</a> . <br><br>  JsonInputFormatter uses JsonSerializer, which, when receiving a stream for deserialization and type, tries to serialize each property, if it is an array - each element of this array.  At the same time, if an error occurs during serialization, JsonInputFormatter saves every error and the path to it, marks it as processed so that the deserialization can proceed further. <br><br>  Here is the code for the JsonInputFormatter error handler (it is available on Github at the link above): <br><br><pre> <code class="json hljs">void ErrorHandler(object sender, Newtonsoft.Json.Serialization.ErrorEventArgs eventArgs) { successful = false; // When ErrorContext.Path does not include ErrorContext.Member, add Member to form full path. var path = eventArgs.ErrorContext.Path; var member = eventArgs.ErrorContext.Member?.ToString(); var addMember = !string.IsNullOrEmpty(member); if (addMember) { // Path.Member case (path.Length &lt; member.Length) needs no further checks. if (path.Length == member.Length) { // Add Member in Path.Memb case but not for Path.Path. addMember = !string.Equals(path, member, StringComparison.Ordinal); } else if (path.Length &gt; member.Length) { // Finally, check whether Path already ends with Member. if (member[0] == '[') { addMember = !path.EndsWith(member, StringComparison.Ordinal); } else { addMember = !path.EndsWith(<span class="hljs-attr"><span class="hljs-attr">"."</span></span> + member, StringComparison.Ordinal); } } } if (addMember) { path = ModelNames.CreatePropertyModelName(path, member); } // Handle path combinations such as <span class="hljs-string"><span class="hljs-string">""</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, or <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"[12]"</span></span>. var key = ModelNames.CreatePropertyModelName(context.ModelName, path); exception = eventArgs.ErrorContext.Error; var metadata = GetPathMetadata(context.Metadata, path); var modelStateException = WrapExceptionForModelState(exception); context.ModelState.TryAddModelError(key, modelStateException, metadata); _logger.JsonInputException(exception); // Error must always be marked as handled // Failure to do so can cause the exception to be rethrown at every recursive level and // overflow the stack for x<span class="hljs-number"><span class="hljs-number">6</span></span><span class="hljs-number"><span class="hljs-number">4</span></span> CLR processes eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; }</code> </pre><br>  Marking an error as processed is done at the very end of the handler. <br><br><pre> <code class="json hljs">eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>;</code> </pre> <br><br>  Thus, the feature of outputting all deserialization errors and the paths to them, in which fields / elements they were, is implemented, well ... almost all ... <br><br>  The fact is that the JsonSerializer has a 200 error limit, after which it falls, while all the code falls and the ModelState becomes ... valid! ... errors are lost. <br><br><h2>  Decision </h2><br>  Without hesitation, we implemented our Json formatter for Asp.Net Core using Jil Deserializer.  Since the number of errors in body is absolutely not important for us, and only the fact of their presence is important (and generally it’s hard to imagine a situation when it would be really useful), the serializer code turned out to be quite simple. <br><br>  I will give the main code of the custom JilJsonInputFormatter: <br><br><pre> <code class="json hljs">using (var reader = context.ReaderFactory(request.Body, encoding)) { try { var result = JSON.Deserialize( reader: reader, type: context.ModelType, options: this.jilOptions); if (result == <span class="hljs-literal"><span class="hljs-literal">null</span></span> &amp;&amp; !context.TreatEmptyInputAsDefaultValue) { return await InputFormatterResult.NoValueAsync(); } else { return await InputFormatterResult.SuccessAsync(result); } } catch { // -   } return await InputFormatterResult.FailureAsync(); }</code> </pre> <br>  <b>Attention!</b>  Jil is case sensitive, meaning Body <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"ItemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  and <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  not the same thing.  In the first case, if camelCase is used in the ItemIds property after deserialization will be null. <br><br>  But since this is our API, we use and control it, for us it is not critical.  The problem may arise if it is a public API and someone already calls it, passing the name of the parameters not in camelCase. <br><br><h2>  Result </h2><br>  The result even exceeded our expectations, the API was expected to return the BadRequest request to the desired one and do it very quickly.  Below are some screenshots of some of our graphs, which show changes in response time and CPU, before and after deployment. <br>  Request Time: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/62d/412/60a/62d41260a72b6a3c07c9aeb1e990a3ad.png" alt="image"><br><br>  At about 16:00 was deployed.  Before deployment, the p99 runtime was 30-57ms, after deploying it was 9-15ms.  (You can not pay attention to repeated peaks at 18:00 - it was already another deployment) <br><br>  This is how the CPU schedule changed: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/09c/95b/b8c/09c95bb8cf8bc500d0e7383ddbca8827.png" alt="image"><br><br>  On this occasion, we brought an <a href="https://github.com/aspnet/Mvc/issues/8749">issue</a> in Github, at the time of this writing, it was labeled as a bug with milestone 3.0.0-preview3. <br><br><h2>  Finally </h2><br>  While the problem is not solved, we believe that it is better to abandon the use of standard deserialization, especially if you have a public API.  Knowing this problem, an attacker can easily put your service, throwing a bunch of such invalid requests into it, because the larger the error array, the larger the Body, the longer it takes to process in JsonInputFormatter. <br><br>  <b>Artem Astashkin, Development Team Leader</b> </div><p>Source: <a href="https://habr.com/ru/post/435626/">https://habr.com/ru/post/435626/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../435616/index.html">How Peer Zoning simplified our lives and helped balance the load of EMC VPLEX</a></li>
+<li><a href="../435618/index.html">My experience in preparing for employment at Google</a></li>
+<li><a href="../435620/index.html">Ideas futurists who came true</a></li>
+<li><a href="../435622/index.html">AT & T "switched" to 5G, changing the icon on the screen</a></li>
+<li><a href="../435624/index.html">A selection of interesting reports from the conference 35C3</a></li>
+<li><a href="../435628/index.html">Chrome browser’s built-in ad blocker starts July 9</a></li>
+<li><a href="../435630/index.html">Network security in the cloud: 5 trends in 2019</a></li>
+<li><a href="../435636/index.html">How to learn using machine learning from Dota 2 experts</a></li>
+<li><a href="../435638/index.html">About the happiness of developers and where to find it</a></li>
+<li><a href="../435640/index.html">The event digest for HR-specialists in the field of IT in January 2019</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Optimizing the rendering of scenes from the Disney cartoon "Moana". Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Inspired by the first victory in parsing using the description of the island scene from the Disney cartoon “Moana” , I further delved into the study o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Optimizing the rendering of scenes from the Disney cartoon "Moana". Part 2</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1c6/b62/44e/1c6b6244e438a4f3a7431ba49f089525.jpg" alt="image"></div><br>  Inspired by the <a href="https://habr.com/post/417407/">first victory</a> in parsing using the description of the island scene from the Disney cartoon <em>“Moana”</em> , I further delved into the study of memory usage.  Much more could have been done with the execution time, but I decided that it would be useful to first explore the situation. <br><br>  I started the run-time study with pbrt built-in statistics;  pbrt has a manual setting of significant memory allocations to track memory usage, and after rendering is complete, a memory allocation report is displayed.  Here is what the original memory allocation report for this scene was: <br><br> <code> <br> BVH- 9,01  <br>  1,44  <br> MIP- 2,00  <br>   11,02 </code> <br> <br>  As for the execution time, the built-in statistics turned out to be brief and issued a report only on the allocation of memory for known objects of 24 GB in size.  <code>top</code> reported that about 70 GB of memory was actually used, that is, the statistics do not take into account 45 GB.  Small deviations are quite understandable: dynamic memory allocators require additional space to register resource use, some are lost due to fragmentation, and so on.  But 45 GB?  Something bad is definitely hiding here. <br><a name="habracut"></a><br>  To understand what we are missing (and to make sure that the tracing found was correct), I used <a href="http://valgrind.org/docs/manual/ms-manual.html">massif</a> to trace valid allocations of dynamic memory.  It is rather slow, but at least it works well. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h2>  Primitives </h2><br>  The first thing I found when tracing massif was two lines of code that contained in memory instances of the <code>Primitive</code> base class, which are not counted in statistics.  A little oversight that is <a href="https://github.com/mmp/pbrt-v3/commit/5d6439dfcb9fda85169536ecfb71dbf164e97330">fairly easy to fix</a> .  After that we see the following: <br><br> <code>Primitives 24,67 </code> <br> <br>  Oh, her.  So what is a primitive, and why all this memory? <br><br>  pbrt distinguishes <code>Shape</code> , which is a pure geometry (sphere, triangle, etc.) and <code>Primitive</code> , which is a combination of geometry, material, sometimes the function of radiation and the involved medium inside and outside the surface of the geometry. <br><br>  There are <a href="">several variants</a> of the <code>Primitive</code> base class: <code>GeometricPrimitive</code> , which is a standard case: a “vanilla” combination of geometry, material, etc., as well as a <code>TransformedPrimitive</code> , which is a primitive with transformations applied to it, either as an instance of an object or for moving primitives with time-varying transformations.  It turns out that in this scene both of these types are a waste of space. <br><br><h3>  GeometricPrimitive: 50% extra space </h3><br>  <em>Note: some erroneous assumptions are made in this analysis;</em>  <em>they are revised in the <a href="http://pharr.org/matt/blog/2018/07/15/moana-island-pbrt-4.html">fourth post of the series</a> .</em> <br><br>  4.3 GB used on <code>GeometricPrimitive</code> .  It’s funny to live in a world where 4.3 GB of used RAM is not your biggest problem, but let's still see where we have 4.3 GB of <code>GeometricPrimitive</code> .  Here are the relevant parts of the class definition: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">GeometricPrimitive</span></span></span><span class="hljs-class"> :</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Primitive { <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">shared_ptr</span></span>&lt;Shape&gt; shape; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">shared_ptr</span></span>&lt;Material&gt; material; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">shared_ptr</span></span>&lt;AreaLight&gt; areaLight; MediumInterface mediumInterface; };</code> </pre> <br>  We have a <a href="https://en.wikipedia.org/wiki/Virtual_method_table">pointer to a vtable</a> , three more pointers, and then a <code>MediumInterface</code> containing two more pointers with a total size of 48 bytes.  In this scene, there are only a few meshes radiating illumination; therefore, <code>areaLight</code> almost always a null pointer, and there is no environment influencing the scene, so both <code>mediumInterface</code> pointers <code>mediumInterface</code> also null.  Thus, if we had a specialized implementation of the <code>Primitive</code> class, which could be used in the absence of the radiation function and the environment, we would have saved almost half of the disk space occupied by <code>GeometricPrimitive</code> - in our case, about 2 GB. <br><br>  However, I did not make a correction and add a new <code>Primitive</code> implementation to pbrt.  We strive as much as possible to minimize the differences between the pbrt-v3 source code on github and the system described in my book, for a very simple reason — keeping them in sync makes it easier to read the book and work with the code.  In this case, I decided that a completely new implementation of <code>Primitive</code> , never mentioned in the book, would be too big a discrepancy.  But this fix will definitely appear in the new version of pbrt. <br><br>  Before proceeding further, we will perform a verification rendering: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1c6/b62/44e/1c6b6244e438a4f3a7431ba49f089525.jpg"></div><br>  <i>A beach from an island from the movie “Moana”, rendered <a href="https://github.com/mmp/pbrt-v3">pbrt-v3</a> with a resolution of 2048x858 and 256 samples per pixel.</i>  <i>The total rendering time on a 12-core / 24-threaded Google Compute Engine instance with a frequency of 2 GHz with the latest version of pbrt-v3 was 2 h 25 min 43 s.</i> <br><br><h3>  TransformedPrimitives: 95% of wasted space </h3><br>  The memory allocated for 4.3 GB <code>GeometricPrimitive</code> was a pretty painful hit, but what about 17.4 GB under <code>TransformedPrimitive</code> ? <br><br>  As mentioned above, <code>TransformedPrimitive</code> used for both time-varying transformations and for instances of objects.  In both cases, we need to apply an additional transformation to the existing <code>Primitive</code> .  There are only two members in the <code>TransformedPrimitive</code> class: <br><br><pre> <code class="cpp hljs"> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">shared_ptr</span></span>&lt;Primitive&gt; primitive; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> AnimatedTransform PrimitiveToWorld;</code> </pre> <br>  So far so good: a pointer to a primitive and a time-varying transformation.  But what is actually stored in the <code>AnimatedTransform</code> ? <br><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> Transform *startTransform, *endTransform; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> Float startTime, endTime; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> actuallyAnimated; Vector3f T[<span class="hljs-number"><span class="hljs-number">2</span></span>]; Quaternion R[<span class="hljs-number"><span class="hljs-number">2</span></span>]; Matrix4x4 S[<span class="hljs-number"><span class="hljs-number">2</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> hasRotation; <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">DerivativeTerm</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-comment"><span class="hljs-comment">// ... Float kc, kx, ky, kz; }; DerivativeTerm c1[3], c2[3], c3[3], c4[3], c5[3];</span></span></code> </pre> <br>  In addition to the pointers to the two transition matrices and the associated time, there is also a decomposition of the matrices into components of translation, rotation and scaling, as well as pre-calculated values ​​used to limit the volume occupied by the moving bounding boxes (see section 2.4.9 of our book) <em>Physically Based Rendering</em> ).  All this adds up to 456 bytes. <br><br>  But <em>nothing is moving</em> in this scene.  From the point of view of transformations, for instances of objects we need one pointer to transformation, and the values ​​for decomposition and moving bounding boxes do not need it.  (That is all you need 8 bytes).  If you create a separate <code>Primitive</code> implementation for fixed instances of objects, 17.4 GB are compressed to only 900 MB (!). <br><br>  As for <code>GeometricPrimitive</code> , fixing it is a non-trivial change from what was described in the book, so we will also postpone it for the next version of pbrt.  At least, we now understand what is happening with the chaos of 24.7 GB of <code>Primitive</code> memory. <br><br><h2>  Conversion Cache Trouble </h2><br>  The next largest block of unrecorded memory, defined by massif, was <code>TransformCache</code> , which occupied approximately 16 GB.  (Here is a link to the <a href="">original implementation</a> .) The idea is that the same transformation matrix is ​​often used in the scene several times, so it’s best to have a single copy in memory so that everyone using its elements simply stores a pointer to the same thing. transformation. <br><br>  For storing the cache, <code>TransformCache</code> used <code>std::map</code> , and massif reported that 6 out of 16 GB were used for black-mahogany nodes in <code>std::map</code> .  This is a terrible lot: 60% of this volume is used for the transformations themselves.  Let's look at the announcement for this distribution: <br><br><pre> <code class="cpp hljs"><span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">map</span></span>&lt;Transform, <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::pair&lt;Transform *, Transform *&gt;&gt; cache;</code> </pre> <br>  Here the work is done perfectly: <code>Transform</code> is used entirely as keys for distribution.  Even better, the pbrt <code>Transform</code> stores two 4x4 matrices (the transformation matrix and its inverse matrix), which results in 128 bytes of storage at each node of the tree.  All this is absolutely unnecessary for the value stored for it. <br><br>  Perhaps such a structure is quite normal in a world where it is important for us that the same transformation matrix is ​​used in hundreds or thousands of primitives, and in general there are not so many transformation matrices.  But for the scene with a bunch of mostly unique transformation matrices, as in our case, this is just a terrible approach. <br><br>  Besides the fact that space is wasted on keys, a search in <code>std::map</code> to bypass the red-black tree involves a lot of navigation operations on the pointers, so it seems logical to try something completely new.  Fortunately, there is little written about <code>TransformCache</code> in the book, so it is perfectly acceptable to completely rewrite it. <br><br>  And finally, before we get started: after examining the signature of the <code>Lookup()</code> method, another problem becomes apparent: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Lookup</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> Transform &amp;t, Transform **tCached, Transform **tCachedInverse)</span></span></span></span></code> </pre> <br>  When the calling function provides a <code>Transform</code> , the cache stores and returns pointers to the transformation equal to the transmitted one, but also passes the inverse matrix.  To make this possible, in the original implementation, when adding a transformation to the cache, the inverse matrix is ​​always calculated and saved so that it can be returned. <br><br>  The stupidity here is that most of the dial peers that use the transform cache do not query and do not use the inverse matrix.  That is, different types of memory are wasted on unused reversible conversions. <br><br>  The <a href="">new implementation</a> adds the following improvements: <br><br><ul><li>  It uses a hash table that allows you to speed up the search, and does not require storing anything other than the <code>Transform *</code> array, which, in effect, reduces the amount of memory used to the value that is really needed to store all <code>Transform</code> . </li><li>  The search method signature now has the form <code>Transform *Lookup(const Transform <br> &amp;t)</code> <code>Transform *Lookup(const Transform <br> &amp;t)</code>  <code>Transform *Lookup(const Transform <br> &amp;t)</code> ;  in one place where the calling function wants to get an inverse matrix from the cache, it simply calls <code>Lookup()</code> twice. </li></ul><br>  For hashing, I used the <a href="https://en.wikipedia.org/wiki/Fowler%25E2%2580%2593Noll%25E2%2580%2593Vo_hash_function">hash function FNV1a</a> .  After its implementation, I discovered <a href="https://aras-p.info/blog/2016/08/09/More-Hash-Function-Tests/">Aras’s post about hash functions</a> ;  Maybe I just needed to use xxHash or CityHash, because their performance is better;  maybe someday my shame will win and i will fix it. <br><br>  Thanks to the new <code>TransformCache</code> implementation, the overall system startup time has been significantly reduced, to 21 minutes 42 seconds.  That is, we saved another 5 minutes 7 seconds, or accelerated 1.27 times.  Moreover, more efficient use of memory has reduced the space occupied by the transformation matrices from 16 to 5.7 GB, which is almost equal to the amount of stored data.  This allowed us not to try to take advantage of the fact that they are not projective, and store 3x4 matrices instead of 4x4.  (In the usual case, I would be skeptical about the importance of this kind of optimization, but here it would save us more gigabytes - a lot of memory! This is definitely worth doing in the renderer of production.) <br><br><h2>  Minor performance optimization to complete </h2><br>  The too generalized <code>TransformedPrimitive</code> structure costs us both memory and time: the profiler reported that a significant amount of time was spent on launching in the <code>AnimatedTransform::Decompose()</code> function, which decomposes the transformation of the matrix into a quaternion rotation, transfer, and scale.  Since nothing is moving in this scene, this work is not needed, and a thorough check of the implementation of the <code>AnimatedTransform</code> showed that none of these values ​​are accessed if the two transformation matrices are actually identical. <br><br>  By adding <a href="https://github.com/mmp/pbrt-v3/commit/1a74748139d103636ce26139c739c75a7d67eebe">two lines</a> to the constructor so that decomposition transformations are not performed when they are not required, we saved another 1 min 31 of the launch time: as a result, we came to 20 min 9 s, that is, we generally accelerated 1.73 times. <br><br>  In the <a href="http://pharr.org/matt/blog/2018/07/13/moana-island-pbrt-3.html">next article,</a> we will seriously take up the parser and analyze what became important when we accelerated the work of other parts. </div><p>Source: <a href="https://habr.com/ru/post/417445/">https://habr.com/ru/post/417445/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../417435/index.html">In the config Aliens: Colonial Marines found a typo, because of which for four years the game AI buggy</a></li>
+<li><a href="../417437/index.html">Projector vs flat panel. Try on an ophthalmologist's robe and find out why size matters</a></li>
+<li><a href="../417439/index.html">The Intel Core i7-8086K (Part 1)</a></li>
+<li><a href="../417441/index.html">How we outbid ordinary players and their servers or DDoS: a practical guide</a></li>
+<li><a href="../417443/index.html">Organic matter on Mars could have been discovered 40 years ago if a different method of analysis were used.</a></li>
+<li><a href="../417447/index.html">Expedition to the mysterious fairy circles in the Namib Desert</a></li>
+<li><a href="../417449/index.html">Jurassic World: Can we really resurrect dinosaurs?</a></li>
+<li><a href="../417451/index.html">Five common mistakes novice managers</a></li>
+<li><a href="../417453/index.html">Organization of internships for students: rakes and tricks</a></li>
+<li><a href="../417457/index.html">Frontend Conf Moscow - client-side and deep and wide</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Kubernetes tips & tricks: on node allocation and web application loads</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In continuation of our articles with practical instructions on how to make life easier in daily work with Kubernetes, we tell about two stories from t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Kubernetes tips & tricks: on node allocation and web application loads</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/7r/gv/ix/7rgvixbeoe0vyfkw__obak6ow_y.jpeg"><br><br>  In continuation of our articles with practical instructions on how to make life easier in daily work with Kubernetes, we tell about two stories from the world of operation: the allocation of individual nodes for specific tasks and configurations of php-fpm (or another application server) under heavy loads.  As before, the solutions described here do not claim to be ideal, but are offered as a starting point for your specific cases and a ground for reflection.  Questions and improvements in the comments are welcome! <a name="habracut"></a><br><br><h2>  1. Selection of individual nodes for specific tasks </h2><br>  We are raising the Kubernetes cluster on virtual servers, clouds or bare metal servers.  If you install all system software and client applications on the same nodes, it is likely to get problems: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  the client application suddenly starts to "leak" from memory, although its limits are greatly overestimated; </li><li>  complex one-time requests to loghouse, Prometheus or Ingress * result in an OOM, resulting in a client application that suffers; </li><li>  a memory leak due to a bug in the system software kills the client application, although the components may not be logically connected to each other. </li></ul><br>  <i>* Among other things, it was relevant for the old versions of Ingress, when due to the large number of websocket connections and constant reloads of nginx, “hung up nginx processes” appeared, which numbered in thousands and consumed a huge amount of resources.</i> <br><br>  The real case is with the installation of Prometheus with a huge number of metrics, in which when viewing "heavy" dashboard, where a large number of application containers are presented, each of which draws graphics, memory consumption quickly grew to ~ 15 GB.  As a result, OOM killer could “come” on the host system and start killing other services, which in turn led to “incomprehensible behavior of applications in the cluster”.  And because of the high CPU load by the client application, it is easy to get an unstable processing time for Ingress requests ... <br><br>  The solution was quickly asked for by itself: you need to allocate individual machines for different tasks.  We have identified 3 main types of groups by task: <br><br><ol><li>  <b>Fronts</b> , where we put only Ingress'y, to be sure that no other services can affect the processing time of requests; </li><li>  <b>System nodes</b> , on which we deploy <a href="https://habr.com/company/flant/blog/427745/">VPNs</a> , <a href="https://habr.com/company/flant/blog/341386/">loghouse</a> , <a href="https://habr.com/company/flant/blog/412901/">Prometheus</a> , Dashboard, CoreDNS, etc .; </li><li>  <b>Nodes for applications</b> - in fact, where the client applications roll out.  They can also be allocated to environments or functionality: dev, prod, perf, ... </li></ol><br><h3>  Decision </h3><br>  How do we implement it?  Very simple: two native mechanisms Kubernetes.  The first is <b>nodeSelector</b> to select the desired node where the application should go, which is based on the labels <a href="https://kubernetes.io/docs/concepts/configuration/assign-pod-node/">installed</a> on each node. <br><br>  Let's say we have a <code>kube-system-1</code> node.  We add an additional label to it: <br><br><pre> <code class="bash hljs">$ kubectl label node kube-system-1 node-role/monitoring=</code> </pre> <br>  ... and in <code>Deployment</code> , which should roll out to this node, we write: <br><br><pre> <code class="plaintext hljs">nodeSelector: node-role/monitoring: ""</code> </pre> <br>  The second mechanism is <a href="https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/"><b>taints and tolerations</b></a> .  With it, we explicitly indicate that only containers with tolerance to this taint can be launched on these machines. <br><br>  For example, there is a <code>kube-frontend-1</code> machine, into which we will roll out only Ingress.  Add taint to this node: <br><br><pre> <code class="bash hljs">$ kubectl taint node kube-frontend-1 node-role/frontend=<span class="hljs-string"><span class="hljs-string">""</span></span>:NoExecute</code> </pre> <br>  ... and at <code>Deployment</code> we create toleration: <br><br><pre> <code class="plaintext hljs">tolerations: - effect: NoExecute key: node-role/frontend</code> </pre> <br>  In the case of kops, under the same needs, you can create separate instance groups: <br><br><pre> <code class="bash hljs">$ kops create ig --name cluster_name IG_NAME</code> </pre> <br>  ... and you’ll get something like the following instance group config in kops: <br><br><pre> <code class="plaintext hljs">apiVersion: kops/v1alpha2 kind: InstanceGroup metadata: creationTimestamp: 2017-12-07T09:24:49Z labels: dedicated: monitoring kops.k8s.io/cluster: k-dev.k8s name: monitoring spec: image: kope.io/k8s-1.8-debian-jessie-amd64-hvm-ebs-2018-01-14 machineType: m4.4xlarge maxSize: 2 minSize: 2 nodeLabels: dedicated: monitoring role: Node subnets: - eu-central-1c taints: - dedicated=monitoring:NoSchedule</code> </pre> <br>  Thus, an additional label and taint will be automatically added to the nodes from this instance group. <br><br><h2>  2. Setting up php-fpm under heavy loads </h2><br>  There is a wide variety of servers that are used to run web applications: php-fpm, gunicorn, and the like.  Their use in Kubernetes means that there are several things that you should always think about: <br><br><ul><li>  It takes approximately to understand <b>how many workers</b> we are ready to allocate in php-fpm in each container.  For example, we can allocate 10 workers to process incoming requests, allocate less resources to the pod and scale using the number of pods - this is good practice.  Another example is to allocate 500 workers for each pod and have 2-3 such pods in production ... but this is a pretty bad idea. </li><li>  <b>Liveness / readiness tests are</b> required to check the correctness of each pod's operation and in case the pod gets stuck due to network problems or access to the database (there could be any option and reason for this).  In such situations it is necessary to re-create the problem pod. </li><li>  It is important to explicitly prescribe <b>request and limit resources</b> for each container so that the application does not “run down” and does not start to harm all services on this server. </li></ul><br><h3>  Solutions </h3><br>  Unfortunately, <b>there is no silver bullet</b> that helps to immediately understand how many resources (CPU, RAM) the application may need.  A possible option is to watch the consumption of resources and each time select the optimal values.  In order to avoid unjustified OOM kill'ov and throttling CPU, which strongly affect the service, you can offer: <br><br><ul><li>  add correct liveness / readiness samples so that we can say for sure that this container is working correctly.  Most likely it will be a service page that checks the availability of all infrastructure elements (necessary for the application to work in the pod) and returns a 200 OK response code; </li><li>  correctly select the number of workers who will process requests, and distribute them correctly. </li></ul><br>  For example, we have 10 pods, which consist of two containers: nginx (for uploading statics and proxying requests to the backend) and php-fpm (the backend itself, which handles dynamic pages).  Php-fpm pool is configured for a static number of workers (10).  Thus, per unit of time we can process 100 active requests to backends.  Let each request be processed by PHP in 1 second. <br><br>  What happens if in one particular pod, in which 10 requests are now actively being processed, another 1 request will arrive?  PHP will not be able to process it and Ingress will send it to try again in the next pod if this is a GET request.  If there was a POST request, it will return an error. <br><br>  And if we take into account that during the processing of all 10 requests we will receive a check from a kubelet (liveness test), it will end with an error and Kubernetes will start to think that something is wrong with this container and will kill it.  In this case, all requests that were being processed at the moment will fail (!) And at the time of the container restart it will fall out of balance, which will entail an increase in requests for all other backends. <br><br><h4>  Visually </h4><br>  Suppose we have 2 pods that have 10 php-fpm workers configured.  Here is a graph that displays information during an “idle” time, i.e.  when the only person requesting php-fpm is the php-fpm exporter (we have one active worker per each): <br><br><img src="https://habrastorage.org/webt/zo/hw/ea/zohwea7nsfbofpgvhixp7edc-qk.png"><br><br>  Now run the boot with concurrency 19: <br><br><img src="https://habrastorage.org/webt/my/ba/hp/mybahpcgbfoqzzazbwtzu9dc46a.png"><br><br>  Now let's try to make concurrency higher than we can handle (20) ... let's say 23. Then all php-fpm workers are busy processing client requests: <br><br><img src="https://habrastorage.org/webt/tq/v6/f1/tqv6f1fopruyz8_zittdan1pkho.png"><br><br>  Workers cease to be enough to handle liveness tests, so we see the following picture in Kubernetes dashboard (or <code>describe pod</code> ): <br><br><img src="https://habrastorage.org/webt/7z/qo/fw/7zqofwlbjcmxl0qkz2g2rkerece.png"><br><br>  Now, when one of the pods reboots, an <b>avalanche effect happens</b> : requests begin to fall on the second pod, which is also unable to process them, which is why we get a large number of errors from customers.  After the pools of all containers overflow, raising the service is problematic - this is possible only by a sharp increase in the number of pods or workers. <br><br><h4>  First option </h4><br>  In the container with PHP, you can configure 2 fpm pools: one for processing client requests, and the other for checking the survivability of the container.  Then on the nginx container you will need to make a similar configuration: <br><br><pre> <code class="plaintext hljs"> upstream backend { server 127.0.0.1:9000 max_fails=0; } upstream backend-status { server 127.0.0.1:9001 max_fails=0; }</code> </pre> <br>  All that remains is to send a liveness test to upstream processing called <code>backend-status</code> . <br><br>  Now that the liveness test is handled separately, errors will still occur for some clients, but at least there are no problems associated with restarting the pod and breaking the connections of the other clients.  Thus, we will greatly reduce the number of errors, even if our backends do not cope with the current load. <br><br>  This option is certainly better than nothing, but it’s also bad that something can happen to the main pool, which we don’t find out with liveness tests. <br><br><h4>  Second option </h4><br>  You can also use the not very popular module for nginx called <a href="https://github.com/cfsego/nginx-limit-upstream">nginx-limit-upstream</a> .  Then in PHP we will specify 11 workers, and in the container with nginx we will make a similar config: <br><br><pre> <code class="plaintext hljs"> limit_upstream_zone limit 32m; upstream backend { server 127.0.0.1:9000 max_fails=0; limit_upstream_conn limit=10 zone=limit backlog=10 timeout=5s; } upstream backend-status { server 127.0.0.1:9000 max_fails=0; }</code> </pre> <br>  At the frontend level, nginx will limit the number of requests that will be sent to the backend (10).  An interesting point is that a special deferred buffer is created (backlog): if the client receives the 11th request for nginx, and nginx sees that the php-fpm pool is busy, this request is placed in the backlog for 5 seconds.  If during this time php-fpm is not released, then only then Ingress will enter the case, which will retry the request to another pod.  This smoothes the picture, since we will always have 1 free PHP worker to handle the liveness sample - the avalanche effect can be avoided. <br><br><h4>  Other thoughts </h4><br>  For more versatile and beautiful solutions to this problem, it is worth looking in the direction of <a href="https://www.envoyproxy.io/">Envoy</a> and its analogues. <br><br>  In general, in order for Prometheus to have a clear employment of workers, which in turn will help to quickly find the problem (and notify about it), I highly recommend getting ready-made <a href="https://prometheus.io/docs/instrumenting/exporters/">exporters</a> to convert data from the software to the Prometheus format. <br><br><h2>  PS </h2><br>  Other K8s series tips &amp; tricks: <br><br><ul><li>  " <a href="https://habr.com/company/flant/blog/427745/">Access to dev-sites</a> "; </li><li>  " <a href="https://habr.com/company/flant/blog/417509/">Accelerate the bootstrap of large databases.</a> " </li></ul><br>  Read also in our blog: <br><br><ul><li>  " <a href="https://habr.com/company/flant/blog/427283/">How to ensure high availability in Kubernetes</a> "; </li><li>  “ <a href="https://habr.com/company/flant/blog/412901/">Monitoring and Kubernetes</a> ” <i>(review and video of the report)</i> ; </li><li>  " <a href="https://habr.com/company/flant/blog/331188/">Our experience with Kubernetes in small projects</a> " <i>(video of the report, which includes an introduction to the technical device Kubernetes)</i> . </li></ul></div><p>Source: <a href="https://habr.com/ru/post/432748/">https://habr.com/ru/post/432748/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../432736/index.html">Devops, JUnit5 and microservice testing: a subjective view of Moscow “Heisenbag”</a></li>
+<li><a href="../432740/index.html">"CMS" based on Google Spreadsheets for static sites</a></li>
+<li><a href="../432742/index.html">Corporate time trouble</a></li>
+<li><a href="../432744/index.html">DWDM: the solution is cheaper than the carrier by 30-50% (Enterprise class)</a></li>
+<li><a href="../432746/index.html">For three days in reanimation or what is wrong with the Work-Life Balance section on Mobius'18?</a></li>
+<li><a href="../432750/index.html">Joy Haxe. Novel with a deprived programming language</a></li>
+<li><a href="../432752/index.html">An anthill or a fortress? Building a house for the price of an apartment. 3 part. Power supply</a></li>
+<li><a href="../432754/index.html">In-Memory and On-Disk data storage will be submitted to the public.</a></li>
+<li><a href="../432756/index.html">We implement accessibility support without changing the visual component of the mobile application.</a></li>
+<li><a href="../432760/index.html">Vector product views, or another application of the Word2Vec model</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

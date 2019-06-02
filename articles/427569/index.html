@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>OpenStack fine tuning under high load</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, my name is Maxim, I am a system administrator. Three years ago, my colleagues and I began to transfer products to microservices, and decided to us...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>OpenStack fine tuning under high load</h1><div class="post__text post__text-html js-mediator-article"><p>  Hi, my name is Maxim, I am a system administrator.  Three years ago, my colleagues and I began to transfer products to microservices, and decided to use Openstack as a platform, and encountered a number of unobvious rakes in automating test circuits.  This post is about the nuances of OpenStack settings, which are hardly located on the fifth page of the search engine output (and it is better that they were easily located on the first one). </p><br><p><img src="https://habrastorage.org/webt/mq/7k/0o/mq7k0oanmmzmtasnicu6ra237po.png"><br>  <em>Load on the core: it was - it became</em> </p><br><h3 id="nat">  NAT </h3><br><p>  In some instances we use dualstack.  This is when the virtual machine receives two addresses at once - IPv4 and IPv6.  At first we made it so that the “floating” v4 address was assigned in the internal network via NAT, and the machine received v6 via BGP, but there are a couple of problems with this. </p><br><p>  NAT is an additional node in the network, where even without it you need to monitor the normal distribution of the load.  The emergence of NAT in the network almost always leads to difficulties with debugging - on the host one IP, in the base another, and it becomes difficult to track the request.  Mass searches begin, and the solution will still be inside OpenStack. </p><br><p>  NAT also does not allow normal access segmentation between projects.  All projects have their own subnets, floating IPs are constantly migrating, and with NAT it becomes absolutely impossible to manage.  In some installations, they talk about the use of NAT 1 in 1 (the internal address is not different from the external one), but it still leaves unnecessary links in the chain of interaction with external services.  We came to the conclusion that the best option for us is the BGP network. </p><a name="habracut"></a><br><h2 id="chem-prosche-tem-luchshe">  The simpler the better </h2><br><p>  We tried different automation tools, but stopped at Ansible.  This is a good tool, but its standard functionality (even with optional modules) may not be enough in some difficult situations. </p><br><p>  For example, through the Ansible-module it is impossible to specify from which subnet to allocate addresses.  That is, you can specify a network, but you will not be able to specify a specific address pool.  This is where a shell command that creates a floating IP will help: </p><br><pre><code class="bash hljs">openstack floating ip create -c floating_ip_address -f value -project \ {{ project name }} —subnet private-v4 CLOUD_NET</code> </pre> <br><p>  Another example of missing functionality: due to dualstack, we cannot nominally create a router with two ports for v4 and v6.  This bash script comes in handy here: </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /bin/bash # $1 - router_name # $2 - router_project # $3 - router_network # echo "${@:4}" - private subnet lists FIXED4_SUBNET="subnet-bgp-nexthop-v4" FIXED6_SUBNET="subnet-bgp-nexthop-v6" openstack --os-project-name $2 router show $1 if [ $? -eq 0 ] then echo "router is exist" exit 0 fi openstack --os-project-name $2 router create --project $2 $1 for subnet in "${@:4}"; do openstack --os-project-name $2 router add subnet $1 $subnet done openstack --os-project-name $2 router set $1 --external-gateway $3 --fixed-ip subnet=$FIXED4_SUBNET --fixed-ip subnet=$FIXED6_SUBNET</span></span></code> </pre> <br><p>  The script creates a router, adds v4 and v6 subnets to it, and assigns an external gateway. </p><br><h3 id="retry">  Retry </h3><br><p>  In any strange situation - restart.  Try again, create an instance, router or DNS record, because you do not always understand quickly what your problem is.  Retry can delay the degradation of the service, but at this time you can safely and without nerves solve the problem. </p><br><p>  All the tips above, in fact, work great with Terraform, Puppet and anything else. </p><br><h2 id="vsemu-svoyo-mesto">  Everything has its place </h2><br><p>  Any large service (OpenStack is no exception) combines many smaller services that can interfere with each other’s work.  Here is an example. </p><br><p>  The network agent Neutron-L2-agent is responsible for network connectivity in OpenStack.  If all the other agents are partially on the controllers, then L2, by virtue of the specifics, is present everywhere. </p><br><p><img src="https://habrastorage.org/webt/ae/dx/uh/aedxuhggl2u8fyrtqgwkfphjjle.png"><br>  <em>That was how our infrastructure looked at the very beginning, until the number of circuits exceeded 50</em> </p><br><p>  At this point, we realized that because of this arrangement of agents, the controllers could not cope with the load, and transferred the agents to compute nodes.  They are more powerful than controllers, and besides, the controller does not have to be engaged in processing everything - it must issue a task to the executing node, and the node will execute it. </p><br><p><img src="https://habrastorage.org/webt/63/mh/8v/63mh8vrzvrqv3w5exan5tw8npba.png"><br>  <em>Transfer agents to compute nodes</em> </p><br><p>  However, this was not enough, because this arrangement had a bad effect on the performance of virtual machines.  With a density of 14 virtual cores per physical one, if one network agent started loading a stream, it could hit several virtual machines at once. </p><br><p><img src="https://habrastorage.org/webt/br/z5/zi/brz5ziy4mpmlr2ijectmrezvgtw.png"><br>  <em>Third iteration.</em>  <em>There are selected nodes</em> </p><br><p>  We thought and carried the agents to separate network nodes.  Now, only virtual services remain on compute nodes, all agents work on network nodes, and only bgp agents that are involved in the v6 network remain on controllers (since one bgp agent can serve only one type of network).  L2 remained everywhere, because without it, as we wrote above, there will be no connectivity on the network. </p><br><p><img src="https://habrastorage.org/webt/pu/yg/ie/puygieqmiyz9zi8dlovcu_j88ma.png"><br>  <em>The load schedule of the compute node before everything is mixed.</em>  <em>It was about 60%, but the load dropped insignificantly</em> </p><br><p><img src="https://habrastorage.org/webt/y5/im/t2/y5imt2_c5e-7xoha7crtboepbd4.png"><br>  <em>The load on softirq, before the network agents were removed from the compute node.</em>  <em>3 cores are loaded.</em>  <em>At that time, we thought it was normal.</em> </p><br><h2 id="code-asdocumentation">  Code as Documentation </h2><br><p>  Sometimes it happens that the code is the documentation, especially in such large services as OpenStack.  With a release cycle of six months, developers forget or simply do not have time to document some things, and it turns out as in the example below. </p><br><h4 id="pro-taymauty">  About timeouts </h4><br><p>  Once we saw that Neutron calls to Open vSwitch do not fit into five seconds and fall on timeout. </p><br><pre> <code class="bash hljs">127.0.0.1:29696: no response to inactivity probe after 10 seconds, disconnecting neutron.agent.ovsdb.native.commands TimeoutException: Commands [DbSetCommand(table=Port, col_values=((<span class="hljs-string"><span class="hljs-string">'tag'</span></span>, 11),), record=qtoq69a81c6-e2)] exceeded timeout 5 seconds</code> </pre> <br><p>  Of course, we assumed that somewhere in the settings this is fixed.  We looked in the configs, documentation and deb-package, but at first did not find anything.  As a result, the description of the desired setting was found on the fifth page of the search results - we looked at the code again and found the right place.  The setting is as follows: </p><br><pre> <code class="bash hljs">ovs_vsctl_timeout = 30</code> </pre> <br><p>  <em>We set it for 30 seconds (it was 5), and everything began to work a little better.</em> </p><br><p>  Here's another not obvious - when rebooting network components, some settings of Open vSwitch can be reset.  So, for example, happens with ovs-vsctl inactivity_probe.  This is also a timeout, but it affects the access of the ovs-vsctl itself to its database.  We added it to systemd init, which allowed us to start all the switches with the parameters we need at startup. </p><br><pre> <code class="bash hljs">ovs-vsctl <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> Controller <span class="hljs-string"><span class="hljs-string">"br-int"</span></span> inactivity_probe=30000</code> </pre> <br><h4 id="pro-nastroyki-setevogo-steka">  About network stack settings </h4><br><p>  We also had to slightly deviate from the generally accepted settings in the network stack that we use on our other servers. </p><br><p>  Here is the setting of how long ARP records need to be stored in the table: </p><br><pre> <code class="bash hljs">net.ipv4.neigh.default.base_reachable_time = 60 net.ipv4.neigh.default.gc_stale_time=60</code> </pre> <br><p>  The default is 1 day.  In general, one scheme can live for a couple of weeks, but the schemes can be recreated 4-6 times a day, while the MAC-address and IP-address are constantly changing.  To not garbage, we set the time in one minute. </p><br><pre> <code class="bash hljs">net.ipv4.conf.default.arp_notify = 1 net.nf_conntrack_max = 1000000 (default 262144) net.netfilter.nf_conntrack_max = 1000000 (default 262144)</code> </pre> <br><p>  In addition, we forcedly sent ARP notifications when the network interface was raised.  We also increased the conntrack table, because when using NAT and floating ip, we didn’t have a default value.  Increased to a million (with a default of 262,144), things got even better. </p><br><p>  The size of the MAC table of the Open vSwitch itself is correct: </p><br><pre> <code class="bash hljs">ovs-vsctl <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> bridge bt-int other-config:mac-table-size=50000 (default 2048)</code> </pre> <br><p><img src="https://habrastorage.org/webt/px/oi/px/pxoipxvpkzuou-twlr5uf0r28k8.png"><br>  <em>After all the settings, 40% of the load turned almost to zero</em> </p><br><h4 id="rx-flow-hash">  rx-flow-hash </h4><br><p>  To distribute the processing of udp traffic across all queues and processor threads, we included rx-flow-hash.  On Intel network cards, namely in the i40e driver, this option is disabled by default.  We have hypervisors with 72 cores in our infrastructure, and if only one is busy, then this is not very optimal. </p><br><p>  This is done like this: </p><br><pre> <code class="bash hljs">ethtool -N eno50 rx-flow-hash udp4 sdfn</code> </pre> <br><p><img src="https://habrastorage.org/webt/zj/qp/16/zjqp16xvvxmawd1irfjbwaeia9q.png"></p><br><p>  <strong>An important conclusion: you can customize everything.</strong>  The default configuration will fit to some point (as was ours), but the problem with timeouts led to the need to search.  And that's fine. </p><br><h3 id="pravila-bezopasnosti">  Safety regulations </h3><br><p>  According to the requirements of the security service, all projects within the company have personal and global rules - there are quite a lot of them.  When we passed over 300 virtual machines to one hypervisor, it all drained 80 thousand rules for iptables.  For iptables itself, this is not a problem, but Neutron loads these rules from RabbitMQ into one stream (because it is written in Python, and everything is sad with multithreading).  Neutron-agent freezes, loss of communication with RabbitMQ and chain reaction from timeouts occur, and after restoring Neutron again requests all the rules, starts synchronization, and everything starts all over again. </p><br><p>  At the same time, the time for creating stands increased from 20-40 minutes to, at best, an hour. </p><br><p>  At first, we simply wrapped everything up with retrays (already at this stage we realized that the problem could not be solved so quickly), and then we started using <a href="https://docs.openstack.org/neutron/pike/admin/fwaas.html">FWaaS</a> .  With it, we made the security rules with a compute node to the individual network nodes where the router itself is located. </p><br><p><img src="https://habrastorage.org/webt/ou/dg/r_/oudgr_riwann3smyytraqiommpe.png"><br>  <em>Source - <a href="https://docs.openstack.org/neutron/pike/admin/fwaas.html">docs.openstack.org</a></em> </p><br><p>  Thus, within the project there is full access to everything that is needed, and for external connections security rules apply.  So we reduced the load on Neutron and returned to 20-30 minutes to create a test environment. </p><br><h2 id="itog">  Total </h2><br><p>  OpenStack is a cool thing in which you can dispose of iron, create an internal cloud and create something else on its base.  In addition to this, there is a large community and an active <a href="https://t.me/openstack_ru">group in Telegram</a> , where we were told about timeouts. </p><br><p>  That's all.  Ask questions, my colleagues and I are ready to answer and share experiences. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/427569/">https://habr.com/ru/post/427569/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../427557/index.html">IT digest of November events (part one)</a></li>
+<li><a href="../427561/index.html">The right to repair: the first steps in the right direction from Motorola</a></li>
+<li><a href="../427563/index.html">The standard Encrypted SNI is implemented in Firefox Nightly</a></li>
+<li><a href="../427565/index.html">“My achievement was that I generally returned to the profession” - 10 questions for a programmer, issue 10</a></li>
+<li><a href="../427567/index.html">Cards from hexagons in Unity: water cycle, erosion, biomes, cylindrical map</a></li>
+<li><a href="../427571/index.html">Union R and PostgreSQL. We analyze the work of airports, calculate pensions.</a></li>
+<li><a href="../427573/index.html">Candy or life: Halloween as a reason to attract a child to science</a></li>
+<li><a href="../427575/index.html">Why Wi-Fi will not work as planned, and why know which employee uses the phone</a></li>
+<li><a href="../427577/index.html">Machine learning vs signature analysis when detecting attacks on a web application</a></li>
+<li><a href="../427579/index.html">Distributing an iOS application within a company (Enterprise Distribute iOS App in-house)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

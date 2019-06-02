@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Cluster storage for small web clusters based on drbd + ocfs2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="What we will tell about: 
+ How to quickly deploy shared storage for two servers based on drbd + ocfs2 solutions. 
+
+ For whom it will be useful: 
+ Tuto...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Cluster storage for small web clusters based on drbd + ocfs2</h1><div class="post__text post__text-html js-mediator-article">  <b>What we will tell about:</b> <br>  How to quickly deploy shared storage for two servers based on drbd + ocfs2 solutions. <br><br>  <b>For whom it will be useful:</b> <br>  Tutorial will be useful for system administrators and anyone who chooses a way to implement storage or want to try a solution. <br><br><h3>  What decisions are we abandoned and why </h3><br>  Often we are faced with a situation where we need to implement shared storage on a small web cluster with good read-write performance.  We tried various options for the implementation of a common repository for our projects, but little was able to satisfy us at once by several indicators.  Now tell you why. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  Glusterfs did not suit us with read and write performance, there were problems with simultaneously reading a large number of files, there was a high load on the CPU.  The problem with reading files could be solved by contacting them directly in the brick-and, but this is not always applicable and generally wrong. </li></ul><br><ul><li>  Ceph did not like excessive complexity, which can be harmful on projects with 2-4 servers, especially if the project is subsequently serviced.  Again, there are serious performance constraints, forcing to build separate storage clusters, as with glusterfs. </li></ul><br><ul><li>  Using a single nfs server to implement shared storage raises issues in terms of fault tolerance. </li></ul><br><ul><li>  s3 is a great popular solution for a range of tasks, but it’s not a file system either, which narrows the scope. </li></ul><a name="habracut"></a><br><ul><li>  lsyncd.  If we have already started talking about “non-file systems”, then it is worth going through this popular solution.  Not only is it not suitable for two-way exchange (but if you really want, you can), it also does not work stably on a large number of files.  A nice addition to everything is that it is single-threaded.  The reason is in the program architecture: it uses inotify to monitor objects of work that it hangs at startup and during rescan.  Rsync is used as a transmission medium. </li></ul><br><h3>  Tutorial: how to deploy shared storage based on drbd + ocfs2 </h3><br>  One of the most convenient solutions for us was a bunch of <b>ocfs2 + drbd</b> .  Now we will tell you how you can quickly deploy shared storage for two servers based on solution data.  But first, a little about the components: <br><br>  <b>DRBD</b> is a storage system from a standard Linux distribution that allows data to be replicated between servers in blocks.  The main application is to build fault-tolerant storage. <br><br>  <b>OCFS2</b> is a file system that provides shared use of the same storage by multiple systems.  Included in the delivery of Linux and is a kernel module and userspace toolkit for working with filesystems.  OCFS2 can be used not only on top of DRBD, but also on top of iSCSI with multiple connections.  In our example, we use DRBD. <br><br>  All actions are performed on ubuntu server 18.04 in the minimum configuration. <br><br>  <b>Step 1. Configure DRBD:</b> <b><br></b> <br>  In the /etc/drbd.d/drbd0.res file we describe our virtual block device / dev / drbd0: <br><br><pre><code class="plaintext hljs">resource drbd0 { syncer { rate 1000M; } net { allow-two-primaries; after-sb-0pri discard-zero-changes; after-sb-1pri discard-secondary; after-sb-2pri disconnect; } startup { become-primary-on both; } on drbd1 { meta-disk internal; device /dev/drbd0; disk /dev/vdb1; address 10.10.10.192:7789; } on drbd2 { meta-disk internal; device /dev/drbd0; disk /dev/vdb1; address 10.10.10.193:7789; } }</code> </pre> <br>  <i>meta-disk internal</i> - use the same block devices to store metadata <br>  <i>device / dev / drbd0</i> - use / dev / drbd0 as the path to drbd volume. <br>  <i>disk / dev / vdb1</i> - use / dev / vdb1 <br>  <i>syncer {rate 1000M;</i>  <i>}</i> - use gigabit bandwidth <br>  <i>allow-two-primaries</i> is an important option allowing the adoption of changes on two primary servers <br>  <i>after-sb-0pri, after-sb-1pri, after-sb-2pri</i> are the options that are responsible for the actions of the node when a splitbrain is detected.  More details can be found in the documentation. <br>  <i>become-primary-on both</i> - sets both nodes in primary. <br><br>  In our case, we have two absolutely identical VMs, with a 10 Gigabit bandwidth allocated to a virtual network. <br><br>  In our example, the network names of the two nodes of the cluster are drbd1 and drbd2.  To work properly, you need to map the names and ip addresses of the nodes in / etc / hosts. <br><br><pre> <code class="bash hljs">10.10.10.192 drbd1 10.10.10.193 drbd2</code> </pre> <br>  <b>Step 2. Configure the nodes:</b> <br><br>  On both servers we execute: <br><pre> <code class="bash hljs">drbdadm create-md drbd0</code> </pre> <br><img src="https://habrastorage.org/webt/8d/_s/cu/8d_scupzapinrfgfcfybxipxfbk.png" alt="image"><br><br><pre> <code class="bash hljs">modprobe drbd drbdadm up drbd0 cat /proc/drbd</code> </pre> <br>  We get the following: <br><br><img src="https://habrastorage.org/webt/c4/zp/kx/c4zpkxvdupcfqbbmfccp3bbjqws.png" alt="image"><br><br>  You can run a sync.  On the first node you need to run: <br><pre> <code class="bash hljs">drbdadm primary --force drbd0</code> </pre> <br>  We look at the status: <br><pre> <code class="bash hljs">cat /proc/drbd</code> </pre> <br><img src="https://habrastorage.org/webt/vd/nn/xd/vdnnxdcrmmufhf7sdz_gxyzcezy.png" alt="image"><br><br>  Ok, sync started.  We are waiting for the end and see the picture: <br><br><img src="https://habrastorage.org/webt/fx/j1/5k/fxj15krpylof_f5uok4zq8xfznq.png" alt="image"><br><br>  <b>Step 3. We start synchronization on the second node:</b> <br><br><pre> <code class="bash hljs">drbdadm primary --force drbd0</code> </pre><br>  We get the following: <br><br><img src="https://habrastorage.org/webt/zl/8f/_w/zl8f_ws9wacesr88mtoo9b_dxbm.png" alt="image"><br><br>  Now we can write to drbd from two servers. <br><br>  <b>Step 4. Install and configure ocfs2.</b> <br><br>  We will use a rather trivial configuration: <br><br><pre> <code class="plaintext hljs">cluster: node_count = 2 name = ocfs2cluster node: number = 1 cluster = ocfs2cluster ip_port = 7777 ip_address = 10.10.10.192 name = drbd1 node: number = 2 cluster = ocfs2cluster ip_port = 7777 ip_address = 10.10.10.193 name = drbd2</code> </pre><br>  It needs to be written in <i>/etc/ocfs2/cluster.conf</i> on both nodes. <br><br>  Create a FS on drbd0 on any node: <br><pre> <code class="bash hljs">mkfs.ocfs2 -L <span class="hljs-string"><span class="hljs-string">"testVol"</span></span> /dev/drbd0</code> </pre><br>  Here we created a file system labeled testVol on drbd0 using default parameters. <br><br><img src="https://habrastorage.org/webt/9l/sr/gl/9lsrgldfbco5qrzkjhkoh4oefly.png" alt="image"><br><br>  In / etc / default / o2cb must be set (as in our configuration file) <br><pre> <code class="bash hljs">O2CB_ENABLED=<span class="hljs-literal"><span class="hljs-literal">true</span></span> O2CB_BOOTCLUSTER=ocfs2cluster</code> </pre> <br>  and execute on each node: <br><pre> <code class="bash hljs">o2cb register-cluster ocfs2cluster</code> </pre> <br>  After that, we include and add to the autorun all the units we need: <br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> drbd o2cb ocfs2 systemctl start drbd o2cb ocfs2</code> </pre> <br>  Some of this will already be launched during the setup process. <br><br>  <b>Step 5. Add mount points in fstab on both nodes:</b> <br><br><pre> <code class="bash hljs">/dev/drbd0 /media/shared ocfs2 defaults,noauto,heartbeat=<span class="hljs-built_in"><span class="hljs-built_in">local</span></span> 0 0</code> </pre> <br>  Directory <i>/ media / shared</i> should be created in advance. <br><br>  Here we use the noauto options, which means that the file system will not be mounted at startup (I prefer to mount network fs via systemd) and heartbeat = local, which means using the heartbeat service on each node.  There is also a global heartbeat, which is more suitable for large clusters. <br><br>  Then you can mount <i>/ media / shared</i> and check the sync content. <br><br>  <b>Done!</b>  As a result, we get a more or less fault-tolerant storage with scalability and decent performance. </div><p>Source: <a href="https://habr.com/ru/post/445612/">https://habr.com/ru/post/445612/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445594/index.html">Tools for creating a responsive site without access to the site</a></li>
+<li><a href="../445596/index.html">Kubernetes tips & tricks: custom error pages in NGINX Ingress</a></li>
+<li><a href="../445600/index.html">[Poll and evil] Hosting, be they wrong</a></li>
+<li><a href="../445602/index.html">PHP Russia 2019: your own “stadium” for the first league language</a></li>
+<li><a href="../445608/index.html">Game over: analysts report an increase in the number of DDoS attacks on the game segment</a></li>
+<li><a href="../445618/index.html">We write an operating system on Rust. Implementation of paging memory (new version)</a></li>
+<li><a href="../445620/index.html">What does a UX writer do?</a></li>
+<li><a href="../445622/index.html">New in Java 12: The Teeing Collector</a></li>
+<li><a href="../445626/index.html">How deep is the rabbit hole? CLRium # 5: Garbage Collector</a></li>
+<li><a href="../445632/index.html">From parser posters of the theater in Python to Telegram-bot. Part 2</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

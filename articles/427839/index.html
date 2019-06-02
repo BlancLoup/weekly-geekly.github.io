@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Authorization of users in Django through GSSAPI and delegation of user rights to the server</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, my colleagues and I needed to implement transparent (SSO) authorization in our project. Now there is quite a little information on the topic...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Authorization of users in Django through GSSAPI and delegation of user rights to the server</h1><div class="post__text post__text-html js-mediator-article">  Recently, my colleagues and I needed to implement transparent (SSO) authorization in our project.  Now there is quite a little information on the topic, especially in Russian.  For this reason, it was decided to share with the descendants the implementation of this functionality. <br><br>  So, the task was as follows: it was necessary to configure transparent authorization via GSSAPI from the user to the server, and also to have the opportunity to go to the database on behalf of this user. <br><a name="habracut"></a><br>  We had: <br><br><ul><li>  configured Kerberos + LDAP server </li><li>  PostgreSQL server configured for GSSAPI authorization only </li><li>  Django + UWSGI + nginx application server, with Kerberos configured </li></ul><br>  Initially, the idea was to delegate user authorization in a web server application, setting up GSSAPI authorization on it, and Django to indicate that we will work with RemoteUser.  As part of this description, I will not tell you how to configure nginx to work on GSSAPI, and Django to delegate authorization to a web server, this is a well-documented part, and there are quite a lot of articles on this.  After setting up and conducting tests - we realized that this is absolutely not what we need.  Yes, we can authorize and get the user principal name, but we do not have the rights to do anything on behalf of this user. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Next, we have attempted to find something worthwhile on the Internet.  They were crowned with relative success, the following packages for Django were found: <a href="https://pypi.org/project/django-kerberos/">django-kerberos</a> , <a href="https://pypi.org/project/django-auth-spnego/">django-auth-spnego</a> , <a href="https://pypi.org/project/django-auth-kerberos/">django-auth-kerbero</a> .  In fact, all these packages did the same thing, some were not updated for a long time and had to “dance with a tambourine” for a long time, so that at least something would work.  They provided the same functionality as the nginx bundle (GSSAPI) + Django (RemouteUser).  They all helped to come to the solution of the problem with their source code. <br><br>  Next, the following packages were found to work with GSSAPI in Python: <a href="https://github.com/apple/ccs-pykerberos">ccs-pykerberos</a> and <a href="https://github.com/pythongssapi/python-gssapi">python-gssapi</a> , in fact, they import the implementation of the RFC2744 standard and RFC4559 in Python.  With the help of the ccs-pykerberos package, we just managed to implement the conceived functionality, then I will show some code where communication with LDAP and the user is implemented, as well as a query to the database on its behalf. <br><br><pre><code class="hljs pgsql"><span class="hljs-keyword"><span class="hljs-keyword">from</span></span> django.shortcuts <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> render <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> django.<span class="hljs-keyword"><span class="hljs-keyword">template</span></span>.response <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> TemplateResponse <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> kerberos <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> psycopg2 def <span class="hljs-keyword"><span class="hljs-keyword">index</span></span>(request): <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-string"><span class="hljs-string">'HTTP_AUTHORIZATION'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> request.META: kind, initial_client_token = request.META[<span class="hljs-string"><span class="hljs-string">'HTTP_AUTHORIZATION'</span></span>].split(<span class="hljs-string"><span class="hljs-string">' '</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> kind == <span class="hljs-string"><span class="hljs-string">'Negotiate'</span></span>: service = <span class="hljs-string"><span class="hljs-string">'HTTP@django-server-pricipal.che.ru'</span></span> _ignore_result, krb_context = kerberos.authGSSServerInit(service) kerberos.authGSSServerStep(krb_context, initial_client_token) principal = kerberos.authGSSServerUserName(krb_context) _ignore_result = kerberos.authGSSServerStoreDelegate(krb_context) conn = psycopg2.<span class="hljs-keyword"><span class="hljs-keyword">connect</span></span>( host=<span class="hljs-string"><span class="hljs-string">'postgresql-server-host'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">user</span></span>=principal, dbname=<span class="hljs-string"><span class="hljs-string">'request-db'</span></span>, ) <span class="hljs-keyword"><span class="hljs-keyword">cursor</span></span> = conn.<span class="hljs-keyword"><span class="hljs-keyword">cursor</span></span>() <span class="hljs-keyword"><span class="hljs-keyword">cursor</span></span>.<span class="hljs-keyword"><span class="hljs-keyword">execute</span></span>("SELECT version()") records = <span class="hljs-keyword"><span class="hljs-keyword">cursor</span></span>.fetchall() <span class="hljs-keyword"><span class="hljs-keyword">else</span></span>: unauthorized_template_name = <span class="hljs-string"><span class="hljs-string">'gssapi_test/unauthorized.html'</span></span> response = TemplateResponse(request, <span class="hljs-string"><span class="hljs-string">'gssapi_test/index.html'</span></span>, status=<span class="hljs-number"><span class="hljs-number">401</span></span>) response[<span class="hljs-string"><span class="hljs-string">'WWW-Authenticate'</span></span>] = <span class="hljs-string"><span class="hljs-string">'Negotiate'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> response content = {<span class="hljs-string"><span class="hljs-string">'records'</span></span>: records} <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> render(request, <span class="hljs-string"><span class="hljs-string">'gssapi_test/index.html'</span></span>, content)</code> </pre> <br>  First, we need to check whether the authorization header was passed to us, if not - we should send a response with Negotiate in response, and then wait for the token from the Negotiate user.  This token looks like a big footcloth encoded in base64.  After receiving the token, we initialize (authorize) the server of our application in the LDAP service using the authGSSServerInit () function.  Next, we log in to the LDAP service on behalf of the user, using just the token that was received from the header, the authGSSServerStep () function.  Then we get the user's principal, which we will use as the user, when executing the query in the database.  And also, we need to create a Kerberos bitel cache, which will be used automatically to authorize us in PostgreSQL, the authGSSServerStoreDelegate () function.  This function is only in the latest version of this package, so you need to clone your source code with git and build it. <br><br>  The browser must be configured to return Negotiate, by default this option is disabled.  All tests were conducted on Firefox in CentOS7, CentOS7 was installed on all servers as well. <br><br>  In addition, we may have a problem in which the ticket cache generated by our function will not be visible to our process and, accordingly, we will receive that the user has not logged in to the GSSAPI.  It is solved by setting ticket caching in krb5.conf.  Just in case I will give an example of our config: <br><br><div class="spoiler">  <b class="spoiler_title">/etc/krb5.conf</b> <div class="spoiler_text"><pre> <code class="python hljs">includedir /etc/krb5.conf.d/ includedir /var/lib/sss/pubconf/krb5.include.d/ [libdefaults] default_realm = DOMAIN.RU dns_lookup_realm = false dns_lookup_kdc = false rdns = false ticket_lifetime = <span class="hljs-number"><span class="hljs-number">24</span></span>h forwardable = true udp_preference_limit = <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-comment"><span class="hljs-comment">#    -    #default_ccache_name = KEYRING:persistent:%{uid} #    KRB5_KTNAME     default_keytab_name = FILE:/etc/httpd/http.keytab [realms] DOMAIN.RU = { kdc = ldap-server-host.domain.ru:88 master_kdc = ldap-server-host.domain.ru:88 admin_server = ldap-server-host.domain.ru:749 kpasswd_server = ldap-server-host.domain.ru:464 default_domain = domain.ru pkinit_anchors = FILE:/etc/domain/ca.crt } [domain_realm] .domain.ru = DOMAIN.RU domain.ru = DOMAIN.RU .domain.ru = DOMAIN.RU</span></span></code> </pre><br></div></div><br>  This piece of code was created to help understand how authorization takes place and the delegation of rights, then with this knowledge you can build authorization decorators and backlinks to communicate with the database.  The ccs-pykerberos package was developed by Apple for its own internal needs, so I’ll provide a link to their code where they use it.  He helped us a lot in understanding that they developed <a href="https://programtalk.com/vs2/python/819/ccs-calendarserver/twistedcaldav/authkerb.py/">ccs-calendarserver / twistedcaldav / authkerb.py</a> <br><br><h4>  useful links </h4><br><ul><li>  <a href="https://habr.com/post/169877/">Configuring Kerberos + LDAP</a> </li><li>  <a href="">Implement a similar task in Java</a> </li><li>  <a href="https://habr.com/post/305098/">Configure nginx to work on SPNEGO</a> </li><li>  <a href="https://tools.ietf.org/pdf/rfc2744.pdf">RFC2744 Specification</a> </li><li>  <a href="http://www.ietf.org/rfc/rfc4559.txt">RFC4559 SPNEGO Specification</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/427839/">https://habr.com/ru/post/427839/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../427829/index.html">Supervising or outsourcing? That is the question</a></li>
+<li><a href="../427831/index.html">FTS will spend 3.3 billion rubles to adapt its system to the domestic "Linux" and "Office"</a></li>
+<li><a href="../427833/index.html">Report on the conference Joker 2018</a></li>
+<li><a href="../427835/index.html">The picture generated by the neural network went under the hammer for $ 432,500</a></li>
+<li><a href="../427837/index.html">The first days in the development team - as it happens with us</a></li>
+<li><a href="../427841/index.html">Scam company Magic Leap</a></li>
+<li><a href="../427843/index.html">How to sleep right and wrong</a></li>
+<li><a href="../427845/index.html">How to fit in the iPhone million stars</a></li>
+<li><a href="../427847/index.html">Curiosity and procrastination in machine learning</a></li>
+<li><a href="../427849/index.html">Straight line with TM. v3.0</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

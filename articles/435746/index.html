@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Dynamic DAG generation in Airflow</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! My name is Anton, in Rostelecom I am developing a central data repository. Our repository consists of modules, in which several Informatica ins...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Dynamic DAG generation in Airflow</h1><div class="post__text post__text-html js-mediator-article"><p>  Hello!  My name is Anton, in Rostelecom I am developing a central data repository.  Our repository consists of modules, in which several Informatica instances are used as an orchestrator, some of which we want to transfer to Airflow as part of the transition to an open-source solution.  Since Informatica and Airflow are fundamentally different tools, taking and repeating an existing implementation is not so easy.  We wanted to get a workflow, on the one hand, as close as possible to the current implementation and, on the other hand, using the most interesting <a href="http://airflow.apache.org/">first principle of Airflow</a> - dynamism, which gives flexibility. </p><br><p>  In this short article I want to talk about the truly dynamic generation of DAGs in Airflow.  On this topic, there are mainly many articles from developers from India on the Internet, which are materials like <em>"you can generate dags dynamically in Airflow, for example: &lt;example for generating 10 HelloWorld tasks / dags&gt;"</em> .  We were interested in the generation of dags, which will vary in time with a variable number and task names. </p><br><p><img src="https://habrastorage.org/webt/zl/yr/sk/zlyrskhcw1q8wswrizaqcep2-pa.png" title="Apache Airflow"></p><a name="habracut"></a><br><p>  Currently, Airflow is implemented to launch a module that generates data packets on remote source servers for further loading into the repository.  It runs on a simple schedule, it is not very interesting to consider it in detail.  Also soon, orchestration will be introduced through the Airflow module, which delivers data packets for further loading by layers into intermediate staging.  Here we are waiting for a number of rakes, descriptions of which I have not found anywhere and want to share experiences. </p><br><p>  On Airflow on Habré there are a couple of articles from the developers of Mail.ru, in which the basic things are well described: </p><br><p>  <a href="https://habr.com/company/mailru/blog/339392/">General Description of Airflow</a> <br>  <a href="https://habr.com/company/mailru/blog/344398/">Branching, parametrization through jinja and communication within DAG through Xcom</a> </p><br><h2 id="nebolshoy-glossariy">  Short glossary: </h2><br><p>  <a href="http://airflow.apache.org/concepts.html">DAG / DAG</a> - directed acyclic graph.  In this case, we mean a sequence of actions that depend on each other and do not form cycles. <br>  <a href="http://airflow.apache.org/concepts.html">SubDAG / Sabdag</a> is the same as DAG, but located inside another DAG, running within the framework of the parent DAG (ie, being a TASK) and not having a separate schedule. <br>  <a href="http://airflow.apache.org/concepts.html">Operator / Operator</a> - a specific step in Dag, performing a specific action.  For example, PythonOperator. <br>  <a href="http://airflow.apache.org/concepts.html">Task / Task</a> - a specific operator instance when launching DAG, visualized as a square in the web interface.  For example, PythonOperator, which is called <em>run_task</em> and runs in DAG <em>check_dag</em> . </p><br><h2 id="ideya-dinamicheskoy-generacii-taskov-v-dage-problemy-i-nedostatki">  The idea of ​​dynamic generation of tasks in the Dag, problems and disadvantages </h2><br><p>  Input data: </p><br><p>  In the repository of the orchestrator there is a table, let's call it PKG_TABLE. <br>  There is a mechanism that adds to the PKG_TABLE table that the data packet is ready to be loaded. </p><br><p>  What we wanted: </p><br><p>  DAG, which will be generated for packages ready for downloading and launching their loading (spoiler: in the end everything turned out). </p><br><p>  Using the code below, we generate a dag consisting of the LatestOnlyOperator task and its dependent sabdag task, which is created when the pkg_subdag_factory function is run, which receives a list of packages from the PKG_TABLE table and generates several PythonOperators.  If there are no download packages, a DummyOperator is generated. </p><br><p>  We decided to make the first version with one PythonOperator, later remaking it into a detailed workflow using Airflow tools. </p><br><pre><code class="python hljs"><span class="hljs-comment"><span class="hljs-comment"># -*- coding: utf-8 -*- """  DAG    """ from airflow.models import DAG from airflow.operators.python_operator import PythonOperator from airflow.operators.subdag_operator import SubDagOperator from airflow.operators.dummy_operator import DummyOperator from airflow.operators.latest_only_operator import LatestOnlyOperator from airflow.hooks.oracle_hook import OracleHook from datetime import datetime, timedelta import logging from scripts.lib import run_load, select_pkg_data def pkg_subdag_factory( oracle_hook, parent_dag_name, child_dag_name, start_date, schedule_interval, param_dict): """ ,  DAG    PythonOperator\` (1  - 1 PythonOperator)  : oracle_hook - airflow.hooks.oracle_hook.OracleHook parent_dag_name -  ""  child_dag_name -    start_date -       schedule_interval -      param_dict -     """ dag = DAG( '%s.%s' % (parent_dag_name, child_dag_name), schedule_interval=schedule_interval, start_date=start_date, catchup=False ) logging.info('selecting pkg data...') pkg_set = select_pkg_data(oracle_hook) if len(pkg_set): logging.info('pkg_set:') logging.info(pkg_set) for pkg in pkg_set: pkg_id = pkg[1] pkg_dict = {'pkg_data_' + str(pkg_id): pkg} param_dict.update(pkg_dict) task_name = 'pkg_' + str(pkg_id) PythonOperator( task_id=task_name, python_callable=run_load, op_kwargs={ 'oracle_hook': oracle_hook, 'param_dict': param_dict, 'pkg_id': pkg_id }, retries=0, dag=dag ) else: logging.info('Undelivered packages not found') DummyOperator(task_id='no_packages_dummy', retries=0, dag=dag) return dag interval = '*/10 * * * *' args = { 'owner': 'airflow', 'start_date': datetime(2018, 11, 12) } oracle_hook = OracleHook('ora_meta') main_dag_name = 'load' load_dag_name = 'load_packages' param_dict = { #       } main_dag = DAG( dag_id=main_dag_name, default_args=args, schedule_interval=interval, catchup=False ) subdag = SubDagOperator( subdag=pkg_subdag_factory( oracle_hook, main_dag_name, load_dag_name, args['start_date'], interval, param_dict ), task_id=load_dag_name, dag=main_dag ) #  ,       latest_only = LatestOnlyOperator(task_id='latest_only', dag=main_dag) subdag.set_upstream(latest_only)</span></span></code> </pre> <br><p>  The following screenshots show how this looks as a result. <br>  Appearance of DAG: </p><br><p><img src="https://habrastorage.org/webt/_x/tl/sd/_xtlsduwcwvecmuwk2qfd2rlpyq.png" title="Appearance DAGA"></p><br><p>  Appearance sabdaga in the absence of packages for delivery: </p><br><p><img src="https://habrastorage.org/webt/z7/vn/gy/z7vngyipby78gaksu29i0km1y04.png" title="In the absence of packages for delivery"></p><br><p>  Appearance sabdaga in the presence of packages for delivery: </p><br><p><img src="https://habrastorage.org/webt/-3/ig/9f/-3ig9fawopeyqupws_ya7pp3ve0.png" title="In the presence of packages for delivery"></p><br><h2 id="problemy-i-nyuansy">  Problems and nuances </h2><br><ul><li>  Catchup did not work the way we expected: after turning off the off-line dag, there were multiple starts (not for the entire schedule period, but 2-3 were at the same time).  Because of this, we had to add the LatestOnlyOperator so that all launches, except the last one, would be idle. </li><li>  If you create a sabdag, you need to explicitly enable it via the command line with the command "airflow unpause &lt;surname&gt;", otherwise it will not start, and this should be done when creating each new sabdag (sabdag with a new name), which is why it will be very inconvenient to dynamically generate .  If you set the parameter "dags_are_paused_at_creation" = false in the airflow configuration ($ airflow_home / airflow.cfg), it will not be necessary, but this can lead to unpleasant consequences with the occasional automatic launch of a new daeg, it seems to me that it is obviously necessary to launch new dages manually. </li></ul><br><p>  As written in the <a href="http://airflow.apache.org/scheduler.html%3Fhighlight%3Didempotent">documentation</a> , “A key capability of the Airflow is that these DAG Runs are atomic, idempotent items, &lt;...&gt;”, which means: “It is understood that the dag is generated unchanged.”  Due to the fact that we have violated this "key capability", we have learned some things: </p><br><ul><li>  An empty dag (no task) starts and cannot end, scoring all possible parallels.  This happened if there were no download packages at the time of the launch of the dag.  To bypass this, a DummyOperator is created. </li><li>  If during work the task is regenerated, and in the updated dag this task will no longer exist - it will stop with the interruption of the running process.  This happens every time a sheduler is used, but no more often than specified in the min_file_process_interval parameter in the airflow configuration ($ airflow_home / airflow.cfg).  To circumvent this, we made the generation of tasks for packages not only for the status “ready for loading”, but also for the status “loading in process” so that it continues to be generated while the loading is in progress. </li><li>  If in the current version of dag there is no some task that was before - for example, there was a task named "pkg_123" that was loaded before and it is not created in the current version of dag, you cannot see statistics on this task in the web interface.  Although in the airflow base all information is saved and on its basis it is possible to build by external means a beautiful dashboard on the old launches.  When the question arises about the frequency of updates of DAGs and the ability to disable it, you can read about it <a href="https://lists.apache.org/thread.html/%253CCADLz1xBdgXpBg8Fcq7rTn3853%3DsttRVJu7HJw%3DNFw2Z951pY6g%40mail.gmail.com%253E%2522%253E">here</a> . </li><li>  Due to the dynamic generation of task_id, it is necessary to roll out a dictionary with data for all current packages in each such task, as well as the id of the current package, so that when the function itself works, select the required data on the package id from the same dictionary.  Otherwise, all tasks were run for the same package. </li></ul><br><h2 id="execution_date-v-logah-i-fakticheskoe-vremya-zapuska">  Execution_date in logs and actual start time </h2><br><p>  I’ll finish with another nuance of Airflow, which at first is confusing and not described in simple words in other articles - execution_date (which is displayed in all logs, in the interface, etc.) and the actual launch time.  In principle, the description is in the <a href="http://airflow.apache.org/scheduler.html%3Fhighlight%3Dafter">airflow</a> and <a href="http://airflow.apache.org/faq.html%3Fhighlight%3Dperiod%2520closes">FAQ</a> <a href="http://airflow.apache.org/scheduler.html%3Fhighlight%3Dafter">documentation</a> , but the result is not obvious, so it seems to me that an explanation is required. </p><br><p>  <em>Documentation</em> : "Scheduler runs your job at the end of a period." <br>  <em>Result</em> : If you create a Doug with a schedule, for example, @daily, then starting with execution_date "2018-01-01 00:00:00" will actually run "2018-02-01 00:00:00". </p><br><h2 id="poleznye-ssylki">  Useful links: </h2><br><p>  <a href="http://airflow.apache.org/scheduler.html">Catchup documentation</a> <br>  <a href="http://airflow.apache.org/concepts.html">Documentation for LatestOnlyOperator</a> <br>  <a href="http://airflow.apache.org/code.html%3F">More LatestOnlyOperator documentation</a> <br>  <a href="https://github.com/apache/incubator-airflow/blob/master/airflow/example_dags/example_latest_only.py">Example for LatestOnlyOperator</a> <br>  <a href="https://medium.com/handy-tech/airflow-tips-tricks-and-pitfalls-9ba53fba14eb">Some nuances</a> <br>  <a href="https://stackoverflow.com/questions/47533903/airflow-depends-on-past-for-whole-dag">Question about dependencies from the previous launch</a> <br>  <a href="https://medium.com/%40agungsantoso/creating-dynamic-workflows-in-airflow-706b5ca2844f">A small example about dynamic generation</a> <br>  <a href="https://stackoverflow.com/questions/39133376/airflow-dynamic-dag-and-task-ids">A question about dynamic generation with a small description.</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/435746/">https://habr.com/ru/post/435746/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../435734/index.html">How not to be deceived by doing physics</a></li>
+<li><a href="../435738/index.html">DIY project technique. Part one</a></li>
+<li><a href="../435740/index.html">Registration for GraphQL Meetup in St. Petersburg is open</a></li>
+<li><a href="../435742/index.html">Resource Management in Zimbra Collaboration Suite</a></li>
+<li><a href="../435744/index.html">Fintech digest: Bank of Russia will be able to block sites, p2p lending volumes are falling, crypt in Europe</a></li>
+<li><a href="../435748/index.html">Metasploit Framework 5.0 has been released</a></li>
+<li><a href="../435750/index.html">IT digest of January events</a></li>
+<li><a href="../435752/index.html">Moscow Python Conf ++ 2019 is the first conference where we prepare part of the speakers from scratch by ourselves</a></li>
+<li><a href="../435756/index.html">Old New Year Clearance Sale</a></li>
+<li><a href="../435760/index.html">Inside Quake: the definition of visible surfaces</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

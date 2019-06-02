@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How we made PHP 7 twice as fast as PHP 5. Part 2: Bytecode optimization in PHP 7.1</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the first part of the story, based on the presentation of Dmitry Stogov from Zend Technologies on HighLoad ++, we understood the internal structure...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How we made PHP 7 twice as fast as PHP 5. Part 2: Bytecode optimization in PHP 7.1</h1><div class="post__text post__text-html js-mediator-article">  In the <a href="https://habr.com/ru/company/oleg-bunin/blog/444508/">first part of the</a> story, based on the <a href="https://www.youtube.com/watch%3Fv%3DtHapNKpacSQ">presentation of</a> <strong>Dmitry Stogov</strong> from Zend Technologies on HighLoad ++, we understood the internal structure of PHP.  We learned in detail and first-hand what changes in the basic data structures allowed PHP 7 to be more than doubled in speed.  We could stop at this, but in version 7.1 the developers went much further, since they had many more ideas for optimization. <br><br>  The accumulated experience of working on JIT before the Seven can now be interpreted by looking at the results in 7.0 without JIT and on the results of HHVM with JIT.  In PHP 7.1, it was decided not to work with JIT, but again to turn to the interpreter.  If before optimization concerned the interpreter, then in this article we will look at bytecode optimization, using type inference, which was implemented for our JIT. <br><br><img src="https://habrastorage.org/webt/km/1d/cu/km1dcunb58tbgkftxkwegfktjto.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Under the cut, Dmitry Stogov will show how this all works, using a simple example. <br><a name="habracut"></a><br><h3>  Optimize bytecode </h3><br>  Below is the bytecode in which the standard PHP compiler compiles the function.  It is single-pass - fast and stupid, but capable of doing its work on each HTTP request again (if OPcache is not connected). <br><img src="https://habrastorage.org/webt/ur/rp/xe/urrpxeazkhjaoccg7lgswufya-o.png"><br><br><h3>  OPcache Optimizations </h3><br>  With the advent of OPcache, we began to optimize it.  Some optimization methods <strong>have long been built into OPcache</strong> , for example, slit optimization methods — when we look at the code as if through an eye, look for familiar patterns, and replace them with heuristics.  These methods continue to be used in 7.0.  For example, we have two operations: addition and assignment. <br><img src="https://habrastorage.org/webt/hn/qm/dg/hnqmdgqu4_etjvz7zxnzbfwgpve.png"><br><br>  They can be combined into a single compound assignment operation, which performs the addition directly on the result: <code>ASSIGN_ADD $sum, $i</code> .  Another example is a post-increment variable, which theoretically can return some kind of result. <br><img src="https://habrastorage.org/webt/re/gt/m4/regtm4l3qupkaynn4dulv8bliok.png"><br><br>  It may not be a scalar value and must be removed.  The following <code>FREE</code> instruction is used for this.  But if it is changed to a pre-increment, then the <code>FREE</code> instruction is not required. <br><img src="https://habrastorage.org/webt/xz/pd/0b/xzpd0bnqezhnqbcx3_zqseojbkq.png"><br><br>  In the end, there are two <code>RETURN</code> statements: the first is a direct reflection of the RETURN statement in the source text, and the second one is added with a blunt compiler on the closing bracket.  This code will never be reached and can be removed. <br>  There are only four instructions left in the loop.  It seems that there is nothing more to optimize, but not for us. <br>  Look at the <code>$i++</code> and its corresponding instruction — the pre-increment of <code>PRE_INC</code> .  Every time it is executed: <br><br><ul><li>  need to check what type of variable came; </li><li>  <code>is_long</code> it; </li><li>  increment; </li><li>  check for overflow; </li><li>  go to the next; </li><li>  possibly check the exception. </li></ul><br>  But a person, just looking at the PHP code, will see that the <code>$i</code> variable is in the range from 0 to 100, and there can be no overflow, type checks are not needed, and there can be no exceptions either.  <strong>In PHP 7.1, we tried to teach the compiler to understand this</strong> . <br><br><h3>  Control Flow Graph Optimization </h3><img src="https://habrastorage.org/webt/6c/kc/ov/6ckcovmmyomlp00lnvxvcdqkxpk.png"><br><br>  To do this, you need to deduce the types, and in order to introduce the types, you must first build a formal representation of data streams, understandable to the computer.  But we will begin with the construction of the Control Flow Graph - a control dependency graph.  Initially, we break the code into basic-blocks - a set of instructions with one input and one output.  Therefore, we cut the code in the places where the transition occurs, that is, the labels L0, L1.  We also cut it after the conditional and unconditional transition operators, and then we connect them with arcs that show the control dependencies. <br><img src="https://habrastorage.org/webt/jb/rd/a2/jbrda2sz2t2yukuja4uido5ptk8.png"><br><br>  So we got a CFG. <br><br><h3>  Static Single Assignment Form Optimization </h3><br>  Well, now we need a data dependency.  To do this, we use the Static Single Assignment Form - a popular representation in the world of optimizing compilers.  It implies that the value of each variable can only be assigned once. <br><img src="https://habrastorage.org/webt/io/se/cd/iosecdoawvlte3fa8hn-q5ga3ea.png"><br><br>  For each variable, we add an index, or reincarnation number.  In each place where assignment takes place, we put a new index, and where we use them, there are still question marks, because it is not always known everywhere.  For example, in the instruction <code>IS_SMALLER</code> $ i can come from both the L0 block number 4 and the first block number 2. <br><br>  To solve this problem, SSA introduces the <strong>pseudo-function Phi</strong> , which, if necessary, is inserted at the beginning of the basic-&gt; block, takes all sorts of indices of one variable that come to the basic-block from different places, and creates a new reincarnation of the variable.  It is these variables that are then used to eliminate ambiguity. <br><img src="https://habrastorage.org/webt/ef/um/d8/efumd8l0ymc_8ffs0wwgraqso_q.png"><br><br>  Replacing all the question marks in this way, we will build the SSA. <br><br><h3>  Optimization by type </h3><br>  Now we deduce types - as if we are trying to execute this code directly by control. <br><img src="https://habrastorage.org/webt/jd/tl/zf/jdtlzfxasn7ioyfhmumpxosc6z0.png"><br><br>  In the first block, the variables are assigned the values ​​of constants - zeros, and we know for sure that these variables will be of type long.  Next is the Phi function.  Long comes to the input, and we don’t yet know the values ​​of other variables coming from other branches. <br><img src="https://habrastorage.org/webt/qr/bf/ji/qrbfjicsc1njj9g0uv7llwwlax8.png"><br><br>  We believe that at the output of phi () we will have a long. <br><img src="https://habrastorage.org/webt/ci/au/rx/ciaurxm91_qykojqstnrye1ixyo.png"><br><br>  Spread further.  We come to specific functions, for example, <code>ASSIGN_ADD</code> and <code>PRE_INC</code> .  We fold two long.  As a result, you can get either long or double, if an overflow occurs. <br><img src="https://habrastorage.org/webt/sh/h1/xk/shh1xkzcm6gnefcsrn1n4jncrwu.png"><br><br>  These values ​​again fall into the function Phi, the sets of possible types coming in different branches are merged.  Well, and so on, we continue spreading until we reach a fixed point and everything is settled down. <br><img src="https://habrastorage.org/webt/cp/wi/pc/cpwipcwroghcv7tflquaeblynp8.png"><br><br>  We obtained a possible set of type values ​​at each point of the program.  This is already good.  The computer already knows that <code>$i</code> can only be long or double, and can eliminate some unnecessary checks.  But we know that double <code>$i</code> cannot be.  How do we know?  And we see a condition that limits the growth of <code>$i</code> in the cycle to a possible overflow.  Teach and computer to see it. <br><br><h3>  Range Propagation Optimization </h3><br>  In the <code>PRE_INC</code> instruction <code>PRE_INC</code> we never learned that i can only be an integer - it is worth a long or double.  This happens because we did not try to infer possible ranges.  Then we could answer the question whether overflow will occur or not. <br><br>  This range output is produced in a similar but slightly more complicated way.  As a result, we obtain a fixed range of variables <code>$i</code> with indices 2, 4, 6 7, and now we can confidently say that the increment <code>$i</code> will not lead to overflow. <br><img src="https://habrastorage.org/webt/pd/fu/od/pdfuod-a6kri95noggd--fjtgly.png"><br><br>  Combining these two results, we can say for sure that the double variable <code>$i</code> never become. <br><img src="https://habrastorage.org/webt/pj/ls/v7/pjlsv7o9sb_sovt2klcfhv0rthg.png"><br><br>  All we got is not yet optimization, this is information for optimization!  Consider the <code>ASSIGN_ADD</code> instruction.  In general, the old value of the amount that came to this instruction could be, for example, an object.  Then, after the addition, the old value should have been removed.  But in our case, we know for sure that there is a long or double, that is, a scalar value.  No destruction is required, we can replace <code>ASSIGN_ADD</code> with <code>ADD</code> - a simpler instruction.  <code>ADD</code> uses the <code>sum</code> variable as both an argument and a value. <br><img src="https://habrastorage.org/webt/s5/ln/i7/s5lni7nz1-kiwnyo-ch9h1jfpds.png"><br><br>  For pre-increment operations, we know for sure that the operand is always long, and overflow cannot occur.  We use a highly specialized handler for this instruction, which will perform only the necessary actions without any checks. <br><img src="https://habrastorage.org/webt/90/9v/vm/909vvmh7ygoi4cudrfek9r9igw0.png"><br><br>  Now compare the variable at the end of the loop.  We know that the value of the variable will be only long - you can immediately check this value by comparing it with a hundred.  If earlier we wrote the result of the check into a temporary variable, and then once again checked the temporary variable for true / false value, now it can be done with a single instruction, that is, it can be simplified. <br><img src="https://habrastorage.org/webt/y0/rl/gu/y0rlgu9ga2q1t9oxt_fdszkizei.png"><br><br>  The result of the bytecode compared to the original. <br><img src="https://habrastorage.org/webt/_c/k7/ed/_ck7edx3i303of0vmfgpx6cefz4.png"><br><br>  There are only 3 instructions left in the loop, and two of them are highly specialized.  As a result, the code on the right is <strong>3 times faster than the</strong> original. <br><br><h3>  Highly specialized handlers </h3><br>  Any <strong>PHP crawl handler is just a C function</strong> .  On the left is the standard handler, and on the upper right is the highly specialized one.  The left one checks: the type of the operand, whether overflow has occurred, whether the exception has occurred.  The right one just adds one and that's it.  It is broadcast in 4 machine instructions.  If we went further and did JIT, we would only need a one-time <code>incl</code> instruction. <br><img src="https://habrastorage.org/webt/jg/zk/me/jgzkmezahf-1rxzvxrgvhdrhmiw.png"><br><br><h2>  What's next? </h2><br>  We continue to increase the speed of PHP branch 7 without JIT.  <strong>PHP 7.1 will again be 60% faster</strong> on typical synthetic tests, but on real applications, this practically does not give a win - only 1-2% on WordPress.  This is not very interesting.  From August 2016, when the 7.1 branch was frozen for significant changes, we again started working on JIT for PHP 7.2 or rather PHP 8. <br><br>  In a new attempt we use to generate the <a href="https://github.com/zendtech/php-src/tree/jit-dynasm/ext/opcache/jit">DynAsm</a> code, which was developed by Mike Paul <a href="https://github.com/openresty/luajit2">for LuaJIT-2</a> .  It is good in that it <strong>generates the code very quickly</strong> : the fact that the minutes were compiled in the JIT version on the LLVM now takes about 0.1-0.2 s.  Already today, <strong>acceleration on bench.php on JIT is 75 times faster</strong> than PHP 5. <br><br>  On real applications, there is no acceleration, and this is our next challenge.  Partly, we got the optimal code, but by compiling too many PHP scripts, we clogged the processor cache, so it did not work faster.  And not the speed of the code was a bottleneck in real applications ... <br><br>  Perhaps DynAsm can be used to compile only certain functions that will be chosen either by a programmer or by heuristics based on counters — how many times the function has been called, how many times the cycles are repeated in it, etc. <br><br>  Below is the machine code that our JIT generates for the same example.  Many instructions are compiled optimally: the increment is in one CPU instruction, the initialization of a variable to constants is two.  Where types are not derived, you have to work a little more. <br><img src="https://habrastorage.org/webt/fj/zh/n9/fjzhn9m8unce1eui5yhb7otreng.png"><br><br>  Returning to the title picture, PHP compared to similar languages ​​in the Mandelbrot test shows very good results (although the data are relevant at the end of 2016). <br><img src="https://habrastorage.org/webt/km/1d/cu/km1dcunb58tbgkftxkwegfktjto.png"><br>  <i>The diagram shows the execution time in seconds, less is better.</i> <br><br>  Perhaps <strong>Mandelbrot is not the best test.</strong>  It is computational, but simple and implemented in all languages ​​equally.  It would be nice to know how fast Wordpress would work in C ++, but there is hardly any eccentric ready to rewrite it just to check it out, and even repeat all the perversions of the PHP code.  If you have ideas for a more adequate set of benchmarks - offer. <br><br><blockquote>  We will meet on <a href="https://phprussia.ru/2019">PHP Russia</a> <strong>on May 17</strong> , discuss the prospects and development of the ecosystem and the experience of using PHP for really complex and cool projects.  Already with us: <br><br><ul><li>  <strong>Nikita Popov</strong> , one of the most prominent developers of the PHP kernel, <a href="https://phprussia.ru/2019/abstracts/5049">will tell you</a> what to expect in the upcoming release of PHP 7.4. </li><li>  <strong>Dmitry Stogov</strong> will tell about the grandiose <a href="https://phprussia.ru/2019/abstracts/5080">plans in PHP 8</a> . </li><li>  <strong>Anton Titov</strong> , author of the RoadRunner application server, will speak on the topic “ <a href="https://phprussia.ru/2019/abstracts/5048">Developing PHP / Go hybrid applications using RoadRunner</a> ”. </li></ul><br>  Of course, this is not all.  Yes, and Call for Papers is still closed, <strong>until April 1,</strong> <a href="https://conf.ontico.ru/lectures/propose%3Fconference%3Dpc2019">we are waiting for applications</a> from those who know how to apply modern approaches and best practices in order to implement cool PHP services.  Do not be afraid of competition with eminent speakers - we <strong>are looking for experience in using</strong> what they do in real projects and will help show the benefits of your cases. <br></blockquote></div><p>Source: <a href="https://habr.com/ru/post/445512/">https://habr.com/ru/post/445512/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445500/index.html">About Open Distros, Open Source, and the creation of Elastic</a></li>
+<li><a href="../445502/index.html">Vivaldi 2.4 - Moving the buttons with both hands</a></li>
+<li><a href="../445504/index.html">IT Service Management (ITSM) has become even more efficient with machine learning tools.</a></li>
+<li><a href="../445506/index.html">OS1: primitive kernel on Rust for x86</a></li>
+<li><a href="../445510/index.html">Manage expectations or How to say no</a></li>
+<li><a href="../445514/index.html">The most interesting at the exhibition Securika Moscow 2019</a></li>
+<li><a href="../445516/index.html">Neural Quantum States - representation of the wave function of the neural network</a></li>
+<li><a href="../445518/index.html">Old iron: electronic tools that are lost in the depths of history</a></li>
+<li><a href="../445520/index.html">Visual Studio Code Extensions That Help Work With Git</a></li>
+<li><a href="../445524/index.html">Analysis of the layout (interface of goods placement in the store)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

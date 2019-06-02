@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Memory profiling on STM32 and other microcontrollers: static stack size analysis</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr! 
+
+ In the last article , I also mentioned it myself, and asked in the comments - ok, well, we chose the size of the stack using a scientific...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Memory profiling on STM32 and other microcontrollers: static stack size analysis</h1><div class="post__text post__text-html js-mediator-article">  Hi, Habr! <br><br>  In the <a href="https://habr.com/ru/post/443030/">last article</a> , I also mentioned it myself, and asked in the comments - ok, well, we chose the size of the stack using a scientific method, didn’t seem to drop anything, but can we somehow more reliably assess what it is and who in general devoured so much? <br><br>  The answer is short: yes, but no. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      No, using static analysis methods it is impossible to accurately measure the size of the stack required by a program — but, nevertheless, these methods can be useful. <br><br>  The answer is a little longer - under the cut. <br><a name="habracut"></a><br>  As is widely known to a narrow circle of people, space in the stack is allocated, in fact, for local variables that are used by the currently executing function — with the exception of variables with the static modifier that are stored in statically allocated memory in the bss area, because they must save its values ​​between function calls. <br><br>  When executing a function, the compiler adds space in the stack for the variables it needs, and when it completes, it frees this space back.  It would seem that everything is simple, but - and this is very fat <b>but</b> - we have a few problems: <br><br><ol><li>  functions call other functions inside that need a stack too </li><li>  Sometimes functions call other functions not by their direct mention, but by a pointer to a function. </li><li>  in principle, it is possible - although it should be avoided by all means - a recursive function call, when A calls for B, B calls for C, and C inside calls for A again </li><li>  at any time an interrupt can occur, the handler of which is the same function that wants its own piece of stack </li><li>  if you have an interrupt hierarchy, another interrupt may occur inside the interrupt! </li></ol><br>  Definitely, recursive function calls should be crossed out of this list, because their presence is an excuse not to count the stack size, and go express your opinion to the author of the code.  Everything else, alas, cannot be crossed out in general (although there may be nuances in private ones: for example, you can have all interruptions have the same priority by design, for example, as in RIOT OS, and there will be no nested interrupts). <br><br>  Now imagine an oil painting: <br><br><ul><li>  function A, which has eaten 100 bytes per stack, calls function B, which needs 50 bytes </li><li>  at the time of execution of B, A itself is obviously not completed yet, therefore its 100 bytes are not released, therefore we already have 150 bytes in the stack </li><li>  function B calls function C, and it does so according to a pointer, which, depending on the program logic, can indicate half a dozen different functions that consume from 5 to 50 bytes of the stack </li><li>  during C runtime, an interrupt happens with a heavy handler that works for a relatively long time and consumes 20 bytes of the stack </li><li>  during interrupt processing, another interrupt occurs with a higher priority, the handler of which wants 10 bytes of the stack </li></ul><br>  In this beautiful construction, with a particularly successful coincidence of all circumstances, you will have <i>at least five simultaneously active functions</i> - A, B, C and two interrupt handlers.  Moreover, one of them does not have a constant stack consumption, because in different passes it can be just a different function, and to understand the possibility or impossibility of overlapping interruptions, you must at least know if you have any interruptions with different priorities , and as a maximum - to understand whether they can overlap each other. <br><br>  Obviously, for any automatic static code analyzer, this task is extremely close to overwhelming, and it can be performed only in the rough approximation of the estimate from above: <br><br><ul><li>  sum up the stacks of all interrupt handlers </li><li>  sum up the stacks of functions running in the same code branch </li><li>  try to find all the pointers to functions and their calls, and take for the stack size the maximum stack size among the functions to which these pointers point </li></ul><br>  In most cases, it will be, on the one hand, a greatly overestimation, and on the other, a chance to skip some particularly tricky function call through pointers. <br><br>  Therefore, in the general case, we can say simply: <b>this problem is not automatically solved</b> .  A manual solution, by a person who knows the logic of this program, requires a lot of numbers to be shoved. <br><br>  Nevertheless, a static estimate of the size of the stack can be very useful when optimizing software - at least with a banal purpose to understand who eats so much and not much. <br><br>  There are two extremely useful tools for this in the GNU / gcc toolchain: <br><br><ul><li>  flag -fstack-usage </li><li>  cflow utility </li></ul><br>  If you add -fstack-usage to the gcc flags (for example, in the Makefile on the line with CFLAGS), then for <i>each</i> compiled file% filename% .c the compiler will create a file% filename% .su, inside which will be simple and understandable text. <br><br>  Take, for example, target.su for <a href="">this giant footcloth</a> : <br><br><pre><code class="plaintext hljs">target.c:159:13:save_settings 8 static target.c:172:13:disable_power 8 static target.c:291:13:adc_measure_vdda 32 static target.c:255:13:adc_measure_current 24 static target.c:76:6:cpu_setup 0 static target.c:81:6:clock_setup 8 static target.c:404:6:dma1_channel1_isr 24 static target.c:434:6:adc_comp_isr 40 static target.c:767:6:systick_activity 56 static target.c:1045:6:user_activity 104 static target.c:1215:6:gpio_setup 24 static target.c:1323:6:target_console_init 8 static target.c:1332:6:led_bit 8 static target.c:1362:6:led_num 8 static</code> </pre> <br>  Here we see the actual consumption of the stack for each function appearing in it, from which we can draw some conclusions for ourselves - well, for example, what should we try to optimize first of all if we run into the lack of RAM. <br><br>  At the same time, attention, <b>this file does not actually provide accurate information about the actual stack consumption for functions from which other functions are called</b> ! <br><br>  To understand total consumption, we need to build a tree of calls and sum up the stacks of all the functions included in each branch.  You can do this, for example, with the <a href="https://www.gnu.org/software/cflow/">GNU cflow</a> utility, by <a href="https://www.gnu.org/software/cflow/">hooking</a> it into one or more files. <br><br>  Exhaust, we get here an order of magnitude more spreading, give only part of it for the same target.c: <br><br><pre> <code class="bash hljs">olegart@oleg-npc /mnt/c/Users/oleg/Documents/Git/dap42 (umdk-emb) $ cflow src/stm32f042/umdk-emb/target.c adc_comp_isr() &lt;void adc_comp_isr (void) at src/stm32f042/umdk-emb/target.c:434&gt;: TIM_CR1() ADC_DR() ADC_ISR() DMA_CCR() GPIO_BSRR() GPIO_BRR() ADC_TR1() ADC_TR1_HT_VAL() ADC_TR1_LT_VAL() TIM_CNT() DMA_CNDTR() DIV_ROUND_CLOSEST() NVIC_ICPR() clock_setup() &lt;void clock_setup (void) at src/stm32f042/umdk-emb/target.c:81&gt;: rcc_clock_setup_in_hsi48_out_48mhz() crs_autotrim_usb_enable() rcc_set_usbclk_source() dma1_channel1_isr() &lt;void dma1_channel1_isr (void) at src/stm32f042/umdk-emb/target.c:404&gt;: DIV_ROUND_CLOSEST() gpio_setup() &lt;void gpio_setup (void) at src/stm32f042/umdk-emb/target.c:1215&gt;: rcc_periph_clock_enable() button_setup() &lt;void button_setup (void) at src/stm32f042/umdk-emb/target.c:1208&gt;: gpio_mode_setup() gpio_set_output_options() gpio_mode_setup() gpio_set() gpio_clear() rcc_peripheral_enable_clock() tim2_setup() &lt;void tim2_setup (void) at src/stm32f042/umdk-emb/target.c:1194&gt;: rcc_periph_clock_enable() rcc_periph_reset_pulse() timer_set_mode() timer_set_period() timer_set_prescaler() timer_set_clock_division() timer_set_master_mode() adc_setup_common() &lt;void adc_setup_common (void) at src/stm32f042/umdk-emb/target.c:198&gt;: rcc_periph_clock_enable() gpio_mode_setup() adc_set_clk_source() adc_calibrate() adc_set_operation_mode() adc_disable_discontinuous_mode() adc_enable_external_trigger_regular() ADC_CFGR1_EXTSEL_VAL() adc_set_right_aligned() adc_disable_temperature_sensor() adc_disable_dma() adc_set_resolution() adc_disable_eoc_interrupt() nvic_set_priority() nvic_enable_irq() dma_channel_reset() dma_set_priority() dma_set_memory_size() dma_set_peripheral_size() dma_enable_memory_increment_mode() dma_disable_peripheral_increment_mode() dma_enable_transfer_complete_interrupt() dma_enable_half_transfer_interrupt() dma_set_read_from_peripheral() dma_set_peripheral_address() dma_set_memory_address() dma_enable_circular_mode() ADC_CFGR1() memcpy() console_reconfigure() tic33m_init() strlen() tic33m_display_string()</code> </pre> <br>  And it's not even half a tree. <br><br>  To understand the actual consumption of the stack, we need to take the consumption for <i>each</i> of the functions mentioned in it and sum up these values ​​for each branch. <br><br>  And at the same time, we still do not take into account function calls by pointers and interrupts, incl.  nested (and specifically in this code, they can be nested). <br><br>  As you might guess, doing this with every change of code is, to put it mildly, difficult - that’s why no one usually does this. <br><br>  Nevertheless, it is necessary to understand the principles of filling the stack - this can give rise to certain restrictions on the project code, increasing its reliability from the point of view of preventing stack overflow (for example, prohibiting nested interrupts or function calls on pointers), and specifically -fstack-usage can greatly help with code optimization on systems with low RAM. </div><p>Source: <a href="https://habr.com/ru/post/443544/">https://habr.com/ru/post/443544/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../443532/index.html">5 features of metal powders for 3D printing</a></li>
+<li><a href="../443536/index.html">Dark theme for Chrome on MacOS</a></li>
+<li><a href="../443538/index.html">Data Saver for Chrome on Android is now available for HTTPS</a></li>
+<li><a href="../443540/index.html">Google launches new Lookout tool to help the visually impaired.</a></li>
+<li><a href="../443542/index.html">Free Course Check Point Getting Started R80.20</a></li>
+<li><a href="../443546/index.html">Toyota and JAXA plan to have a manned rover on the moon in 2029</a></li>
+<li><a href="../443548/index.html">Psychology of the modern consumer or what helps us make purchasing decisions</a></li>
+<li><a href="../443556/index.html">Burning deadline: how the project manager won't lose his fingers</a></li>
+<li><a href="../443558/index.html">Patterns and anti-patterns CI / CD. Part 3</a></li>
+<li><a href="../443560/index.html">arkit - architectural diagrams for JavaScript, TypeScript and Flow</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

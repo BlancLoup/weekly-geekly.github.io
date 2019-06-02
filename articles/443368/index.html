@@ -1,0 +1,218 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>We are preparing a full-text search in Postgres. Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the last article, we optimized the search in PostgreSQL using standard tools. In this article, we will continue to optimize using the RUM index and...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>We are preparing a full-text search in Postgres. Part 2</h1><div class="post__text post__text-html js-mediator-article"><p>  In the <a href="https://habr.com/ru/post/442170/">last article,</a> we optimized the search in PostgreSQL using standard tools.  In this article, we will continue to optimize using <a href="https://github.com/postgrespro/rum">the RUM index</a> and analyze its pros and cons compared to the GIN. </p><a name="habracut"></a><br><h2 id="vvedenie">  Introduction </h2><br><p>  RUM is an extension for Postgres, a new index for full-text search.  It allows you to return when passing by the index sorted by relevance results.  I will not focus on its installation - it is described in the <a href="">README</a> in the repository. </p><br><h2 id="polzuemsya-indeksom">  We use the index </h2><br><p>  An index is created in the same way as the GIN index, but with some parameters.  The entire list of parameters can be found in the documentation. </p><br><pre><code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_rum_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> rum ("text" rum_tsvector_ops);</code> </pre> <br><p>  Search query for RUM: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, "text" &lt;=&gt; plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Request for GIN</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> </div></div><br><p>  The difference from the GIN is that relevance is not obtained using the ts_rank function, but using a query with the <code>&lt;=&gt;</code> operator: <code>"text" &lt;=&gt; plainto_tsquery('')</code> .  Such a query returns some <em>distance</em> between the search vector and the search query.  The smaller it is, the better the query corresponds to the vector. </p><br><h2 id="sravnenie-s-gin">  GIN comparison </h2><br><p>  Here we will compare on a test database with ~ 500 thousand documents to notice differences in the search results. </p><br><h3 id="skorost-vypolneniya-zaprosov">  Query speed </h3><br><p>  Let's see what the EXIN for the GIN will produce on this base: </p><br><pre> <code class="plaintext hljs">Gather Merge (actual time=563.840..611.844 rows=119553 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Sort (actual time=553.427..557.857 rows=39851 loops=3) Sort Key: (ts_rank(text, plainto_tsquery(''::text))) Sort Method: external sort Disk: 1248kB -&gt; Parallel Bitmap Heap Scan on documents_documentvector (actual time=13.402..538.879 rows=39851 loops=3) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=5616 -&gt; Bitmap Index Scan on idx_gin_document (actual time=12.144..12.144 rows=119553 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 4.573 ms Execution time: 617.534 ms</code> </pre> <br><p>  And for RUM? </p><br><pre> <code class="plaintext hljs">Sort (actual time=1668.573..1676.168 rows=119553 loops=1) Sort Key: ((text &lt;=&gt; plainto_tsquery(''::text))) Sort Method: external merge Disk: 3520kB -&gt; Bitmap Heap Scan on documents_documentvector (actual time=16.706..1605.382 rows=119553 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=15599 -&gt; Bitmap Index Scan on idx_rum_document (actual time=14.548..14.548 rows=119553 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.650 ms Execution time: 1679.315 ms</code> </pre> <br><p>  What is it?  What is the use of this praised RUM, you ask if it works <em>three times</em> slower than the GIN?  And where is the notorious sorting inside the index? </p><br><p>  Easy: let's try adding <code>LIMIT 1000</code> to the query. </p><br><div class="spoiler">  <b class="spoiler_title">EXPLAIN for RUM</b> <div class="spoiler_text"><pre>  Limit (actual time = 115.568..137.313 rows = 1000 loops = 1)
+    -&gt; Index Scan using idx_rum_document on documents_documentvector (actual time = 115.567..137.239 rows = 1000 loops = 1)
+          Index Cond: (text @@ plainto_tsquery ('query' :: text))
+          Order By: (text &lt;=&gt; plainto_tsquery ('query' :: text))
+  Planning time: 0.481 ms
+  Execution time: 137.678 ms </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">EXPLAIN for GIN</b> <div class="spoiler_text"><pre>  Limit (actual time = 579.905..585.650 rows = 1000 loops = 1)
+    -&gt; Gather Merge (actual time = 579.904..585.604 rows = 1000 loops = 1)
+          Workers Planned: 2
+          Workers Launched: 2
+          -&gt; Sort (actual time = 574.061..574.171 rows = 992 loops = 3)
+                Sort Key: (ts_rank (text, plainto_tsquery ('query' :: text))) DESC
+                Sort Method: external merge Disk: 1224kB
+                -&gt; Parallel Bitmap Heap Scan on documents_documentvector (actual time = 8.920..555.571 rows = 39851 loops = 3)
+                      Recheck Cond: (text @@ plainto_tsquery ('query' :: text))
+                      Heap Blocks: exact = 5422
+                      -&gt; Bitmap Index Scan on idx_gin_document (actual time = 8.945..8.945 rows = 119553 loops = 1)
+                            Index Cond: (text @@ plainto_tsquery ('query' :: text))
+  Planning time: 0.223 ms
+  Execution time: 585.948 ms </pre></div></div><br><p>  ~ 150 ms vs ~ 600 ms!  No longer in favor of GIN, right?  And the sorting has moved inside the index! </p><br><p>  And if you look for <code>LIMIT 100</code> ? </p><br><div class="spoiler">  <b class="spoiler_title">EXPLAIN for RUM</b> <div class="spoiler_text"><pre>  Limit (actual time = 105.863..108.530 rows = 100 loops = 1)
+    -&gt; Index Scan using idx_rum_document on documents_documentvector (actual time = 105.862..108.517 rows = 100 loops = 1)
+          Index Cond: (text @@ plainto_tsquery ('query' :: text))
+          Order By: (text &lt;=&gt; plainto_tsquery ('query' :: text))
+  Planning time: 0.199 ms
+  Execution time: 108.958 ms </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">EXPLAIN for GIN</b> <div class="spoiler_text"><pre>  Limit (actual time = 582.924..588.351 rows = 100 loops = 1)
+    -&gt; Gather Merge (actual time = 582.923..588.344 rows = 100 loops = 1)
+          Workers Planned: 2
+          Workers Launched: 2
+          -&gt; Sort (actual time = 573.809..573.889 rows = 806 loops = 3)
+                Sort Key: (ts_rank (text, plainto_tsquery ('query' :: text))) DESC
+                Sort Method: external merge Disk: 1224kB
+                -&gt; Parallel Bitmap Heap Scan on documents_documentvector (actual time = 18.038..552.827 rows = 39851 loops = 3)
+                      Recheck Cond: (text @@ plainto_tsquery ('query' :: text))
+                      Heap Blocks: exact = 5275
+                      -&gt; Bitmap Index Scan on idx_gin_document (actual time = 16.541..16.541 rows = 119553 loops = 1)
+                            Index Cond: (text @@ plainto_tsquery ('query' :: text))
+  Planning time: 0.487 ms
+  Execution time: 588.583 ms </pre></div></div><br><p>  The difference is even more noticeable. </p><br><p>  The fact is that the GIN, no matter how many lines you get in the end - it should go through all the lines for which the request was successful, and rank them.  RUM does this only for those strings that we really need.  If we need a lot of lines, GIN wins.  Its <code>ts_rank</code> more efficient calculations than the <code>&lt;=&gt;</code> operator.  But on small requests, the advantage of RUM is undeniable. </p><br><p>  Most often, the user does not need to unload all 50 thousand documents from the database at once.  He needs only 10 posts on the first, second, third page, etc.  And it is for such cases that this index is sharpened, and it will give a good performance increase in search on a large base. </p><br><h3 id="terpimost-k-join-am">  Tolerance to join </h3><br><p>  What if a search needs to join another one or more tables?  For example, to display in the results the type of document, its owner?  Or, as in my case, filter by the names of related entities? </p><br><p>  Compare: </p><br><div class="spoiler">  <b class="spoiler_title">Query with two join for GIN</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank, case_number <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">RIGHT JOIN</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector.document_id = documents_document.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_case <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.case_id = documents_case.id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">10</span></span>;</code> </pre> <br><p>  Result: </p><br><pre> Limit (actual time = 1637.902..1643.483 rows = 10 loops = 1)
+    -&gt; Gather Merge (actual time = 1637.901..1643.479 rows = 10 loops = 1)
+          Workers Planned: 2
+          Workers Launched: 2
+          -&gt; Sort (actual time = 1070.614..1070.687 rows = 652 loops = 3)
+                Sort Key: (ts_rank (documents_documentvector.text, plainto_tsquery ('request' :: text))) DESC
+                Sort Method: external merge Disk: 2968kB
+                -&gt; Hash Left Join (actual time = 323.386..1049.092 rows = 39851 loops = 3)
+                      Hash Cond: (documents_document.case_id = documents_case.id)
+                      -&gt; Hash Join (actual time = 239.312..324.797 rows = 39851 loops = 3)
+                            Hash Cond: (documents_documentvector.document_id = documents_document.id)
+                            -&gt; Parallel Bitmap Heap Scan on documents_documentvector (actual time = 11.022..37.073 rows = 39851 loops = 3)
+                                  Recheck Cond: (text @@ plainto_tsquery ('query' :: text))
+                                  Heap Blocks: exact = 9362
+                                  -&gt; Bitmap Index Scan on idx_gin_document (actual time = 12.094..12.094 rows = 119553 loops = 1)
+                                        Index Cond: (text @@ plainto_tsquery ('query' :: text))
+                            -&gt; Hash (actual time = 227.856..227.856 rows = 472089 loops = 3)
+                                  Buckets: 65536 Batches: 16 Memory Usage: 2264kB
+                                  -&gt; Seq Scan on documents_document (actual time = 0.009..147.104 rows = 472089 loops = 3)
+                      -&gt; Hash (actual time = 83.338..83.338 rows = 273695 loops = 3)
+                            Buckets: 65536 Batches: 8 Memory Usage: 2602kB
+                            -&gt; Seq Scan on documents_case (actual time = 0.009..39.082 rows = 273695 loops = 3)
+ Planning time: 0.857 ms
+ Execution time: 1644.028 ms
+</pre></div></div><br><p>  On three join-ahs and longer, the request time reaches 2-3 seconds and grows with the number of join-s. </p><br><p>  And what about RUM?  Let the request be immediately with five join. </p><br><div class="spoiler">  <b class="spoiler_title">Query with five join for RUM</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, "text" &lt;=&gt; plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank, case_number, classifier_procedure.title, classifier_division.title, classifier_category.title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">RIGHT JOIN</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector.document_id = documents_document.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_case <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.case_id = documents_case.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> classifier_procedure <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_case.procedure_id = classifier_procedure.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> classifier_division <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_case.division_id = classifier_division.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> classifier_category <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.category_id = classifier_category.id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> documents_document.is_active <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TRUE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">10</span></span>;</code> </pre> <br><p>  Result: </p><br><pre>  Limit (actual time = 70.524..72.292 rows = 10 loops = 1)
+   -&gt; Nested Loop Left Join (actual time = 70.521..72.279 rows = 10 loops = 1)
+         -&gt; Nested Loop Left Join (actual time = 70.104..70.406 rows = 10 loops = 1)
+               -&gt; Nested Loop Left Join (actual time = 70.089..70.351 rows = 10 loops = 1)
+                     -&gt; Nested Loop Left Join (actual time = 70.073..70.302 rows = 10 loops = 1)
+                           -&gt; Nested Loop (actual time = 70.052..70.201 rows = 10 loops = 1)
+                                 -&gt; Index Scan using document_vector_rum_index on documents_documentvector (actual time = 70.001..70.035 rows = 10 loops = 1)
+                                       Index Cond: (text @@ plainto_tsquery ('query' :: text))
+                                       Order By: (text &lt;=&gt; plainto_tsquery ('query' :: text))
+                                 -&gt; Index Scan using documents_document_pkey on documents_document (actual time = 0.013..0.013 rows = 1 loops = 10)
+                                       Index Cond: (id = documents_documentvector.document_id)
+                                       Filter: (is_active IS TRUE)
+                           -&gt; Index Scan using documents_case_pkey on documents_case (actual time = 0.009..0.009 rows = 1 loops = 10)
+                                 Index Cond: (documents_document.case_id = id)
+                     -&gt; Index Scan using classifier_procedure_pkey on classifier_procedure (actual time = 0.003..0.003 rows = 1 loops = 10)
+                           Index Cond: (documents_case.procedure_id = id)
+               -&gt; Index Scan using classifier_division_pkey on classifier_division (actual time = 0.004..0.004 rows = 1 loops = 10)
+                     Index Cond: (documents_case.division_id = id)
+         -&gt; Index Scan using classifier_category_pkey on classifier_category (actual time = 0.003..0.003 rows = 1 loops = 10)
+               Index Cond: (documents_document.category_id = id)
+ Planning time: 2.861 ms
+ Execution time: 72.865 ms
+</pre></div></div><br><p>  If you can’t do without join when searching, then RUM is clearly suitable for you. </p><br><h3 id="mesto-na-diske">  Disk space </h3><br><p>  On a test database of ~ 500 thousand documents and 3.6 GB, the indices occupied <em>very</em> different volumes. </p><br><pre>  idx_rum_document |  1950 MB
+  idx_gin_document |  418 MB
+</pre><br><p>  Yes, the disk is cheap.  But 2 GB instead of 400 MB can not be happy.  Half the size of the base - a bit too much for the index.  Here GIN wins unconditionally. </p><br><h2 id="vyvody">  findings </h2><br><p>  You need RUM if: </p><br><ul><li>  You have a lot of documents, but you give out search results page by page </li><li>  You need advanced filtering of search results. </li><li>  You do not mind the disk space </li></ul><br><p>  You are completely satisfied with the GIN, if: </p><br><ul><li>  You have a small base </li><li>  You have a large base, but you need to produce results immediately and that's it </li><li>  You do not need filtering with join </li><li>  You are interested in the minimum size of the index on the disk </li></ul><br><p>  I hope this article will remove a lot of WTF?!, Arising from the work and setting up a search in Postgres.  I will be glad to listen to advice from those who know how to set everything up even better!) </p><br><p>  In the next parts, I plan to talk more about RUM in my project: about using additional RUM options, working with Django + PostgreSQL. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/443368/">https://habr.com/ru/post/443368/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../443350/index.html">How to make a mobile game a team of 2 people with a zero budget and get fichering on Google Play</a></li>
+<li><a href="../443352/index.html">What do business analysts in IT</a></li>
+<li><a href="../443358/index.html">F5 buys NGINX</a></li>
+<li><a href="../443360/index.html">View from the inside. Postgraduate Studies in EPFL. Part 3: from receipt to protection</a></li>
+<li><a href="../443364/index.html">How a media holding to launch 12 successful startups per year</a></li>
+<li><a href="../443370/index.html">Connecting Google reCAPTCHA to Vue and validating the response on the server</a></li>
+<li><a href="../443372/index.html">Backend on CodeFest. Are the guts ordered?</a></li>
+<li><a href="../443374/index.html">Twitter launches twttr - a prototype of the new application</a></li>
+<li><a href="../443376/index.html">We have discovered dozens of Box.com corporate repositories that reveal data from Apple, Herbalife, etc.</a></li>
+<li><a href="../443378/index.html">We write a high-performance http client using the example of fasthttp. Alexander Valyalkin (VertaMedia)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

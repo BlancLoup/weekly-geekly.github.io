@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Changing the schema of PostgreSQL tables without long locks. Yandex lecture</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="If many operations are performed at the same time to change the database schema, the service cannot work correctly on writing. Developer Vladimir Koly...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Changing the schema of PostgreSQL tables without long locks. Yandex lecture</h1><div class="post__text post__text-html js-mediator-article">  If many operations are performed at the same time to change the database schema, the service cannot work correctly on writing.  Developer Vladimir Kolyasinsky explained which operations in PostgreSQL require long locks and how the Yandex.Connect team provides almost 100% availability of the service for writing during the execution of such operations.  In addition, you will learn about the library for Django, which is designed to automate part of the described processes. <br><br><iframe width="560" height="315" src="https://www.youtube.com/embed/P3ctIoICkOc" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><blockquote>  We have large loads, thousands of RPS, and idle time in a few minutes, not to mention more time, is unacceptable.  It is necessary that migrations occur unnoticed by the user.  And with such loads it will not be possible to get up at four in the morning, to roll something when there is no load, and again go to bed - because the load goes round the clock. </blockquote><br><a name="habracut"></a>  - Good evening everyone!  My name is Vladimir, I have been working at Yandex for five years.  For the last two years I have been developing internal services and services for organizations. <br><br>  It is a little about what services for the organizations are.  We have been using a large number of internal services for quite a long time: Wikis for storing and exchanging data, a messenger for quick communication with colleagues, a tracker for organizing the work process, forms for conducting interviews inside and outside, as well as many other services. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Some time ago we decided that our services were great and that they could be useful not only inside Yandex, but also to people outside.  We began to display them on a single platform Yandex.Connect, adding existing external services, such as Mail for the domain. <br><br><img src="https://habrastorage.org/webt/k-/sd/cz/k-sdczg1lnedmrhjfyujg6dkiyu.jpeg"><br><br>  I am currently developing a Form Designer and a wiki.  The stack used is basically services written in Python second and third versions;  Django 1.9-1.11.  Like a DB for the most part PostgreSQL.  It is also Celery with MongoDB and SQS as brokers.  It all works in Docker. <br><br>  Let us turn to the problem we are facing.  Services are popular, they are used by hundreds of thousands of people every day, data is accumulated, tables become more and more, and over time, many DB schema change operations that were performed unnoticed by users yesterday begin to interfere with the normal operation of services. <br><br>  We will talk today about how we cope with such situations and how we achieve high availability of services for reading and writing. <br><br>  First, consider what operations with PostgreSQL require long locks on the table.  By lock, I mean any type of lock that prevents normal work with the table - be it access exclusive, which prevents both writing and reading, or weaker lock levels that prevent only writing. <br><br>  Then we will see how locks can be avoided during the execution of such operations.  Then we will talk about which operations with PostgreSQL are initially fast and do not require long locks.  And at the end, let's talk about our zero_downtime_migrations library, which we use to automate some of the previously described techniques for avoiding long locks. <br><br>  Operations that require a long lock: <br><br><img src="https://habrastorage.org/webt/zp/wv/xa/zpwvxagaus_ajxsaqixpwe-w7sw.jpeg"><br><br>  Create index.  By default, it does not block read operations in the table, but all write operations will be blocked for the entire time the index is created, respectively, the service will be read only. <br><br>  Also, adding a new column with a default value is one of such operations, since PostgreSQL will overwrite the entire table under the hood, and for this time it will be blocked for both reading and writing.  In addition, all its indexes will be overwritten. <br><br>  About changing the type of the column - a similar thing happens, the plate will also be overwritten again.  It should be noted that this not only takes a long time on large tables, but also briefly requires up to twice the amount of free memory from the occupied table. <br><br>  Also, the VACUUM FULL operation requires a similar level of blocking, like the previous operations - this is access exclusive.  VACUUM FULL will also block all read and write operations to the table. <br><br>  The last two operations are the addition of the uniqueness properties column and, in general, the addition of CONSTRAINT.  They also require locking at the time of data verification, although they take significantly less time than those discussed earlier, since they do not overwrite tables under the hood. <br><br><img src="https://habrastorage.org/webt/hl/7j/ui/hl7juizqgpqqzpnhr_byptzs_xw.jpeg"><br><br><img src="https://habrastorage.org/webt/ji/w4/lt/jiw4lt2-5fcmeyd9qfururhscs4.jpeg"><br><br>  Create index.  It's quite simple, you can create it using the CONCURRENTLY keyword.  What's the Difference?  This operation will take more time, since not one, but several passes through the table will be performed, and it will also wait until all current operations that can potentially change the index are completed.  And it can also end in failure — for example, if creating a unique index reveals a violation of the conditions of uniqueness.  Then the index will be marked as invalid, and it will have to be deleted and re-created.  The REINDEX command is not recommended, as it works in the same way as the usual CREATE INDEX, that is, blocks the table for writing. <br><br>  Regarding the removal of the index - starting from version 9.3, the index can also be deleted CONCURRENTLY to avoid locks during its deletion, although in general this is a quick operation. <br><br><img src="https://habrastorage.org/webt/vy/yi/w8/vyyiw8m8oz-dn5gmy7-v9q8m32i.jpeg"><br><br>  Let's look at adding a new column with a default value.  Here is the standard operation that is performed when we want to execute such a command, including Django performing such an operation. <br><br>  How can I rewrite it to avoid rewriting a table?  First, we add a new column with no default value in one transaction, and add a default value with a separate query.  What is the difference?  When we add a default value to an existing column, it does not change the existing data in the table.  Only metadata changes.  That is, for all new lines this default value will already be guaranteed.  It remains for us to update all existing lines that were in the table at the time of the execution of this command.  What we will do in batches of several thousand copies in order not to block a large amount of data for a long time. <br><br>  After all the data we have updated, it remains only to perform SET NOT NULL, if we create a NOT NULL-column.  If you do not create, then do not.  In this way, it is possible to avoid rewriting the table when making such changes. <br><br>  Such a sequence of commands takes more time than the execution of a normal command, since it depends on the size of the table and the number of indexes in it, and the usual command simply blocks all operations and rewrites the table regardless of the load, since there is no load at this moment.  But it does not matter so much, because during the operation the table is available both for reading and writing.  Takes a long time, just need to follow this and that's it. <br><br><img src="https://habrastorage.org/webt/e-/yp/gj/e-ypgjv5j7u5skjfmixtw_ie9oq.jpeg"><br><br>  About changing the type of column.  The approach is similar to adding a column with a default value.  We first add a separate column of the type we need, then we add triggers to change the data in the original column in order to write at once to both columns, to a new one with the data type we need.  For all new entries, they will immediately go to both of these columns.  We need to update all existing ones.  What we are doing in portions, just as it was on the previous slide, is similar. <br><br>  After that, it remains to delete the trigger in one transaction, delete the old column and rename the old column to a new one.  Thus, we achieved the same result: we changed the type of the column, while the table lock was not long. <br><br><img src="https://habrastorage.org/webt/3n/n3/ge/3nn3geu-vzcexvckvzsoomxx1ns.jpeg"><br><br>  About adding a unique column.  A lock is taken at the time of creation.  It can be avoided if you know that the uniqueness in PostgreSQL is guaranteed by building a unique index.  We can build the required unique index ourselves using CONCURRENTLY.  And after constructing this index, create a CONSTRAINT using this index.  After this, the definition of the initial index from the table will disappear, and the result, which will show us the definition of the table, will be no different after performing these two operations. <br><br><img src="https://habrastorage.org/webt/o4/uz/lt/o4uzltwdxqnag3c0uwvvo9hw7uw.jpeg"><br><br>  And in general when adding CONSTRAINT.  You can use this technique to avoid blocking at the time of data verification.  We first add CONSTRAINT with the keyword NOT VALID.  This means that the execution of this CONSTRAINT for all lines in the table is not guaranteed.  But at the same time for all new lines this CONSTRAINT will already be applied, and the corresponding exceptions will be thrown out, if it is not performed. <br><br>  We can only check all existing values, which can be done by a separate VALIDATE CONSTRAINT command, and at the same time this command does not interfere either with reading or writing to the table.  A table for this time will be available. <br><br>  Operations that initially work quickly in PostgreSQL and do not require long locks: <br><br><img src="https://habrastorage.org/webt/l1/z1/tq/l1z1tq5nwf1l9jhoushtujix-t8.jpeg"><br><br>  One of these operations is the addition of a column with no default values ​​and no restrictions.  Because no changes are made to the table itself, only its meta data is changed.  And all the NULL values ​​that we see as a result of a SELECT are mixed in just at the output. <br><br>  Also adding default values ​​to an already existing nameplate is a quick operation, because only the meta data is changing.  The table and lock is taken literally for the several milliseconds required to enter this information. <br><br>  Also, the quick operation of setting SET NOT NULL, here it takes a little longer than described earlier, about a few seconds per table of 30 million records.  This time can also be avoided if it matters. <br><br>  Also fast operations include renaming a column, changing the length of a column, also does not lead to a rewriting of a column.  Deleting a column and generally many entities in PostgreSQL is also a quick operation. <br><br><img src="https://habrastorage.org/webt/fq/rq/0z/fqrq0zlgqqbszyo7aajzsmzrtjy.jpeg"><br><br>  Regarding the addition of a NOT NULL column.  To avoid blocking at the time of validation, you can perform the technique mentioned earlier - add a CONSTRAINT that corresponds to the CHECK (column IS NOT NULL) NOT VALID, and validate it with a separate command. <br><br>  The difference in general is that this restriction will exist at the table level, and not at the column level in the table definition.  Another difference is that this can affect performance, about one percent.  In this case, there will be no blocking, if the service is high-loaded, even a few seconds of blocking may result in a huge transaction queue and a problem on the service. <br><br><img src="https://habrastorage.org/webt/qj/oy/sb/qjoysbcnasbr3xz0komagdri2oe.jpeg"><br><br>  Deleting data in PostgreSQL is, in general, a quick operation, since the data is not deleted immediately, just the column is marked obsolete in the attributes of the table, and the data will actually be deleted only after the next vacuum is started. <br><br><img src="https://habrastorage.org/webt/v3/75/n5/v375n5xmrwzhinew6obppnsdgeq.jpeg"><br><br>  Let's talk about the <a href="https://github.com/Smosker/zero-downtime-migrations">library</a> .  I'm talking about Django, migration.  In general, Django is a library for Python, a web framework, which was originally created to quickly create news-type websites, since it has been greatly improved.  There is an ORM system that allows you to communicate with database entries, with tables, as if they were objects or Python classes.  That is, each table has its own class in Python.  And when we make changes to our Python code, that is, we add new attributes like columns to a table, Django, during the procedure for creating a migration, notices these changes, and creates migration files to make mirror changes to the database itself so that they do not diverge. <br><br>  The library was written to automate some of the previously discussed techniques for avoiding long locks on a table while performing such migrations.  It works with Django from version 1.8 to 2.1 inclusive, and Python from 2.7 to 3.7 inclusive. <br><br>  Regarding the current features of the library, this is adding a column with a default value of no locks, nullable or not, this is creating a CONCURRENTLY index, as well as the ability to restart if it falls.  In the standard Django implementation, if we add a column with a default value, block the table, and if it is large, it could be 40 minutes of blocking in my experience.  The table is locked, and everything is waiting until the changes are copied and made.  It took 30 minutes - they caught the connection error to the database, the migration drops, the changes are not committed, and you have to start again, wait 40 minutes again, again blocking the table for this time. <br><br><img src="https://habrastorage.org/webt/vg/xy/lz/vgxylzlxerxosettf26nbtrqo9u.jpeg"><br><h5>  <sup><sub><a href="https://github.com/Smosker/zero-downtime-migrations">GitHub link</a></sub></sup> </h5><br>  The library also allows you to resume migration from the place where it was interrupted.  When crashing and restarting, a dialog box is displayed, where there are various options for actions, that is, we can say continue to update the data.  This is usually an update of the data, because it is the longest process.  Migration will just continue from where it left off.  Such an operation also takes more time than the standard with table locking, but the service remains in working condition at this time. <br><br><img src="https://habrastorage.org/webt/kp/d2/bp/kpd2bpbqlehlnxps9ozwj3iuv4g.jpeg"><br><br>  Pro connection in general.  There is documentation;  In short, you need to replace the engine in the Django database settings with the engine from the library.  Also there are various mixins, if you use your engines to connect. <br><br><img src="https://habrastorage.org/webt/x1/fc/gh/x1fcghzaqinnjq-hela3v1aarie.jpeg"><br><br>  Example of work, about adding a column with a default value.  Here we add columns with boolean value, True by default.  What operations are performed by the standard SchemaEditor?  Performed operations can be viewed if you start SQL migrate.  This is quite useful, by the very type of migration it is not always clear what Django can actually change.  And it is useful to run and see if the operations we are expecting will be carried out and whether there is something unnecessary and unnecessary there. <br><br>  What commands will SchemaEditor perform?  First, a new column will be added to one transaction, and a default value will be added.  Then, until such an Update returns that it has updated zero, the data will be updated. <br><br>  Then SET NOT NULL will be set at the column, and the default value will be removed by repeating the behavior of Django, which stores the default value not in the database, but at the logic level in the code. <br><br>  Here, in general, there is also where to grow.  For example, you can build an auxiliary index to quickly find such rows with a NULL value as you approach the update of the entire table. <br><br><img src="https://habrastorage.org/webt/je/a8/h3/jea8h37vcuylfp-eut209sdpsse.jpeg"><br><br>  You can also record the maximum id at the time of the update, when we started the migration, so that id can quickly find the values ​​that we have not yet updated. <br><br>  In general, the library is developing, we accept pool requests.  Who cares - join. <br><br>  It is worth paying attention that with the growth of the database, migrations have an inevitable tendency to slow down.  You need to keep track of which lock'i ​​and table takes, run SQL migrations, to see what operations apply.  We, on our part, in Yandex. Connect, use this library where its capabilities allow.  And where they don’t allow it, we are already on our own, with the help of fake Django migrations, we run our SQL queries. <br><br>  Thus, we achieve high availability of services for reading and writing.  We have large loads, thousands of RPS, and idle time in a few minutes, not to mention more time, is unacceptable.  It is necessary that migrations occur unnoticed by the user.  And with such loads it will not be possible to get up at four o'clock in the morning, to roll something when there is no load, and again go to bed - because the load goes round the clock. <br><br>  It is worth noting that even fast operations in PostgreSQL can still cause the service to slow down and errors due to how the lock queue works in PostgreSQL. <br><br>  Imagine that an operation is started, which - even for a few milliseconds - requires access exclusive.  An example of such an operation is adding a column with no default value.  Imagine that at the time of its launch in another transaction, there is some other long operation - say, SELECT with aggregation.  In this case, our operation will stand in line with her.  This happens because access exclusive conflicts with all other types of locks. <br><br>  While our operation of adding a column waits for a lock, all the others will stand behind it in the queue and will not be executed until its completion.  At the same time, the performed operation — SELECT with aggregation — may not conflict with the others, and if it were not for our creation of the column, they would not be queued, but would be executed in parallel. <br><br>  This situation can create big problems on the service.  Therefore, before launching ALTER TABLE or any other operation that requires access exclusive locking, you need to take care not to send long queries to the database.  Or you can just insert a very small log timeout.  Then, if it were not possible to quickly take the lock, the operation would fall.  We could just restart it, and not block the table for a long time, while the operation will wait for the grant of a lock on it.  That's all, thank you. </div><p>Source: <a href="https://habr.com/ru/post/435880/">https://habr.com/ru/post/435880/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../435870/index.html">Cybernetic orchestra. Orchestration of Docker containers with .NET Core applications in the cloud</a></li>
+<li><a href="../435872/index.html">Zig programming language</a></li>
+<li><a href="../435874/index.html">How to save your and other people's time at the interviews, or a little bit about the errors of HR</a></li>
+<li><a href="../435876/index.html">Detailed setting of the browser Firefox</a></li>
+<li><a href="../435878/index.html">Amateur in opensource - lessons learned for 3 years</a></li>
+<li><a href="../435882/index.html">Review of Xiaomi Mi Box S and a small comparison with Mi Box 3</a></li>
+<li><a href="../435884/index.html">Metal search and ... neural network</a></li>
+<li><a href="../435886/index.html">SpaceX showed Starship prototype and cut 10% of staff</a></li>
+<li><a href="../435888/index.html">The Big Bang Theory and Python Practice</a></li>
+<li><a href="../435890/index.html">Dark sides of the active person</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
