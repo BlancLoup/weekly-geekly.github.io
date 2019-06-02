@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>WS2812B protocol on STM32 without empty loops and interrupts. And how to make the right rainbow</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="On Habré there are already a couple of articles about working with RGB LEDs WS2112B, but for some reason they all use a rather archaic way to form a b...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>WS2812B protocol on STM32 without empty loops and interrupts. And how to make the right rainbow</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/86e/965/79b/86e96579bd1c45638e85b564015cb2fa.JPG"><br><br>  On Habré there are already a couple of articles about working with RGB LEDs WS2112B, but for some reason they all use a rather archaic way to form a bit sequence.  The method consists in forming exact time intervals using empty program cycles.  Perhaps this is the cost of using the Arduino, but we, of course, have long since switched to ARM Cortex-M4 in the face of STM32 and can afford to make it more beautiful. <br><a name="habracut"></a><br>  So, I recall the "protocol" WS2112B. <br><br><img src="https://habrastorage.org/files/d91/3c8/0f8/d913c80f86cb47749480070f5eb4b897.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The LED strip on the WS2112B has only one digital input - DIN, connected to the first LED on the strip.  A special pulse sequence encoding the bits is applied to it, as shown in the figure.  Each LED has one digital output - DOUT connected to the DIN input of the next LED on the bar.  Each LED needs to transmit 24 bits (8 bits for each color: red R, green G and blue B).  Thus, in order to light all the LEDs, 24 * N bits must be transmitted, where N is the number of LEDs on the strip. <br><br>  Having accepted the bits, the LEDs light up and statically light until they receive a new bit sequence.  Each bit sequence begins with the installation of DIN in the log.  zero for at least 50 µs. <br><br>  As you can see, the bits are encoded with rather short pulses with tight tolerances.  A microcontroller trying to generate them with software delays is required at least to disable all interrupts so that, by chance, a reset or a failed bit is not formed.  CPU time resources here are also wasted irrationally, in order to light 100 LEDs the processor needs to work 3 ms.  If you update the state of the LEDs with a frequency of 100 Hz, then this "protocol" will take 30% of the processor time. <br><br>  There are suggestions to use the SPI interface to transmit a bitstream to the WS2112B.  But here an obstacle can be the insufficient correspondence of the clock frequency of the system bus and the strong errors of the pulse durations. <br><br>  Meanwhile, in STM32 and in general, all Cortex-M chips have an excellent Direct Memory Access (DMA) mechanism.  Bits can be generated using timers in pulse-width modulation mode, and each subsequent bit can be extracted from RAM using DMA. <br><br>  The figure below shows the scheme of interaction between DMA and timer TIM4 in the STM32F407VET6 chip.  Debugging was carried out on my industrial controller with just such a chip, but with the same success, everything can be repeated on any chip of the STM32 family.  In this case, it was my conclusion that 8 GPIOB was free, which I used. <br><br><img src="https://habrastorage.org/files/28c/ba7/936/28cba7936eb64d2b97264d66872e95ff.png"><br><br><div class="spoiler">  <b class="spoiler_title">Further, the initialization text of the timer and controller:</b> <div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BIT(n) (1u </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;&lt; n) #define LSHIFT(v,n) (((unsigned int)(v) &lt;&lt; n)) #define LEDS_NUM 80 #define COLRS 3 INT16U DMA_buf[LEDS_NUM+2][COLRS][8]; /*------------------------------------------------------------------------------ Timer4          PCLK1 72 MHz  3     Compare    DMA  CCR3     ------------------------------------------------------------------------------*/ void Timer4_init(void) { TIM_TypeDef *tim = TIM4; RCC_TypeDef *rcc = RCC; rcc-&gt;APB1RSTR |= BIT(2); //   4 rcc-&gt;APB1RSTR &amp;= ~BIT(2); rcc-&gt;APB1ENR |= BIT(2); //    4 tim-&gt;CR1 = BIT(7); // 1: TIMx_ARR register is buffered. tim-&gt;CR2 = 0; tim-&gt;PSC = 0; //    72  tim-&gt;ARR = 90 - 1; //    1.25  tim-&gt;CCMR2 = 0 + LSHIFT(6, 4) // OC3M: Output compare 3 mode | 110: PWM mode 1 - In upcounting, channel 1 is active as long as TIMx_CNT&lt;TIMx_CCR1 else inactive. + LSHIFT(1, 3) // OC3PE: Output compare 3 preload enable + LSHIFT(0, 0) // CC3S: Capture/Compare 3 selection | 00: CC3 channel is configured as output ; tim-&gt;CNT = 0; tim-&gt;CCR3 = 0; tim-&gt;DIER = BIT(11); // Bit 11 CC3DE: Capture/Compare 3 DMA request enable.   DMA tim-&gt;CR1 |= BIT(0); //   tim-&gt;CCER = BIT(8); //   ,     DMA } /*------------------------------------------------------------------------------   2 DMA1 Stream 7           WS2812B   TMR4     PWM ------------------------------------------------------------------------------*/ void DMA1_Stream7_Mem_to_TMR4_init(void) { DMA_Stream_TypeDef *dma_ch = DMA1_Stream7; RCC_TypeDef *rcc = RCC; rcc-&gt;AHB1ENR |= BIT(21); //  DMA1 dma_ch-&gt;CR = 0; //   dma_ch-&gt;PAR = (unsigned int)&amp;(TIM4-&gt;CCR3) + 1; //     ADC dma_ch-&gt;M0AR = (unsigned long)&amp;DMA_buf; dma_ch-&gt;NDTR = (LEDS_NUM + 2) * COLRS * 8; dma_ch-&gt;CR = LSHIFT(2, 25) + // CHSEL[2:0]: Channel selection | 010: channel 2 selected LSHIFT(0, 23) + // MBURST: Memory burst transfer configuration | 00: single transfer LSHIFT(0, 21) + // PBURST[1:0]: Peripheral burst transfer configuration | 00: single transfer LSHIFT(0, 19) + // CT: Current target (only in double buffer mode) | 0: The current target memory is Memory 0 (addressed by the DMA_SxM0AR pointer) LSHIFT(0, 18) + // DBM: Double buffer mode | 0: No buffer switching at the end of transfer LSHIFT(3, 16) + // PL[1:0]: Priority level | 11: Very high. PL[1:0]: Priority level LSHIFT(0, 15) + // PINCOS: Peripheral increment offset size | 0: The offset size for the peripheral address calculation is linked to the PSIZE LSHIFT(1, 13) + // MSIZE[1:0]: Memory data size | 00: 8-bit. Memory data size LSHIFT(1, 11) + // PSIZE[1:0]: Peripheral data size | 00: 8-bit. Peripheral data size LSHIFT(1, 10) + // MINC: Memory increment mode | 1: Memory address pointer is incremented after each data transfer (increment is done according to MSIZE) LSHIFT(0, 9) + // PINC: Peripheral increment mode | 0: Peripheral address pointer is fixed LSHIFT(1, 8) + // CIRC: Circular mode | 1: Circular mode enabled LSHIFT(1, 6) + // DIR[1:0]: Data transfer direction | 01: Memory-to-peripheral LSHIFT(0, 5) + // PFCTRL: Peripheral flow controller | 1: The peripheral is the flow controller LSHIFT(1, 4) + // TCIE: Transfer complete interrupt enable | 1: TC interrupt enabled LSHIFT(0, 3) + // HTIE: Half transfer interrupt enable | 0: HT interrupt disabled LSHIFT(0, 2) + // TEIE: Transfer error interrupt enable | 0 : TE interrupt disabled LSHIFT(0, 1) + // DMEIE: Direct mode error interrupt enable | 0: Direct mode error interrupt disabled LSHIFT(0, 0) + // EN: Stream enable | 1: Stream enabled 0; dma_ch-&gt;FCR = LSHIFT(0, 7) + // FEIE: FIFO error interrupt enable LSHIFT(1, 2) + // DMDIS: Direct mode disable | 1: Direct mode disabled.           LSHIFT(1, 0) + // FTH[1:0]: FIFO threshold selection | 01: 1/2 full FIFO 0; dma_ch-&gt;CR |= BIT(0); // 1: Stream enabled }</span></span></span></span></code> </pre> <br><br></div></div><br><br>  After this initialization, the automatic transfer of the bitstream from the DMA_buf array located in RAM to the external output 8 GPIOB begins.  Automatically generated and 50 microsecond reset pause.  The processor is not involved in the transfer, not even interrupts are used.  To light any LED, you just need to write the corresponding word in the array DMA_buf at the appropriate offset.  This is done in the project by the function LEDstrip_set_led_state. <br><br>  This is not to say that this mechanism does not affect the processor at all.  His work slows down somewhat.  Because it shares with DMA shared access to RAM and system bus.  But measurements have shown that this slowdown does not exceed 0.2% in this case. <br><br>  The MDK-ARM Professional Version: 4.72.1.0 development environment was used to write the project.  The processor frequency is 144 MHz, the PCLK1 frequency is 72 MHz.  Easily transferred to the STM32 MCU Discovery Kits.  The whole project is laid out <a href="https://drive.google.com/file/d/0B5dbvc_yPqJHQ2FEUXpkR3NocnM/view%3Fusp%3Dsharing">here.</a> <br><br>  The project did not use libraries from ST or any other third-party libraries.  The project is very compact, everything is written through direct access to the registers, it makes the text shorter, clearer and makes it easier to transfer to other development environments. <br><br><h2>  And about the rainbow </h2><br>  The fact is that simply linearly incrementing the bytes in a word in the RGB color format (bit representation - 00000000 RRRRRRRR GGGGGGGG BBBBBBBB) cannot be depicted on a LED strip with a hundred LEDs to draw a beautiful rainbow.  It is even more difficult for this rainbow to adjust the brightness, making simple manipulations on a 32-bit word with RGB information.  For such manipulations use HSV format.  For example, the entire rainbow will be represented by simply linearly incrementing the H-component.  Then convert HSV to RGB and output to LEDs. <br>  There are two HSV to RGB converters in the project, one is integer and the other is using floating point calculations.  Visually, I did not see the differences.  Yes, unfortunately, there is no place for STM32 here. </div><p>Source: <a href="https://habr.com/ru/post/257131/">https://habr.com/ru/post/257131/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../257121/index.html">Image and video analysis. Image segmentation</a></li>
+<li><a href="../257123/index.html">Develop a simple game in the game maker. Episode 1</a></li>
+<li><a href="../257125/index.html">How to earn points without even starting the game</a></li>
+<li><a href="../257127/index.html">Microsoft showed Project Astoria: what it will look like using Android code in Windows applications</a></li>
+<li><a href="../257129/index.html">Creating plug-ins for AutoCAD using the .NET API (part 4 - inserting primitive objects)</a></li>
+<li><a href="../257133/index.html">Beeline automatically adds a Mail.Ru search toolbar.</a></li>
+<li><a href="../257135/index.html">Transhumanism to the masses: unlocking the device on Android Lollipop with an implanted NFC chip</a></li>
+<li><a href="../257137/index.html">Regular passwords lit up on TV. Now the British Railways</a></li>
+<li><a href="../257139/index.html">Mesosphere opens test access to its OS for data centers</a></li>
+<li><a href="../257141/index.html">Sleep and self-powered ESP8266</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

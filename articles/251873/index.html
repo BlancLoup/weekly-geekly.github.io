@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>We stamp windows: automated deployment of Windows virtual machines to Hyper-V using Vagrant (part 2)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the previous part, we looked at what automation of deploying VM Windows is needed for and how to prepare the host system. Today I would like to foc...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>We stamp windows: automated deployment of Windows virtual machines to Hyper-V using Vagrant (part 2)</h1><div class="post__text post__text-html js-mediator-article">  In the <a href="http://habrahabr.ru/post/251435/">previous part,</a> we looked at what automation of deploying VM Windows is needed for and how to prepare the host system.  Today I would like to focus on the technical implementation of the most massive part of the process, namely the preparation of the basic boxing for Vagrant. <a name="habracut"></a>  After all the necessary software is installed, it's time to prepare an exemplary box - a template from which the machines will unfold. The box is a regular tar-archive containing a VHD disk file and metadata: virtual settings and service information.  Thus, it is necessary to start preparing the image with creating a new VM in it, updating it, adjusting and compressing in order to save space and speed up the deployment.  I will not dwell on how to create a new virtual machine in Hyper-V Manager, how to install the system and roll updates.  I will focus only on the nuances: <ul><li>  Create the machine of the first generation (Gen1).  This is due to the fact that the current version of Vagrant (1.7.2) incorrectly sets the parameters of the hard disk (Gen2 does not have the “IDE” option, it is replaced with “VHD”), so I advise you not to get involved with Gen2 yet.  However, if you really need to - you can correct the file plugins / providers / hyperv / scripts / import_vm.ps1. </li><li>  Use only one hard disk file, otherwise the box will not be able to climb (see below for details). </li><li>  Do not install unnecessary software (including Windows components) in the box.  This makes it heavier and increases the chance that after some time there will be an outdated version.  It is more correct to do it later, in the stage of provisioning. </li><li>  For Boxstarter to work correctly, you need to disable Powershell restrictions: <blockquote>  Set-ExecutionPolicy -ExecutionPolicy Unrestricted </blockquote></li><li>  By default, Vagrant accesses the machine via SSH (which required installing the latter on the machine), but in recent versions he has learned to work using the WinRM protocol native to Windows.  All you need is to configure WinRM: <blockquote>  winrm set winrm / config / client / auth '@ {Basic = "true"}' <br>  winrm set winrm / config / service / auth '@ {Basic = "true"}' <br>  winrm set winrm / config / service '@ {AllowUnencrypted = "true"} </blockquote></li><li>  I usually disable (set the manual startup mode) unnecessary services (Print Spooler is the same), and also remove the disk indexing and automatic weekly defragmentation: we have the Storage Tier optimization performed by the hypervisor itself. </li></ul>  After installing all the updates, Windows usually “swells” up to 12-15 gigabytes, which is obviously a bit too much for quick cloning.  This is due to the fact that the system caches package installers and distributions of some of its components.  All this, fortunately, is easily cleaned.  So, how to reduce the volume occupied by the VHD file? <ul><li>  Reduce the size of the paging file, make this size fixed; </li><li>  Clear all logs: <blockquote>  wevtutil el |  Foreach-Object {wevtutil cl "$ _"} </blockquote></li><li>  Remove unnecessary components of Windows Update: <blockquote>  Dism.exe / online / Cleanup-Image / StartComponentCleanup / ResetBase <br>  Dism.exe / online / Cleanup-Image / SPSuperseded </blockquote></li><li>  Remove installers component of Windows.  By running the Get-WindowsFeature command, you can see that some of the components have Install State = Available.  Usually, this means that these components can be installed, and for this purpose enough cache, which is stored directly on the local disk.  Therefore, it makes sense to delete this cache by executing the following commands: <blockquote>  Get-WindowsFeature | <br>  ?  {$ _. InstallState -eq 'Available'} | <br>  Uninstall-WindowsFeature -Remove </blockquote></li><li>  If any of the components may be useful later, it makes sense to leave it, otherwise during subsequent installation you will have to specify the path to the wim file (the -Source parameter).  However, there is nothing terrible here: this file is in the ISO file from which the system was installed, and it can be used both locally and from a network resource.  In addition, some components are quietly installed from the Internet - Powershell itself downloads the necessary files. </li><li>  If desired, you can install Disk Cleanup - a program that automatically cleans the system from temporary files.  However, to do this, you need to add the Desktop-Experience role, which, when deleted, causes problems with sysprep.  So there are two options: either to leave this feature, which eats up the place and makes the registry heavier (as it pulls up a bunch of mandatory, but too much junk like Ink and Handwriting), or refuse sysprep, which puts an end to the use of the raised machines in the domain. </li><li>  After all the listed operations, the size of the dynamic VHD file will remain the same.  To compress it, you must first defragment to move all files to the beginning of the disk: <blockquote>  Optimize-Volume -DriveLetter C -Defrag </blockquote></li><li>  After defragmentation, it is advisable to reset all free space using the sdelete command that is part of SysInternals: <blockquote>  sdelete -zc: </blockquote>  This will allow more effectively compress it later. </li></ul>  After that, you can turn off the virtual machine and run Compact operation on its VHD.  The total size may vary, but usually it is at the level of 5-7 GB.  The final size of the box will be even smaller, because we are going to further compress it with tar and GZip.  However, if you plan to use this machine in a domain environment - you need to prepare it so that there is no situation with duplication of SID.  To do this, use the Sysprep utility. <br><br><h4>  Sysprep walking </h4>  In the most general case, preparing virtual machines for cloning using sysprep is a rather banal procedure.  To do this, you can use as a GUI. <blockquote>  C: \ Windows \ System32 \ Sysprep \ sysprep </blockquote><img src="https://habrastorage.org/files/7ff/a32/b33/7ffa32b332fe4bd8b69b78120d95358c.png"><br>  as well as the command line, which is closer to our liking and also allows you to specify additional parameters: <blockquote>  C: \ Windows \ System32 \ Sysprep \ sysprep / generalize / oobe / mode: vm / shutdown </blockquote>  After that, the program will perform all the necessary operations and extinguish the car.  The next time the system is turned on, it will be in the aforementioned OOBE (Out-of-Box Experience) - the state in which the newly purchased laptop is located when it is first turned on: hardware inventory will be taken, local administrator password, license key, computer name and so on will be requested.  All anything, but you have to enter all this manually, from the keyboard.  Fortunately, all this is easily automated.  To do this, you need to prepare an answer file, unattend.xml and put it next to the sysprep.exe file launched (in the C: \ Windows \ System32 \ Sysprep folder), or by specifying the path to it as a command line parameter - this will allow you to place the file on the external disk so that it does not appear on the final box.  I will not dwell on this in detail; I just want to say that this will require a Windows installation image (more precisely, an install.wim file from it) and a Windows Assessment and Deployment Kit (ADK) (you need only install the Deployment Tools item, which includes the Windows System Image Manager).  Links to the distribution, instructions and examples of use will be in the appropriate section in the next, final part of the article. <br><h5>  Important nuances: </h5><ul><li>  If you installed and then deleted the Desktop-Experience component, then Sysprep will fall out with an error.  As I mentioned above, there are two options: either to leave this component installed, or to do without it.  Matt Rock (author of Boxstarter) has the details on his <a href="http://www.hurryupandwait.io/blog/adventures-in-sysprep-and-the-failed-quest-for-disk-cleanup-on-server-2012-r2">blog</a> . </li><li>  When preparing boxing, it is often necessary to modify something; for this, boxing rises in the OOBE state, all settings are passed according to the response file, then necessary changes are made and the system is run again by Sysprep.  I want to note that this will happen only twice (i.e., three sysprep runs).  This is due to the peculiarities of licensing Microsoft.  In principle, this costs <a href="https://support.microsoft.com/kb/929828/en-us">tricky editing of the registry</a> , but this can be done only for temporary or test machines, and not in production, so I advise you to simply store the image for further work separately, making copies of it if necessary and preparing the new version independently.  Thus, each virtual machine for the entire period of its life will be “otprepreplena” just once. </li><li>  It is better not to set the name of the computer - then it will be randomly generated, which will avoid confusion and conflicts when several machines rise at the same time.  In addition, it can be easily installed by the employee at the stage of provisioning during the ascent. </li><li>  Set a complex and secure password for the local administrator.  In the future, of course, it is better to change it (or block it altogether).  This account will be required when raising the machine at the provisioning stage: it is under it that Vagrant will install the software, update the system and make all the necessary settings. </li><li>  The name of the machine in the hypervisor itself (as it is called in the Hyper-V Manager) is better to change to something short and simple - that is the name of the machine from the expanded box.  There was an awkward situation when my colleagues raised my trial box and as a result they had a machine like “Winda 2k12 r2 x64 syspreped with bloody winrm settings version 111 test 222 yo”. </li></ul><br><h4>  Boxing packaging </h4>  After Sysprep put out the car, it's time to pack the virtual machine in a boxing file.  In general, Vagrant has built-in functionality for this (command provision), however, as of now, it does not work in Hyper-V.  So we’ll pack up the box with our hands - there’s nothing to be afraid of, it’s done quite simply: <ul><li> The machine checks the hardware configuration: the number of processor cores, memory size, boot priority.  It is these parameters that will be on newly deployed machines (although nothing prevents to change them later, of course). </li><li>  All snapshots of the hard disk are deleted. </li><li>  The finished off machine is exported to a separate folder on the disk.  This is necessary to place the file of the hard drive and all the meta-information alongside. </li><li>  In the folder with the virtual machine, the folder for snapshots files is deleted - the Wagrant provider Hyper-V still does not use it. </li><li>  A text file metadata.json is also created there.  At a minimum, at least one provider must be defined there (Hyper-V in our case).  Example file for our case: <blockquote>  { <br>  "Name": "Windows2012R2", <br>  "Description": "Windows 2012 R2 box sysprepped with ununtended provisioning", <br>  "Provider": "hyperv" <br>  } </blockquote></li><li>  Now it only remains to make a .box file from the directory contents.  To do this, use tar (you can use the free 7-Zip or bsdtar from the repository: the version that comes with Vagrant 1.7.2 will not work).  Attention: the archive should contain only the contents of the folder to which the machine was exported, without the parent folder, otherwise the box is not recognized.  Those.  inside, right in the root should be the “Virtual Hard drives” and “Virtual Machines” directories, as well as the metadata.json file.  The resulting file can then be compressed using gzip (7-Zip can be used again, the main thing is to do it in a separate iteration, already above the .tar file) or LZMA (which gives better compression, but the time saved on copying will be spent for a longer time compared to gzip, unzip) and change its extension to box.  TA-dah!  Boxing is ready! </li></ul><br>  Now, in order for Vagrant to copy it to itself and see — you need to add it using the add command directly from our directory with the file: <blockquote>  vagrant box add --provider hyperv --name Win2012R2x64 Win2012R2.box </blockquote>  If everything went well, the box will become available (the vagranate will copy it to himself in% VAGRANT_HOME% and unpack it) and you can see it in the output of the vagrant box list command.  To make it available for colleagues - you can put it on a shared network drive (then the command for adding a box will be vagrant box add --name Win2012R2x64 D: \ Path \ To \ Win2012R2x64 \\ fileserver.domain.local \ boxes \ win2012r2. box) or web server: local (vagrant box add - name Win2012R2x64 http: //devops.local/boxes/win2012r2.box) or external.  For example, at <a href="http://www.vagrantbox.es/">http://www.vagrantbox.es/</a> or <a href="https://atlas.hashicorp.com/">Hashicorp Atlas</a> . <br>  In the <a href="http://habrahabr.ru/post/252645/">next part,</a> I will show you how to lift a VM from boxing and perform its automatic tuning with the help of provisioning. </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/251873/">https://habr.com/ru/post/251873/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../251849/index.html">The digest of interesting materials from the world of web development and IT for the last week №149 (February 24 - March 1, 2015)</a></li>
+<li><a href="../251863/index.html">FLProg goes online and starts a friendship with penguins</a></li>
+<li><a href="../251865/index.html">DIY cookies</a></li>
+<li><a href="../251869/index.html">Intel Haswell - Nutanix Planned Platform Update</a></li>
+<li><a href="../251871/index.html">Where is the death of Kashcheev?</a></li>
+<li><a href="../251875/index.html">Audit information board stations commuter trains</a></li>
+<li><a href="../251877/index.html">Announcement of the second meeting of Java User Group Sevastopol</a></li>
+<li><a href="../251883/index.html">From there went Animusic</a></li>
+<li><a href="../251885/index.html">IBM invites to the technical workshop "z13 Technical Enablement Roadshow"</a></li>
+<li><a href="../251889/index.html">Comparison of Android applications for data encryption</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

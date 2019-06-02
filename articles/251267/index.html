@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Lock-free data structures. Concurrent maps: trees</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This is the last, for today, article from the cycle about the internal structure of competitive associative containers. In previous articles, the hash...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Lock-free data structures. Concurrent maps: trees</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/f16/711/864/f16711864e6e4ea78e8cea08ceeb709d.png" align="right">  This is the last, for today, article from the cycle about the internal structure of competitive associative containers.  In previous articles, the hash map was considered, the lock-free ordered list algorithm and containers based on it were built.  Overboard was left one important type of data structure - trees.  It's time to tell a little about them. <br><br>  Studies on algorithms of competitive trees that do not require external synchronization of access to them began a long time ago - in the 70s of the last century - and were initiated by the development of the DBMS, therefore, they mainly focused on optimizing page trees ( <a href="https://ru.wikipedia.org/wiki/B-%25D0%25B4%25D0%25B5%25D1%2580%25D0%25B5%25D0%25B2%25D0%25BE">B-tree</a> and its modifications). <br><br>  The development of the lock-free approach in the early 2000s did not pass by tree algorithms, but only recently, in the 2010s, many really interesting works on competitive trees appeared.  The algorithms of the trees are quite complex, so the researchers took time - about 10 years - to lock-free / non-blocking their adaptation.  In this article we consider the simplest case - the usual binary tree, not even self-balancing. <br><a name="habracut"></a><br>  What is the practical meaning of a regular binary tree, the reader will ask, because we all know that for ordered data such a tree degenerates into a linear list with O (N) search complexity?  The main point is to test the approaches on a simple data structure.  In addition, for random data, the binary tree fits quite well, providing O (log N) complexity, and its internal simplicity is the key to high efficiency.  So it all depends on the task where such a tree is used. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      To begin with - a retrospective look at the problem of building lock-free / non-blocking trees.  After quite effective lock-free algorithms for queues and lists were found, works on lock-free self-balancing trees appeared - AVL tree, Red-Black tree.  The pseudocode of these algorithms was complicated, so complex that I would not undertake to implement it, since it is not clear to me, for example, how to apply memory management schemes to them (Hazard Pointer, RCU or something else), the algorithms relied on garbage collector (GC) language, usually Java.  In addition, I would not embody an algorithm that uses the CAS primitive (compare-and-swap) to <i>find the</i> key in the tree — CAS is too heavy for this.  And in general, despite the formal proof of the correctness of such an algorithm (in the presence of GC, this reservation is essential, the absence of GC may violate the proof), its complexity, the presence of many boundary cases, seemed insurmountable to me in the light of debugging. <br><br>  Apparently, not only the complexity and, according to the developers, the inefficiency of the resulting lock-free algorithms for trees scared me.  Therefore, in the beginning of the 2010s, the emphasis in the development of algorithms shifted somewhat: instead of providing a lock-free by any means, many works began to appear, where the effectiveness of the search operation on the tree was put at the forefront.  Indeed, trees are used mainly in search tasks (it is believed that search is 70 - 90% of operations), and that search must be fast.  Therefore, non-blocking algorithms have appeared in which the search is lock-free, and the insertion / deletion can be blocked at the node group level (fine-grained locking) - either explicitly using mutexes, or implicitly using checkboxes, etc., that is, essentially it is spinning.  This approach gave less complex and more understandable algorithms, one of which we will consider. <br><br><h2>  Binary search tree </h2><br>  We will consider the tree in which the data is located in the leaves, the internal nodes are routing and contain only keys: <br><br><img src="https://habrastorage.org/files/ac1/171/311/ac1171311afe4f799059cee8dc477112.png"><br><br>  This is the so-called leaf-oriented tree.  The presence of the required key in the internal node does not mean that the key exists in the tree, only the leaves contain the keys and the corresponding data, the internal nodes can contain remote keys. <br><br>  In such a tree, each node has exactly two descendants.  Inserting into such a tree always gives rise to one leaf and one inner node, when deleting a key, one leaf and one inner node, its parent, is deleted.  No balancing is provided. <br><br>  Consider what surprises await us in the performance of competing operations.  Let there be some kind of tree and streams A and B perform deletion of keys 15 and 27 respectively: <br><br><img src="https://habrastorage.org/files/64a/294/9c4/64a2949c4fc842aba6906f0b3cbe0be7.png"><br><br>  Flow A to remove key 15 must remove a sheet with this key and its parent — an internal node with key 20. To do this, it changes the right link from its grandfather — node 10 — from node 20 to node 30, which is a brother of the node to be deleted.  Since we are considering competitive trees, this operation must be performed atomically, that is, using CAS (compare-and-swap). <br><br>  At the same time, flow B removes key 27. In the same way as above, flow B throws the right link of node 20 (grandfather 27) from CAS 30 to sheet 45. <br><br>  If these two actions are performed in parallel, as a result, we get an attainable node 30 and an attainable sheet 27 that needs to be removed. <br><br>  When performing competing deletions and inserts, the situation is similar: <br><br><img src="https://habrastorage.org/files/981/9fd/223/9819fd2233e8405f85da9c03ab99a19d.png"><br><br>  Here, flow A, deleting the key sheet 27, competes with flow B, which inserts the new key 29. To delete 27 (and its parent, internal node 30), flow A throws the pointer to the right son of node 20 from 30 to 45. At the same time key 29 and the corresponding internal node 29 are inserted as the left son of node 30, in the same position from which flow A removes key 27. As a result, the new key becomes unreachable - a memory leak. <br><br>  It is obvious that the CAS primitive itself cannot resolve the above described cases.  It is necessary before tagging / deleting to somehow mark the nodes involved in the operation.  The insert operation involves a leaf node and its parent is an internal node.  Before inserting a parent node, it should be marked "insertion in progress" so that competing insertions / deletions cannot be performed on this node.  A delete sheet is involved in a delete operation; its parent and the parent of its parent are the grandfather of the sheet to be deleted.  Both the internal node - the parent and grandfather - must also be marked to exclude competition on them. <br><br>  In <a href="http://www.cs.vu.nl/~tcs/cm/faith.pdf">this</a> paper, we propose to use the <code>State</code> field for each internal node: <br><br><img src="https://habrastorage.org/files/709/c4b/26e/709c4b26ec2c43a6b522e10ff9f91e25.png"><br><br>  The internal node can be in one of the following states: <br><ul><li>  <code>Clean</code> - no inserts or deletes are performed on the node.  This is the default node state. </li><li>  <code>IFlag</code> - the insert is inserted into the node.  This flag marks the internal node, in which at least one son is a leaf. </li><li>  <code>DFlag</code> - deletion in <code>DFlag</code> .  This flag marks the internal node-grandfather of the sheet being removed. </li><li>  <code>Mark</code> - the internal node will be deleted.  This flag marks the parent of the sheet being deleted (remember that in our tree, when a sheet is deleted, its parent is also always deleted). </li></ul><br>  These states are mutually exclusive: each node can only be in one of them.  Changing the state of a node is performed by the CAS primitive. <br>  Recall that our main goal is to implement the key search operation in the tree as efficiently as possible.  How do these states affect search?  Obviously, the insert operation and the corresponding <code>IFlag</code> flag can be ignored during the search: there are no <code>IFlag</code> when inserting, which means that we will not be able to “enter the forbidden, remote zone”.  But the flags <code>DFlag</code> and <code>Mark</code> should influence the search: when reaching a node with one of these flags, the search should be resumed from the beginning (variations of actions are possible here, but the simplest thing is to start the search again). <br><br>  So, let's look at how these states work by the example of inserting the key 29: <br><br><img src="https://habrastorage.org/files/1f1/8fb/9cd/1f18fb9cd8234320976899ebc637385a.png"><br><br>  We find the insertion node - this is the internal node 30. First, we set the state of the <code>IFlag</code> node 30 by the CAS primitive.  CAS here guarantees that we will move to the <code>IFlag</code> only from the <code>Clean</code> state, which eliminates competing operations, that is, we become the exclusive owners of node 30. Next, we create an internal node 27, assign sons to it — the existing sheet 27 and the new 29, and we change the pointer of the left son of node 30 to the newly created internal node 27. Why is CAS needed here, is it possible to get along with an ordinary atomic store?  The answer is that in the original algorithm you cannot; in the implementation of libcds, you can use an atomic store, we'll talk about this later.  And finally, the third step: remove the <code>IFlag</code> flag from node 30. Here also CAS is used in the original algorithm, which can be replaced with an atomic store, if we give up something not very necessary. <br><br>  The deletion operation using the <code>State</code> flags consists of four steps: <br><br><img src="https://habrastorage.org/files/3f7/d8d/904/3f7d8d90496e4935ae936c787566b89f.png"><br><ul><li>  We mark the grandfather of the sheet being <code>DFlag</code> with the state of <code>DFlag</code> using CAS </li><li>  <code>Mark</code> parent of the deleted sheet with <code>Mark</code> state also with CAS </li><li>  Throw CAS'om pointer descendant node grandfather </li><li>  Remove the label <code>DFlag</code> with grandfather.  It uses CAS, but you can use a simpler atomic store with some simplification of the algorithm. </li></ul><br>  Note that we do not remove the <code>Mark</code> label from the parent node of the leaf being deleted, since in our algorithm the parent is also deleted and there is no point in removing the label from it. <br><br>  Let's see how flags work in case of competitive deletion.  Without state flags, concurrent deletion of keys 15 and 27 led, as we saw earlier, to reachability of a deleted sheet: <br><br><img src="https://habrastorage.org/files/64a/294/9c4/64a2949c4fc842aba6906f0b3cbe0be7.png"><br><br>  With the status flags we will have: <br><br><img src="https://habrastorage.org/files/ea2/f0a/55e/ea2f0a55e70841dabcb589160bda5037.png"><br><br>  It would seem that if flow A set the <code>DFlag</code> flag on node 10, flow B should not go beyond node 10 when searching for 27. But our operations are performed in parallel, so it is quite possible that flow B managed to slip node 10 before it was marked flag <code>DFlag</code> .  Further, competition arises at node 20: flow A wants to mark it with the <code>Mark</code> flag, flow B with the flag <code>DFlag</code> .  Since the node state is set by the atomic CAS from the <code>Clean</code> state, only one of the streams will win this battle.  If stream A wins, that is, if he managed to mark 20 with <code>Mark</code> , stream B starts searching for the deleted node 27 from the beginning, and A deletes 15 and then removes the <code>DFlag</code> flag from 10. If B wins, marking 20 with the <code>DFlag</code> flag, stream A should remove your tag from 10 and repeat the search for node 15. In both cases, the deletion of keys is finally performed successfully and without disrupting the tree structure. <br><br>  As you can see, state flags play the role of internal mutexes, providing exclusive access to the deleted nodes.  It remains to clarify some hints about the admissibility of replacing the CAS primitive with the atomic store when removing flags, that is, when the node is transferred to the <code>Clean</code> state. <br><br><img src="https://habrastorage.org/files/154/875/398/1548753980dc4c0090a1c8d50f6e74f3.png" align="right">  In the original algorithm, mutual help (helping) of flows is used when competition is detected on a node.  To do this, in addition to the status flags, the internal node may contain a handle to the operation being performed - insert or delete.  A competing stream, detecting the state of a node other than <code>Clean</code> , can read this descriptor and try to help its fellow run the operation.  In this case, the transition to the <code>Clean</code> state at the end of the operation should be made only by the CAS primitive, since several threads — the initiator of the operation and the helpers — can transfer the node state to <code>Clean</code> .  If we make it an atomic store, then it is possible that a node transferred to the <code>Clean</code> state and then to some other subsequent insert / delete operation will be transferred back to <code>Clean</code> by some late assistant. <br><br>  Receiving mutual assistance looks good in pseudocode, but in practice I have not seen much benefit from it.  Moreover, in C ++, where there is no garbage collector, this technique is quite problematic to implement effectively: the question immediately arises of how to distribute descriptors (on the stack? Alloc? Pool?), And even more serious - about the lifetime of such a descriptor (reference counting?).  In the implementation of libcds helping is disabled: several attempts to introduce it have not been successful, the code is unstable (this beautiful phrase from the managers' lexicon means that the program crashes).  So the binary search tree algorithm in libcds contains several artifacts, including CAS instead of an atomic store, when translating the node state to <code>Clean</code> , which I’ll get rid of in the future. <br><br><h2>  Conclusion </h2><br>  This article describes the simplest binary tree algorithm.  Despite the lack of balancing, the algorithm is of interest, if only because it is the first step towards the implementation of more complex, self-balancing trees such as AVL-tree and Red-Black tree, which are being worked on, I hope to present them in libcds soon. <br><br>  I would like to finish a series of articles on concurrent map with synthetic test results for implementations from libcds (Intel Dual Xeon X5670 2.93 GHz 12 cores 24 threads / 24 GB RAM, average number of elements - 1 million, keys - int): <br><br><img src="https://habrastorage.org/files/214/514/c77/214514c77c1e4de3a413fc1df2b75a2f.png"><br><br>  Here: <br><ul><li>  MichaelMap is the simplest hash map without rehasing, reviewed <a href="http://habrahabr.ru/post/250383/">here.</a> </li><li>  SplitListMap - <a href="http://habrahabr.ru/post/250523/">split-ordered list</a> algorithm </li><li>  SkipListMap - algorithm <a href="http://habrahabr.ru/post/250815/">skip list</a> </li><li>  BinTree - the binary tree considered in this article </li><li>  std :: map, std :: unordered_map - STL-algorithms for std :: mutex </li></ul><br>  The results are given for Hazard Pointer (HP) and the user-space RCU (more precisely, its buffered variety <code>cds::urcu::general_buffered</code> ). <br><br>  You can confirm or deny these results by downloading and compiling <a href="https://github.com/khizmax/libcds">libcds</a> or applying data structures from libcds in your application. <br><br>  Perhaps today this is all that I would like to tell you about lock-free data structures.  The end of an epic cycle!  There are many questions on lock-free and in general on the internal structure of containers that could be discussed, but they are all very technical and, I am afraid, will not be of interest to the general public. <br><br><div class="spoiler">  <b class="spoiler_title">Lock-free data structures</b> <div class="spoiler_text">  <a href="http://habrahabr.ru/company/ifree/blog/195770/">Start</a> <br>  Basics: <br><ul><li>  <a href="http://habrahabr.ru/company/ifree/blog/195948/">Atomicity and atomic primitives</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/196548/">Where did the memory barriers go from</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/197520/">Memory model</a> </li></ul><br>  Inside: <br><ul><li>  <a href="http://habrahabr.ru/company/ifree/blog/202190/">Memory management circuits</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/206984/">RCU</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/216013/">Stack evolution</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/219201/">Another treatise</a> </li><li>  <a href="http://habrahabr.ru/post/230349/">Queue dissection</a> </li><li>  <a href="http://habrahabr.ru/post/250383/">Concurrent maps: warm up</a> </li><li>  <a href="http://habrahabr.ru/post/250523/">Concurrent maps: rehash, no rebuild</a> </li><li>  <a href="http://habrahabr.ru/post/250815/">Concurrent maps: skip list</a> </li><li>  <a href="https://habrahabr.ru/post/251267/">Concurent maps: trees</a> </li><li>  <a href="https://habrahabr.ru/post/314948/">Iterators: multi-level array</a> </li><li>  <a href="https://habrahabr.ru/post/317882/">Iterable list</a> </li></ul><br>  Outside: <br><ul><li>  <a href="http://habrahabr.ru/company/ifree/blog/196834/">Introduction to libcds</a> </li></ul><br></div></div></div><p>Source: <a href="https://habr.com/ru/post/251267/">https://habr.com/ru/post/251267/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../251255/index.html">The digest of interesting materials from the world of Drupal # 5</a></li>
+<li><a href="../251257/index.html">Disadvantages of Wordpress - the technical side</a></li>
+<li><a href="../251259/index.html">Reading old articles Habra with pictures</a></li>
+<li><a href="../251261/index.html">Weekly assembly Vivaldi 1.0.111.2</a></li>
+<li><a href="../251263/index.html">About some aspects of repairing a hard drive electronics board</a></li>
+<li><a href="../251269/index.html">(Video) HP Helion Presentation</a></li>
+<li><a href="../251271/index.html">Reduced overhead for utilities on golang</a></li>
+<li><a href="../251277/index.html">Static JavaScript analyzers and errors that they can help you to unlearn (Part 1)</a></li>
+<li><a href="../251283/index.html">BattleGIS - JavaScript engine for playing Tanchiki</a></li>
+<li><a href="../251285/index.html">Overview of Microsoft Azure platform updates for February</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

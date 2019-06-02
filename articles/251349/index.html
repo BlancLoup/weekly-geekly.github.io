@@ -1,0 +1,160 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Processing logs based on previous messages in logstash / elasticsearch</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I recently wrote about capturing nuclear MCE (machine check error) and other bad things with the help of netconsole. Extremely useful thing. One probl...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Processing logs based on previous messages in logstash / elasticsearch</h1><div class="post__text post__text-html js-mediator-article">  I <a href="http://habrahabr.ru/company/webzilla/blog/92969/">recently</a> wrote about capturing nuclear MCE (machine check error) and other bad things with the help of netconsole.  Extremely useful thing.  One problem: throttling on the CPU due to local overheating (continuous load) is fixed as MCE.  A backup happens - and the admin comes a terrible message about the MCE, which in practice means “slightly overheated” and definitely does not require attention to itself at 3 am. <br><br>  The ridiculousness of the problem is that Linux fixes MCE after the throttling is over.  That is the 'normal' mode, but instead it turns into MCE.  It looks like this: <br><pre> CPU0: Core temperature above threshold clock throttled (total events = 40997)
+ CPU4: Core temperature above threshold clock throttled (total events = 40997)
+ CPU4: Core temperature / speed normal
+ CPU0: Core temperature / speed normal
+ mce: [Hardware Error]: Machine check events logged
+</pre><br>  In this case, we definitely want to respond to normal MCE.  What to do? <br><br>  Within logstash, message handling is supposed to be stateless.  You see the message - you react.  Introduce, for the sake of one type of message, a more complex system — overkill. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      It would seem that there is a filter (not to be confused with output) elasticsearch, which allows you to make requests.  Unfortunately, he does not know how to do ifs, that is, remove_tag and add_tag ​​will work regardless of whether the search was successful or not. <br><br>  It's sad. <br><a name="habracut"></a><br><br>  The second problem: how should the query look like in elasticsearch?  We need a time interval relative to the current one, and we need to filter on the current host (that is, the host to which the MCE arrived). <br><br>  Let's start to decide in turn. <br><br>  First: the request.  query cannot contain a normal search query, but must contain a query string, which is inside the <a href="http://www.lucenetutorial.com/lucene-query-syntax.html">lucene query</a> .  Let's start with a fixed query: <br><br>  "Type: netconsole AND host: compute109 AND message: temperature".  (type is set in input for receiving messages from the kernel via netconsole). <br><br>  Hooray, there are results, but for a large interval, which is fraught with false positives.  What about @ timestamp?  Help for <a href="http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/query-dsl-query-string-query.html">query language is</a> quite modest, and there is no math or special variables.  On the other hand, ranges are supported using the "[from TO to]" entry. <br><br>  Here I had an intuition attack and I wrote <code>@ timestamp:[now-2h TO now]</code> in the request, although there is not a word about 'now' in the documentation.  And they understood me.  It is better to check such requests in kibana in the field “query”.  A quick check revealed that now-1m also rolls in quality time. <br><br>  So the query has become more pleasant: <code>type:netconsole AND host:compute109 AND message:temperature and @timestamp:[now-1m to now]</code> ... <br><br>  It would seem that everything will be fine.  But - did not work.  Although it should have been.  And here I send WTF rays to the creators of lucene, logstash and elasticsearch.  Because and and AND are six different letters. <br><br>  Correct (and only!) <code>type:netconsole AND host:compute109 AND message:temperature AND @timestamp:[now-1m to now]</code> .  Otherwise, the request begins to search for messages (message) containing any words temperature, and, <code>@ timestamp</code> ). <br><br>  The question remains: where does the host come from?  Here logstash helps - it can substitute variables into text strings from the fields of the message being processed. <br><br>  The query query in the logstash config starts to look like this: <br><br> <code>query =&gt; "(type:netconsole) AND (host:%{[host]}) AND (@timestamp:[now-1m TO now]) AND (message:temperature)"</code> <br> <br>  And there would be happiness if it were not for the absence of if'a inside the elasticsearch filter.  It turns out a perverted construction: we want to use elasticsearch for if, but we cannot, and where we can use if, we cannot make inquiries "into the past." <br><br>  After several dozen attempts to “climb up the tree”, we got the following construction: We, after finding the MCE, make a request to elastic, and fill in the field (in the message about MCE) “mce_temperature” with the message content of the found message about 'temperature' on the host from the message about MCE, in the last minute.  That is, we add to the message about MCE the previous one, about temperature.  If we find, of course. <br><br>  The rest is simple: we have MCE and we have the contents of the mce_temperature field with the “previous” message.  Outside of the elasticsearch block, we write: <br><br><pre>         if [temperature_mce] = ~ / Core temperature.speed normal / {
+                 noop {
+                         remove_tag =&gt; ["notify"]
+                         add_tag ​​=&gt; ["supressed"]
+                 }
+           }
+</pre><br><br>  (Using the notify tag, we send a message to shinken, and supress is just for a person, to see why the message was not sent). <br><br><h1>  Catching cockroaches </h1><br>  Everything was good, except that at the moment when I wrote this article (assuming that the problem is solved), I get happy with such nagios and speak in human voice: ** PROBLEM: ALERT ... kernel: [8871838.807783] mce: [Hardware Error ]: Machine check events logged <br><br>  We look: <br><pre> [Tue Feb 24 15:51:40 2015] CPU0: Core temperature / speed normal
+ [Tue Feb 24 15:52:54 2015] mce: [Hardware Error]: Machine check events logged
+</pre><br>  Oh, thanks!  And I have an interval [now-1m TO now], that is 60 seconds.  And the events had an interval of 74 seconds.  So in the final version, the viewing interval had to be increased to 3 minutes. <br><br>  The second “fun” problem, which came a bit later, is problems with reverse DNS.  It turned out that the DNS does not keep up with monitoring at some points and does not resolve all IPs.  We usually resolve IP to the name and write it in the host field (dns filter).  And it turns out that the 'temperature' recorded with IP in the host field (could not be resolved), and the MCE came with the host name.  Or vice versa.  In any case, nasty bzz-bzzzz from the phone at night without sufficient reason. <br><br>  The solution was also simple: we will resolve the name, and ip save to another field.  And we do a search by IP. <br><br><h1>  Conclusion </h1><br>  Final config (snippet): <br><br><pre>   if [message] = ~ / Machine check events / {
+      elasticsearch {
+         hosts =&gt; ["localhost"]
+         query =&gt; "(type: netconsole) AND (source_ip:% {[source_ip]}) AND (@timestamp: [now-3m TO now]) AND (message: temperature)"
+         fields =&gt; ["message", "temperature_mce"]
+      }
+         if [temperature_mce] = ~ / Core temperature.speed normal / {
+                 noop {
+                         remove_tag =&gt; ["notify"]
+                         add_tag ​​=&gt; ["supressed"]
+                 }
+           }
+    }
+</pre><br>  If you want to disable throttling MCE completely, then replace / Core temperature.speed normal / with / Core temperature / <br><br>  I'm not sure that the proposed solution is best practice, but it also works minimally intrusively into the configuration.  This approach allows you to solve a whole class of problems associated with multi-line messages and allows you to make retrospective situational decisions without diluting the bigdata for nothing. </div><p>Source: <a href="https://habr.com/ru/post/251349/">https://habr.com/ru/post/251349/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../251337/index.html">Architectural design of mobile applications: part 2</a></li>
+<li><a href="../251339/index.html">Automatically Testing Java Swing Applications</a></li>
+<li><a href="../251341/index.html">Whip and ... whip information security in the enterprise</a></li>
+<li><a href="../251345/index.html">Pebble Time: a new watch with a color screen</a></li>
+<li><a href="../251347/index.html">Context Model Pattern via Aero Framework</a></li>
+<li><a href="../251351/index.html">CoinFest-2015-Moscow</a></li>
+<li><a href="../251353/index.html">We write a bot for MMORPG with assembler and draenei. Part 3</a></li>
+<li><a href="../251355/index.html">Several subtleties of using jade in Meteor-projects</a></li>
+<li><a href="../251357/index.html">Data exchange using MPI. Working with the MPI Library on the example of the Intel® MPI Library</a></li>
+<li><a href="../251359/index.html">Complete energy autonomy or how to survive with solar panels in the outback (part 1. theoretical)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

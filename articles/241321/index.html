@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Introduction to limiting the number of requests with Redis [Part 1]</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, I have written several different ways to limit the number of requests using Redis . Both in commercial and in personal projects. In two part...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Introduction to limiting the number of requests with Redis [Part 1]</h1><div class="post__text post__text-html js-mediator-article">  Recently, I have written several different ways to limit the number of requests using <a href="http://redis.io/">Redis</a> .  Both in commercial and in personal projects.  In two parts of this publication, I want to cover two different, but related ways to limit the number of requests - using standard Redis commands and using <a href="http://www.lua.org/">Lua</a> scripts.  Each subsequent of the described methods will add new use cases and solve the flaws of the previous ones. <br><br>  This publication assumes that you have some experience with Python and Redis and, to a lesser extent, with Lua, but it will also be interesting for those who have no such experience. <br><br><h3>  Why limit the number of requests? </h3><br>  For example, <a href="http://twitter.com/">Twitter</a> limits the number of requests to its API, and <a href="http://www.reddit.com/">Reddit</a> and <a href="http://www.stackoverflow.com/">StackOverflow</a> use restrictions on the number of messages and comments. <br><a name="habracut"></a><br>  Someone limits the number of requests to optimize the utilization of resources, someone struggles with spammers.  In other words, in the modern Internet, limiting the number of requests to the platform aims to limit the impact that the user can have.  Regardless of the reason, let's assume that we must count some user actions and prevent them if the user has reached or exceeded a certain limit.  Let's start by limiting the number of requests to some API, to a maximum of 240 requests per hour per user. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      We know that we need to count actions and restrict the user, so we need a bit of auxiliary code.  First, we must have a function that gives us one or more identifiers for the user performing the action.  Sometimes it's just the user's IP, sometimes his ID.  I prefer to use both if possible.  At least IP if the user is not authorized.  Below is the function that receives the IP and user ID using the <a href="http://flask.pocoo.org/">Flask</a> Flask-Login plugin. <br><br><pre><code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">from</span></span> flask <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> g, request <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">get_identifiers</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function">:</span></span> ret = [<span class="hljs-string"><span class="hljs-string">'ip:'</span></span> + request.remote_addr] <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> g.user.is_authenticated(): ret.append(<span class="hljs-string"><span class="hljs-string">'user:%s'</span></span>%g.user.get_id()) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> ret</code> </pre> <br><br><h3>  Just use the counters. </h3><br>  Now we have a function that returns user identifiers and we can start to count our actions.  One of the easiest ways available in Redis is to calculate the key for a time range and increment the counter in it whenever an action of interest occurs.  If the number in the counter exceeds the value we need, we will not allow the action to be performed.  Here is a function that uses automatically dimmed keys with a range (and lifetime) of 1 hour: <br><br><pre> <code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> time <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">over_limit</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(conn, duration=</span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-number">3600</span></span></span></span><span class="hljs-function"><span class="hljs-params">, limit=</span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-number">240</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function">:</span></span> bucket = <span class="hljs-string"><span class="hljs-string">':%i:%i'</span></span>%(duration, time.time() // duration) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> id <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> get_identifiers(): key = id + bucket count = conn.incr(key) conn.expire(key, duration) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> count &gt; limit: <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">False</span></span></code> </pre><br>  This is a fairly simple function.  For each identifier, we increase the corresponding key in Redis and expose it to a lifetime of 1 hour.  If the counter value exceeds the limit, you will return True.  Otherwise, we return False. <br><br>  That's all.  Well, or almost.  This allows us to solve our problem - to limit the number of requests to 240 per hour for each user.  The reality, however, is that users quickly notice that the limit is reset at the beginning of each hour.  And nothing will prevent them from making their 240 requests within a couple of seconds immediately at the beginning of the hour.  Our work will go in that case to smarka. <br><br><h3>  We use different ranges. </h3><br>  Our primary goal with the restriction of requests with an hourly basis was successful, but users begin to send all their requests to the API as soon as it becomes possible (at the beginning of each hour).  It looks like that in addition to the hourly limit, we should introduce a per second and minute limit to smooth out situations with a peak number of requests. <br><br>  Suppose we decide that 10 requests per second, 120 requests per minute and 240 requests per hour are sufficient for our users, and allow us to better distribute requests over time. <br><br>  To do this, we can simply use our <i>over_limit ()</i> function: <br><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">over_limit_multi</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(conn, limits=[</span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">(</span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">1</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">, </span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">10</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">)</span></span></span></span><span class="hljs-function"><span class="hljs-params">, </span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">(</span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">60</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">, </span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">120</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">)</span></span></span></span><span class="hljs-function"><span class="hljs-params">, </span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">(</span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">3600</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">, </span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">240</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">)</span></span></span></span><span class="hljs-function"><span class="hljs-params">])</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> duration, limit <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> limits: <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> over_limit(conn, duration, limit): <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">False</span></span></code> </pre><br>  This will work as we expected.  However, each of the 3 over_limit () calls can execute two Redis commands — one to update the counter and another to set the lifetime for the key.  We will execute them for IP and user ID.  As a result, it may require up to 12 requests in Redis to simply say that one person exceeded the limit for one operation.  The easiest method to minimize the number of requests to Redis is to use <a href="http://redis.io/commands/MULTI">`pipelining`</a> (pipelined requests).  Such requests are also called transactional in Redis.  In the context of Redis, this means that you will send many commands in one request. <br><br>  We are lucky that our over_limit () function is written so that it is easy to replace the <a href="http://redis.io/commands/INCR">INCR</a> and <a href="http://redis.io/commands/EXPIRE">EXPIRE</a> call with one request with <a href="http://redis.io/commands/MULTI">MULTI</a> .  This change will allow us to reduce the number of requests to Redis from 12 to 6 when we use it with <i>over_limit_multi ()</i> . <br><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">over_limit</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(conn, duration=</span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-number">3600</span></span></span></span><span class="hljs-function"><span class="hljs-params">, limit=</span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-number">240</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function">:</span></span> pipe = conn.pipeline(transaction=<span class="hljs-keyword"><span class="hljs-keyword">True</span></span>) bucket = <span class="hljs-string"><span class="hljs-string">':%i:%i'</span></span>%(duration, time.time() // duration) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> id <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> get_identifiers(): key = id + bucket pipe.incr(key) pipe.expire(key, duration) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> pipe.execute()[<span class="hljs-number"><span class="hljs-number">0</span></span>] &gt; limit: <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">False</span></span></code> </pre><br>  Reducing the number of calls to Redis twice is great, but we still make 6 requests just to see if the user can make a call to the API.  You can write another variant <i>over_limit_multi ()</i> , which does all the operations at once and checks the constraints after, but it is obvious that the implementation will have several errors.  We will be able to restrict users and allow them to make no more than 240 requests per hour, although in the worst case, this will be only 10 requests per hour.  Yes, the error can be corrected by making another request to Redis, or you can simply transfer all the logic to Redis! <br><br><h3>  Believe correctly </h3><br>  Instead of fixing our previous implementation, let's move it to the LUA script that we will execute inside Redis.  In this script, we will do the same thing as we did above - go through the list of restrictions, increase the counter for each identifier, update the lifetime and check if the counter has exceeded the limit. <br><br><pre> <code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> json <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">over_limit_multi_lua</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(conn, limits=[</span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">(</span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">1</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">, </span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">10</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">)</span></span></span></span><span class="hljs-function"><span class="hljs-params">, </span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">(</span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">60</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">, </span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">125</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">)</span></span></span></span><span class="hljs-function"><span class="hljs-params">, </span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">(</span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">3600</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">, </span></span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-params"><span class="hljs-number">250</span></span></span></span></span><span class="hljs-function"><span class="hljs-params"><span class="hljs-params">)</span></span></span></span><span class="hljs-function"><span class="hljs-params">])</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> hasattr(conn, <span class="hljs-string"><span class="hljs-string">'over_limit_multi_lua'</span></span>): conn.over_limit_multi_lua = conn.register_script(over_limit_multi_lua_) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> conn.over_limit_multi_lua( keys=get_identifiers(), args=[json.dumps(limits), time.time()]) over_limit_multi_lua_ = <span class="hljs-string"><span class="hljs-string">''' local limits = cjson.decode(ARGV[1]) local now = tonumber(ARGV[2]) for i, limit in ipairs(limits) do local duration = limit[1] local bucket = ':' .. duration .. ':' .. math.floor(now / duration) for j, id in ipairs(KEYS) do local key = id .. bucket local count = redis.call('INCR', key) redis.call('EXPIRE', key, duration) if tonumber(count) &gt; limit[2] then return 1 end end end return 0 '''</span></span></code> </pre><br>  Look at the piece of code right after the <i>'local bucket'</i> .  See that our Lua script looks like our previous solution and performs the same operations as the original <i>over_limit ()</i> ? <br><br><h3>  Conclusion </h3><br>  We started from the same time interval, but in the end, we have a method for limiting the number of requests that can work with several levels of restrictions, work with different identifiers for a single user, and executes only one request to Redis. <br><br>  Actually, any of the options for our limiters can be useful in different applications. <br><br>  I could not find the correct way for an article from the sandbox to indicate that it is translated: <br><ul><li>  Written by <a href="http://www.binpress.com/profile/josiah-carlson/39018">Josiah Carlson</a> </li><li>  <a href="http://www.binpress.com/tutorial/introduction-to-rate-limiting-with-redis/155%3Futm_source%3Dredisweekly%26utm_medium%3Demail">Original article</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/241321/">https://habr.com/ru/post/241321/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../241309/index.html">Passive fingerprinting to detect synthetic traffic</a></li>
+<li><a href="../241311/index.html">A. Kibkalo - Windows Server "10": what's new in virtualization (practice)</a></li>
+<li><a href="../241313/index.html">Active Directory vs. Azure Active Directory</a></li>
+<li><a href="../241315/index.html">How to make data talk</a></li>
+<li><a href="../241317/index.html">Markov random fields</a></li>
+<li><a href="../241323/index.html">Design Patterns</a></li>
+<li><a href="../241325/index.html">The FBI has asked the US Congress to legally weaken the protection of iOS and Android devices</a></li>
+<li><a href="../241327/index.html">What is holacracy and why you don't need it</a></li>
+<li><a href="../241329/index.html">The spread of smartphones: what does the market do to attract the “later majority”?</a></li>
+<li><a href="../241331/index.html">Startup Marketing (continued): Nine Traffic Quality Levels</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

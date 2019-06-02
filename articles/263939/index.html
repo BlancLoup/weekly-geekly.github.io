@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How we spent a couple of days working on Perl acceleration</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This is a story about the significant optimization of the Perl interpreter, about dealing with the complexities of the code, and about how we wanted t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How we spent a couple of days working on Perl acceleration</h1><div class="post__text post__text-html js-mediator-article">  This is a story about the significant optimization of the Perl interpreter, about dealing with the complexities of the code, and about how we wanted to “eat the cake so that we have it left” <i>[English proverb “You can't have your cake and eat it” achieving two opposite goals].</i> <br><br>  On the recent Booking.com hackathon, we had the opportunity to work on accelerating the function of placing integers in the Perl interpreter.  If successful, this will help speed up almost all the programs that work in our project.  It turned out that a banal implementation of the idea could work, but this would increase the complexity of maintaining the code.  Our research has led us to force preprocessor C to improve the quality of the code, while at the same time making it possible to speed up the execution of programs. <br><br><h4>  Prehistory </h4><br>  In <a href="http://perldoc.perl.org/perlguts.html">perlguts</a> and <a href="http://cpansearch.perl.org/src/RURBAN/illguts-0.49/index.html">PerlGuts Illustrated</a> , it is written that the representation of variables in Perl usually consists of two parts - the header and the body (represented as a struct).  The header contains the data necessary for processing variables that do not depend on its type, including a pointer to a possible body. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/getpro/habr/post_images/8e6/b9e/09c/8e6b9e09ccc55034bf9dfa4b1c037fbb.png" alt="image"><br><br>  The structure of the body can vary greatly, depending on the type of variable.  The simplest variable is SvNULL, which represents undef and does not require a body. <br><br>  At the line (PV - “pointer value”) the body has the type XPV: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/658/777/1f3/6587771f3b13e8e304b609272953c6b2.png" alt="image"><br><br>  The structure of the PV body is different from the PVNV body.  PVNV can contain a floating-point number and a string representation of the same value. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/735/6dc/c91/7356dcc910b5d6adfd012ec5af3605d7.png" alt="image"><br><br>  The advantage of this design is that all variable references lead to a heading.  Perl is free to change where the body is stored, and this does not require updating all other pointers. <br><a name="habracut"></a><br><h4>  Changing types </h4><br>  Perl has an internal type conversion function - this is sv_upgrade (“scalar value upgrade”).  If we have a variable, say, an integer, and we need to refer to it as a variable of another type (let's say, like a string), sv_upgrade converts the type of the variable (say, to a type that contains both integer and string values).  This may require replacing the current body with a larger volume. <br><br>  To find out how sv_upgrade is implemented, look at the Perl_sv_upgrade function in <a href="">sv.c.</a>  It can be seen that the function is quite complicated, in the code there are many comments describing various implementation features.  This is not surprising since it can take a scalar value of any type and convert it into a form that any other type can represent. <br><br>  At the beginning of the function there is a <a href="">switch</a> , working depending on the current type of the variable, which determines what needs to be done for the new type.  Soon after it there is a <a href="">second switch</a> , which deals with the new type.  In its second block, there are many if {} blocks that do different things depending on the old type.  And at the end, after defining the struct for the new body and filling the struct for the header with the correct flags, the memory that was occupied by the old body is freed. <br><br>  Do not fall asleep yet? <br><br><h4>  Naive approach </h4><br>  The sv_upgrade function is called from a set of places — not only from the output of integers as strings, but also when an integer is assigned to a variable that was previously set to zero. <br><br>  A zero variable is always undef, which has no body.  sv_upgrade in this case is called to correctly configure the body of the new variable.  This is the right decision, which reduces certain work with variables in one place and does not multiply the essence.  But this decision affects the performance due to the implementation of some common, and in this case, redundant code. <br><br>  Assignment of an integer number to a zero variable occurs so often that it would seem possible to duplicate part of the code in order to obtain an improvement in performance.  We decided to calculate what it would cost.  It turned out that in this case, you can generally get rid of the sv_upgrade call, if you duplicate only two lines of code from it.  But they are not in vain not duplicated in the code.  Here are the two lines. <br><br>  First, since we know that this is a new type, it will be simple: <br><br><pre><code class="cpp hljs">SvFLAGS(sv) |= new_type;</code> </pre> <br><br>  The second is more difficult: <br><br><pre> <code class="cpp hljs">SvANY(sv) = (XPVIV*)((<span class="hljs-keyword"><span class="hljs-keyword">char</span></span>*)&amp;(sv-&gt;sv_u.svu_iv) - STRUCT_OFFSET(XPVIV, xiv_iv));</code> </pre><br><br>  It is described in Illustrated perlguts as follows: <br><blockquote>  Starting from version 5.10, for pure IV (without PV), the IVX slot is inside HEAD, and no memory is allocated for the xpviv struct ("body").  The SvIVX macro uses SvANY pointer arithmetic to indicate a negative offset, which is calculated at compile time, from HEAD-1 to sv_u.svu_iv, so that PVIV and IV can use the same SvIVX macro. </blockquote><br>  After 15 minutes with a pencil and paper, I made sure that this line does exactly what is described in the comment.  After that, the chart from Illustrated Perl Guts became clearer: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b37/099/9ca/b370999caad29f4548b13f527cd18304.png" alt="image"><br><br>  In addition, I realized that all this complexity exists in order to avoid the if call, which otherwise would occur every time the value is retrieved. <br><br>  It turned out that we can speed things up, but by putting complex expressions into another part of the code.  The complexity of maintaining such a code would increase as a result. <br><br><h4>  How to eat a cake so that you have it left </h4><br>  We wanted to encapsulate this complex piece of code, but without degrading the performance.  In dealing with C, we turned to the preprocessor to push it all into a macro — in other languages ​​it would look like hiding a complex code behind a well-named function or method: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> SET_SVANY_FOR_BODYLESS_IV(sv) \ SvANY(sv) = (XPVIV*)((char*)&amp;(sv-&gt;sv_u.svu_iv) - STRUCT_OFFSET(XPVIV, xiv_iv))</span></span></code> </pre><br><br>  The advantage of using a macro is that the fee for speed is charged only during compilation, and it does not suffer from execution. <br><br>  And how did this change our situation?  When using a macro, the two rendered lines become simpler.  As a result, the patch only needed to replace the call. <br><br><pre> <code class="cpp hljs">sv_upgrade(dstr, SVt_IV);</code> </pre><br><br>  On these two lines: <br><br><pre> <code class="cpp hljs">SET_SVANY_FOR_BODYLESS_IV(dstr); SvFLAGS(dstr) |= SVt_IV;</code> </pre><br><br>  As a result, due to the removal of a relatively uncomplicated code, we must get an increase in speed.  But will we get it?  What will be the real gain from this? <br><br><h4>  Measure benefit </h4><br>  Our benchmark is quite specific, but at the same time it is a fairly frequent case. <br><br><pre> <code class="bash hljs"> $ dumbbench -i50 --pin-frequency -- \ ./perl -Ilib -e \ <span class="hljs-string"><span class="hljs-string">'for my $x (1..1000){my @a = (1..2000);}'</span></span></code> </pre><br><br>  And here are the results of the work.  Before optimization: <br><br><pre> <code class="bash hljs"> Rounded run time per iteration: 2.4311e-01 +/- 1.4e-04</code> </pre><br><br>  After optimization: <br><br><pre> <code class="bash hljs"> Rounded run time per iteration: 1.99354e-01 +/- 5.5e-05</code> </pre><br><br>  An increase of 18%.  Success. <br><br>  We have demonstrated the need for this optimization, the complexity of which tends to zero.  In some places, the Perl code has become a bit more complicated, but the insides of the sv_upgrade function have become simpler.  Acting in this way, we found several more places where optimization could be achieved using similar methods.  As a result, we made five patches to the Perl code: <br><br><ul><li>  <a href="http://perl5.git.perl.org/perl.git/commit/dc6369efc01b79eb657ea176c81cab927b54a2d1">Refactor bodyless-IV / NV hacks into define</a> </li><li>  <a href="http://perl5.git.perl.org/perl.git/commit/de06ff5a50f29eaee3e72394fa1c2417689cac47">Speed ​​up assigning an IV to a previously cleared SV</a> </li><li>  <a href="http://perl5.git.perl.org/perl.git/commit/bd30fe8921c88e4677c2279b442a56a11ae037b4">Speed ​​up newSViv ()</a> </li><li>  <a href="http://perl5.git.perl.org/perl.git/commit/4d55d9ac67bf8bc58f3fc9563b082459c6a3c22b">Repeat newSViv optimization for newSVuv</a> </li><li>  <a href="http://perl5.git.perl.org/perl.git/commit/7777302a0051987e602dfe05c34b52adf18cc9f0">Optimize newRV</a> </li></ul><br><br>  With the release of Perl 5.22, including thanks to this work, many programs will work faster. </div><p>Source: <a href="https://habr.com/ru/post/263939/">https://habr.com/ru/post/263939/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../263927/index.html">Xamarin courses in Ciklum Interactive, Dnepropetrovsk</a></li>
+<li><a href="../263929/index.html">Digest: VR and AR</a></li>
+<li><a href="../263931/index.html">Sampling schemes</a></li>
+<li><a href="../263933/index.html">The mini-detective is NOT a system administrator</a></li>
+<li><a href="../263935/index.html">Familiarity with the internal structure of the .NET Framework. Let's see how the CLR creates objects.</a></li>
+<li><a href="../263943/index.html">Channel Status Protocols and Single-Zone OSPF (Part 1)</a></li>
+<li><a href="../263945/index.html">The story of one clone</a></li>
+<li><a href="../263947/index.html">Visualization of static and dynamic networks on R, part 2</a></li>
+<li><a href="../263951/index.html">Accelerated course on notations in the theory of programming languages</a></li>
+<li><a href="../263953/index.html">Visualization of static and dynamic networks on R, part 3</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

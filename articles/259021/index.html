@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How I reduced the Docker image by 98.8% with fanotify</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I offer the readers of Habrakhabr the translation of the publication “How I shrunk a Docker image by 98.8% - featuring fanotify” . 
+
+ A few weeks ago,...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How I reduced the Docker image by 98.8% with fanotify</h1><div class="post__text post__text-html js-mediator-article">  <i>I offer the readers of Habrakhabr the translation of the publication <a href="https://blog.jtlebi.fr/2015/04/25/how-i-shrunk-a-docker-image-by-98-8-featuring-fanotify/">“How I shrunk a Docker image by 98.8% - featuring fanotify”</a> .</i> <br><br>  A few weeks ago, I did an internal Docker talk.  During the presentation, one of the administrators asked a simple at first glance question: “Is there something like a“ weight loss program for Docker images ””? <br><br>  To solve this problem, you can find some quite adequate approaches on the Internet, like deleting cache directories, temporary files, reducing various redundant packages, if not the whole image.  But if you think about it, do we really need a fully working Linux system?  What files do we really need in a single image?  For Go binary, I found a radical and fairly effective approach.  It was compiled statically, with almost no external dependencies.  The final image is 6.12 MB. <br><a name="habracut"></a><br>  Yeah!  But is there a chance to do something similar with any other application? 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      It turns out that this approach may exist.  The idea is simple: we can profile the image one way or another at runtime to determine which files have been accessed / opened / ... and delete all remaining files that have not been noticed.  Um, it sounds promising, let's write PoC for this idea. <br><br><h4>  Initial data </h4><br><ul><li>  Image: Ubuntu (~ 200MB) </li><li>  Application to be started: / bin / ls </li><li>  Objective: Create the image with the smallest possible size. </li></ul><br>  / bin / ls is a good example: fairly simple to test ideas, without pitfalls, but still not trivial, because it uses dynamic linking. <br><br>  Now that we have a goal, let's define the tool.  The main idea is to monitor the file access event.  Be it stat or open.  There are a couple of good candidates for this.  We could use <a href="http://linux.die.net/man/7/inotify">inotify</a> , but it needs to be configured and each watch should be assigned to a separate file, which will eventually lead to a whole bunch of these most watch.  We could use LD_PRELOAD, but, firstly, the use of his joy does not give me personally, and secondly, he will not intercept system calls directly, well, thirdly, it will not work for statically assembled applications (who said golang'ov?).  A solution that would work even for a statically assembled application would be to use <a href="http://linux.die.net/man/2/ptrace">ptrace</a> to trace system calls in real time.  Yes, he also has subtleties in customization, but still it would be a reliable and flexible solution.  The less well-known system call is <a href="http://man7.org/linux/man-pages/man7/fanotify.7.html">fanotify</a> and, as it has already become clear from the title of the article, it will be used. <br><br>  fanotify was originally created as a “decent” mechanism for anti-virus vendors to intercept file system events, potentially on the entire mount point at a time.  Sounds familiar?  While it can be used to deny access, or simply perform non-blocking monitoring of access to a file, potentially throwing events if the kernel queue is full.  In the latter case, a special message will be generated to notify the user space of the listener about the loss of the message.  This is exactly what we need.  Unobtrusive, the entire mount point at a time is easy to set up (well, assuming you find the documentation of course ...).  This may seem ridiculous, but it is really important, as I learned later. <br><br><h4>  It is very easy to use. </h4><br><ol><li>  Initialize fanotify to FAN_CLASS_NOTIFICATION mode using the <a href="http://man7.org/linux/man-pages/man2/fanotify_init.2.html">fanotify_init</a> system call: <br><br><pre><code class="hljs pgsql">// <span class="hljs-keyword"><span class="hljs-keyword">Open</span></span> ``fan`` fd <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> fanotify notifications. Messages will embed a // filedescriptor <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> accessed file. Expect it <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> be <span class="hljs-keyword"><span class="hljs-keyword">read</span></span>-<span class="hljs-keyword"><span class="hljs-keyword">only</span></span> fan = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);</code> </pre> <br></li><li>  We subscribe to the FAN_ACCESS and FAN_OPEN events in "/" FAN_MARK_MOUNTPOINT using the fanotify_mark system call: <br><br><pre> <code class="hljs pgsql">// Watch <span class="hljs-keyword"><span class="hljs-keyword">open</span></span>/<span class="hljs-keyword"><span class="hljs-keyword">access</span></span> events <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> root mountpoint fanotify_mark( fan, FAN_MARK_ADD | FAN_MARK_MOUNT, // <span class="hljs-keyword"><span class="hljs-keyword">Add</span></span> mountpoint mark <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> fan FAN_ACCESS | FAN_OPEN, // Report <span class="hljs-keyword"><span class="hljs-keyword">open</span></span> <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> <span class="hljs-keyword"><span class="hljs-keyword">access</span></span> events, non blocking <span class="hljs-number"><span class="hljs-number">-1</span></span>, "/" // Watch root mountpoint (<span class="hljs-number"><span class="hljs-number">-1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> ignored <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> FAN_MARK_MOUNT <span class="hljs-keyword"><span class="hljs-keyword">type</span></span> calls) );</code> </pre> <br></li><li>  We read messages from the file descriptor that we received from fanotify_init and iterate through them using FAN_EVENT_NEXT: <br><br><pre> <code class="hljs pgsql">// <span class="hljs-keyword"><span class="hljs-keyword">Read</span></span> pending events <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> ``fan`` <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> ``buf`` buflen = <span class="hljs-keyword"><span class="hljs-keyword">read</span></span>(fan, buf, sizeof(buf)); // Position <span class="hljs-keyword"><span class="hljs-keyword">cursor</span></span> <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> first message metadata = (struct fanotify_event_metadata*)&amp;buf; // <span class="hljs-keyword"><span class="hljs-keyword">Loop</span></span> <span class="hljs-keyword"><span class="hljs-keyword">until</span></span> we reached the last event <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(FAN_EVENT_OK(metadata, buflen)) { // <span class="hljs-keyword"><span class="hljs-keyword">Do</span></span> something interesting <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> the notification // ``metadata-&gt;fd`` will contain a <span class="hljs-keyword"><span class="hljs-keyword">valid</span></span>, RO fd <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> accessed file. // <span class="hljs-keyword"><span class="hljs-keyword">Close</span></span> opened fd, otherwise w<span class="hljs-string"><span class="hljs-string">e'll quickly exhaust the fd pool. close(metadata-&gt;fd); // Move to next event in buffer metadata = FAN_EVENT_NEXT(metadata, buflen); }</span></span></code> </pre></li></ol><br>  As a result, we print the full name of each file that was accessed, and add queue overflow detection.  For our purposes this should be quite enough (comments and error checking are omitted for the sake of illustrating the solution). <br><br><pre> <code class="hljs lua">#include &lt;fcntl.h&gt; #include &lt;limits.h&gt; #include &lt;stdio.h&gt; #include &lt;sys/fanotify.h&gt; int main(int argc, <span class="hljs-built_in"><span class="hljs-built_in">char</span></span>** argv) { int fan; <span class="hljs-built_in"><span class="hljs-built_in">char</span></span> buf[<span class="hljs-number"><span class="hljs-number">4096</span></span>]; <span class="hljs-built_in"><span class="hljs-built_in">char</span></span> fdpath[<span class="hljs-number"><span class="hljs-number">32</span></span>]; <span class="hljs-built_in"><span class="hljs-built_in">char</span></span> <span class="hljs-built_in"><span class="hljs-built_in">path</span></span>[PATH_MAX + <span class="hljs-number"><span class="hljs-number">1</span></span>]; ssize_t buflen, linklen; struct fanotify_event_metadata *metadata; // Init fanotify structure fan = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY); // Watch <span class="hljs-built_in"><span class="hljs-built_in">open</span></span>/access events on root mountpoint fanotify_mark( fan, FAN_MARK_ADD | FAN_MARK_MOUNT, FAN_ACCESS | FAN_OPEN, <span class="hljs-number"><span class="hljs-number">-1</span></span>, <span class="hljs-string"><span class="hljs-string">"/"</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(<span class="hljs-number"><span class="hljs-number">1</span></span>) { buflen = <span class="hljs-built_in"><span class="hljs-built_in">read</span></span>(fan, buf, sizeof(buf)); metadata = (struct fanotify_event_metadata*)&amp;buf; <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(FAN_EVENT_OK(metadata, buflen)) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (metadata-&gt;mask &amp; FAN_Q_OVERFLOW) { printf(<span class="hljs-string"><span class="hljs-string">"Queue overflow!\n"</span></span>); continue; } // Resolve <span class="hljs-built_in"><span class="hljs-built_in">path</span></span>, using automatically opened fd sprintf(fdpath, <span class="hljs-string"><span class="hljs-string">"/proc/self/fd/%d"</span></span>, metadata-&gt;fd); linklen = readlink(fdpath, <span class="hljs-built_in"><span class="hljs-built_in">path</span></span>, sizeof(<span class="hljs-built_in"><span class="hljs-built_in">path</span></span>) - <span class="hljs-number"><span class="hljs-number">1</span></span>); <span class="hljs-built_in"><span class="hljs-built_in">path</span></span>[linklen] = <span class="hljs-string"><span class="hljs-string">'\0'</span></span>; printf(<span class="hljs-string"><span class="hljs-string">"%s\n"</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">path</span></span>); <span class="hljs-built_in"><span class="hljs-built_in">close</span></span>(metadata-&gt;fd); metadata = FAN_EVENT_NEXT(metadata, buflen); } } }</code> </pre> <br>  We collect: <br><br><pre> <code class="bash hljs">gcc main.c --static -o fanotify-profiler</code> </pre> <br>  Roughly speaking, now we have a tool to monitor any file access on the active “/” mount point in real time.  Fine. <br><br>  What's next?  Let's create a Ubuntu container, start our monitoring, and run / bin / ls.  Fanotify needs the CAP_SYS_ADMIN feature.  This is basically a “catch-all” root feature.  In any case, this is better than performing in the —privileged fashion. <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># Run image docker run --name profiler_ls \ --volume $PWD:/src \ --cap-add SYS_ADMIN \ -it ubuntu /src/fanotify-profiler # Run the command to profile, from another shell docker exec -it profiler_ls ls # Interrupt Running image using docker kill profiler_ls # You know, the "dynamite"</span></span></code> </pre> <br>  Result of performance: <br><br><pre> <code class="bash hljs">/etc/passwd /etc/group /etc/passwd /etc/group /bin/ls /bin/ls /bin/ls /lib/x86_64-linux-gnu/ld-2.19.so /lib/x86_64-linux-gnu/ld-2.19.so /etc/ld.so.cache /lib/x86_64-linux-gnu/libselinux.so.1 /lib/x86_64-linux-gnu/libacl.so.1.1.0 /lib/x86_64-linux-gnu/libc-2.19.so /lib/x86_64-linux-gnu/libc-2.19.so /lib/x86_64-linux-gnu/libpcre.so.3.13.1 /lib/x86_64-linux-gnu/libdl-2.19.so /lib/x86_64-linux-gnu/libdl-2.19.so /lib/x86_64-linux-gnu/libattr.so.1.1.0</code> </pre> <br>  Perfectly!  It worked.  Now we know for sure what is ultimately necessary for executing / bin / ls.  So now we just copy all of this into the FROM scratch Docker image - and that's it. <br><br>  But it was not there ... However, let's not get ahead of ourselves, everything is in order. <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># Export base docker image mkdir ubuntu_base docker export profiler_ls | sudo tar -x -C ubuntu_base # Create new image mkdir ubuntu_lean # Get the linker (trust me) sudo mkdir -p ubuntu_lean/lib64 sudo cp -a ubuntu_base/lib64/ld-linux-x86-64.so.2 ubuntu_lean/lib64/ # Copy the files sudo mkdir -p ubuntu_lean/etc sudo mkdir -p ubuntu_lean/bin sudo mkdir -p ubuntu_lean/lib/x86_64-linux-gnu/ sudo cp -a ubuntu_base/bin/ls ubuntu_lean/bin/ls sudo cp -a ubuntu_base/etc/group ubuntu_lean/etc/group sudo cp -a ubuntu_base/etc/passwd ubuntu_lean/etc/passwd sudo cp -a ubuntu_base/etc/ld.so.cache ubuntu_lean/etc/ld.so.cache sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/ld-2.19.so ubuntu_lean/lib/x86_64-linux-gnu/ld-2.19.so sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/ld-2.19.so ubuntu_lean/lib/x86_64-linux-gnu/ld-2.19.so sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libselinux.so.1 ubuntu_lean/lib/x86_64-linux-gnu/libselinux.so.1 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libacl.so.1.1.0 ubuntu_lean/lib/x86_64-linux-gnu/libacl.so.1.1.0 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libc-2.19.so ubuntu_lean/lib/x86_64-linux-gnu/libc-2.19.so sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libpcre.so.3.13.1 ubuntu_lean/lib/x86_64-linux-gnu/libpcre.so.3.13.1 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libdl-2.19.so ubuntu_lean/lib/x86_64-linux-gnu/libdl-2.19.so sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libattr.so.1.1.0 ubuntu_lean/lib/x86_64-linux-gnu/libattr.so.1.1.0 # Import it back to Docker cd ubuntu_lean sudo tar -c . | docker import - ubuntu_lean</span></span></code> </pre> <br>  Run our image: <br><br><pre> <code class="bash hljs">docker run --rm -it ubuntu_lean /bin/ls</code> </pre> <br>  As a result, we obtain: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># If you did not trust me with the linker (as it was already loaded when the profiler started, it does not show in the ouput) no such file or directoryFATA[0000] Error response from daemon: Cannot start container f318adb174a9e381500431370a245275196a2948828919205524edc107626d78: no such file or directory # Otherwise /bin/ls: error while loading shared libraries: libacl.so.1: cannot open</span></span></code> </pre> <br>  Yeah.  But what went wrong?  Remember, I mentioned that this system call was originally created to work with antivirus?  Real-time anti-virus should detect access to the file, conduct checks and make decisions based on the result.  What matters here is the contents of the file.  In particular, race conditions in the file system should be handled with all their might.  This is the reason why fanotify gives file descriptors instead of the paths that were accessed.  The calculation of the physical file path is performed by probing / proc / self / fd / [fd].  In addition, he is not able to tell which symbolic link has been accessed, only the file to which it points. <br><br>  In order to make it work, we need to find all the links to the files found by fanotify, and install them in the filtered image in the same way.  The find command will help us with this. <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># Find all files refering to a given one find -L -samefile "./lib/x86_64-linux-gnu/libacl.so.1.1.0" 2&gt;/dev/null # If you want to exclude the target itself from the results find -L -samefile "./lib/x86_64-linux-gnu/libacl.so.1.1.0" -a ! -path "./</span></span></code> </pre> <br>  This can be easily automated by looping: <br><br><pre> <code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> f <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> $(<span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> ubuntu_lean; find) <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> ( <span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> ubuntu_base find -L -samefile <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$f</span></span></span><span class="hljs-string">"</span></span> -a ! -path <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$f</span></span></span><span class="hljs-string">"</span></span> ) 2&gt;/dev/null <span class="hljs-keyword"><span class="hljs-keyword">done</span></span></code> </pre> <br>  What ultimately gives us a list of missing semantic references.  These are all libraries: <br><br><pre> <code class="bash hljs">./lib/x86_64-linux-gnu/libc.so.6 ./lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 ./lib/x86_64-linux-gnu/libattr.so.1 ./lib/x86_64-linux-gnu/libdl.so.2 ./lib/x86_64-linux-gnu/libpcre.so.3 ./lib/x86_64-linux-gnu/libacl.so.1</code> </pre> <br>  Now let's copy them from the original image and re-create the resulting image. <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># Copy the links sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libc.so.6 ubuntu_lean/lib/x86_64-linux-gnu/libc.so.6 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 ubuntu_lean/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libdl.so.2 ubuntu_lean/lib/x86_64-linux-gnu/libdl.so.2 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libpcre.so.3 ubuntu_lean/lib/x86_64-linux-gnu/libpcre.so.3 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libacl.so.1 ubuntu_lean/lib/x86_64-linux-gnu/libacl.so.1 sudo cp -a ubuntu_base/lib/x86_64-linux-gnu/libattr.so.1 ubuntu_lean/lib/x86_64-linux-gnu/libattr.so.1 # Import it back to Docker cd ubuntu_lean docker rmi -f ubuntu_lean; sudo tar -c . | docker import - ubuntu_lean</span></span></code> </pre> <br>  <b>Important note</b> : this method is limited.  For example, he will not return links to links, as well as absolute links.  The latter requires at least chroot.  Or it should be executed from the source image, provided that find or its alternative is present in it. <br><br>  Run the resulting image: <br><br><pre> <code class="bash hljs">docker run --rm -it ubuntu_lean /bin/ls</code> </pre> <br>  Now everything works: <br><pre> <code class="bash hljs">bin dev etc lib lib64 proc sys</code> </pre> <br><h4>  Total </h4><br>  <b>ubuntu</b> : 209MB <br>  <b>ubuntu_lean</b> : 2.5MB <br><br>  As a result, we got the image, <b>83.5</b> times smaller.  This is <b>98.8%</b> compression. <br><br><h4>  Afterword </h4><br>  Like all profiling-based methods, he is able to tell what is actually done / used in this scenario.  For example, try running / bin / ls -l in the final image and see for yourself. <br><div class="spoiler">  <b class="spoiler_title">spoiler for lazy</b> <div class="spoiler_text">  It does not work.  Well, that is, it works, but not as expected. <br></div></div><br>  Profiling technique is not without flaw.  It does not allow to understand exactly how the file was opened, just that file.  This is a problem for symbolic links, in particular cross-filesytems (read cross-volumes).  With the help of fanotify, we will lose the original symbolic link and break the application. <br><br>  If I had to build such a "shrinker", ready for use in production, I would most likely use ptrace. <br><br><h4>  Notes </h4><br><ol><li>  I admit, in fact, it was interesting for me to experiment with system calls.  Docker images are rather a good excuse; </li><li>  In fact, it would be quite possible to use FAN_UNLIMITED_QUEUE, calling fanotify_init to bypass this restriction, provided that the calling process is at least CAP_SYS_ADMIN; </li><li>  It is also 2.4 times smaller than the 6.13MB image that I mentioned at the beginning of this article, but the comparison is not fair. </li></ol></div><p>Source: <a href="https://habr.com/ru/post/259021/">https://habr.com/ru/post/259021/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../259007/index.html">Why iphone reloads from arabic sms</a></li>
+<li><a href="../259009/index.html">Updated and enhanced version of DriverPack Online - the first in importance, 16 by number</a></li>
+<li><a href="../259013/index.html">Chrome extension allows you to follow your friends via Facebook Messenger</a></li>
+<li><a href="../259015/index.html">Reading 64-bit integers from Oracle to OCCI (MSVC)</a></li>
+<li><a href="../259017/index.html">Blood vessel segmentation</a></li>
+<li><a href="../259023/index.html">Fedora 22 - all trends in one build</a></li>
+<li><a href="../259025/index.html">Web-based Crona</a></li>
+<li><a href="../259027/index.html">InGaAs Semiconductor as an Alternative to Silicon</a></li>
+<li><a href="../259029/index.html">Samba4 - using Python Scripting Interface</a></li>
+<li><a href="../259031/index.html">Double dispatch</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

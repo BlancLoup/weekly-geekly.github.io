@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Real-time data processing in AWS Cloud. Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the first part of the article, we described one of the tasks we faced while working on a public service for storing and analyzing the results of bi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Real-time data processing in AWS Cloud. Part 2</h1><div class="post__text post__text-html js-mediator-article">  In the <a href="http://habrahabr.ru/post/262175/">first part of the</a> article, we described one of the tasks we faced while working on a public service for storing and analyzing the results of biological research.  The requirements provided by the customer and several possible implementation options based on existing products were reviewed. <br><br><img src="https://habrastorage.org/files/239/a03/b18/239a03b189ac4ef2bfce442e83362c3e.png" alt="image"><br><br>  Today we will talk about the decision that was implemented. <br><a name="habracut"></a><br><h3>  Proposed Architecture </h3><br><img src="https://habrastorage.org/files/52d/142/b7c/52d142b7cd104ebf8887cee6bfc7a94f.png" alt="image">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      <b>Front end</b> <br><br>  User requests come to the front-end, validated for compliance with the format and transferred to the back-end.  Each request will eventually return to the front-end with an image or a set of points if the client wants to build such an image on his own. <br><br>  In the future, it is possible to install LRU cache for storing repetitive results with a short element lifetime - commensurate with the duration of a user session. <br><br>  <b>Back end</b> <br><br>  For each such request back end <br><ul><li>  validates the incoming request and checks its validity from the point of view of security policy, </li><li>  determines which data needs to be read out from S3 and forms a common task, the processing result of which should be returned to the front-end, </li><li>  splits tasks into subtasks, taking into account the features, the location of the data on S3, to avoid double readings, etc., </li><li>  puts tasks in a queue built on the basis of RabbitMQ, </li><li>  processes the results obtained from the queue, putting together sets of points, </li><li>  renders an image if the request it assumes </li><li>  returns the results to the front end. </li></ul><br><br>  Processing subtasks occurs by parallel queuing each subtask in RPC-style (set the task, waited, got the result).  For this, a thread pool is used that is global for the back-end application.  Each thread in this pool is responsible for interacting with the broker: sending a message, waiting, receiving a result. <br><br>  In addition, the use of a pool of threads of a known size allows you to control the number of simultaneously processed subtask messages.  And the launch of threads for processing known subtasks makes it possible to plan exactly which common tasks are being performed at the moment, predicting the timing of readiness of each common task. <br><br><img src="https://habrastorage.org/files/8f9/5eb/33d/8f95eb33df4e464ab3729b45f81d700f.png" alt="image"><br><br>  Sustainability requires that you follow three things: <br><br><ol><li>  The processing time of one subtask / number of subtasks queued at the time - with an increase in this parameter, the throughput of the queue is required to increase. </li><li>  Prioritize the processing of subtasks so that each common task is processed in the least possible time. </li><li>  The number of common tasks in processing is to avoid overflowing the JVM heap on the back end due to the need to keep intermediate results in memory. </li></ol><br><br>  Items 2 and 3 are achieved by manipulating the size of the thread pool and the approach to placing subtasks in the queue.  When changing the average processing time for subtasks (item 1), it is required to increase or, accordingly, reduce the number of working nodes for processing subtasks. <br><br>  <b>Worker Workers</b> <br><br>  Subscribers to the RabbitMQ queue are standalone applications, which, for definiteness, are called workers.  Each of them occupies one of the EC2 instances completely, most effectively using the CPU, RAM and network bandwidth. <br><br>  Subtasks formed on the back end are consumed by some of the workers.  The processing of such a subtask does not imply a global context, because the worker works independently of his own kind. <br><br>  The important point is that Amazon S3 provides <a href="http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/s3/model/GetObjectRequest.html">random access to any data</a> .  This means that instead of downloading a file of 500 MB in size, most of which is not needed for processing this request, we can only read what is really needed.  That is, by dividing the general task into pozdacha in the correct way, one can always achieve the absence of double readings of the same data. <br><br>  In the case of runtime errors (out of memory, failure, etc.), the task simply goes back to the queue, where it is distributed to another node automatically.  For system stability, each of the workers is periodically restarted by cron to avoid possible problems with memory leaks and JVM heap overflow. <br><br>  <b>Scaling</b> <br><br>  There may be several reasons leading to the need to change the number of application nodes: <br><br><ol><li>  The increase in the average processing time of subtasks, which ultimately leads to problems in the delivery of the final result to users in the required time frame. </li><li>  Lack of proper workload on the node-workers. </li><li>  Overload of the back-end on the CPU or memory consumption. </li></ol><br><br>  To solve problems 1 and 2, we used the API provided by EC2, and created a separate module-scaler that operates instances.  Each new instance is created on the basis of a preconfigured operating system image (Amazon Machine Image, AMI) and is launched using spot requests, which saves you about five times the cost of hosting payment. <br><br>  The disadvantage of this approach is that it takes about 4-5 minutes from the moment of creating a spot-request to an instance until its commissioning.  By this time, the peak of the load may have already been passed, and the need to increase the number of nodes may disappear by itself. <br><br>  To get into such situations less often, we use statistics on the number of requests, the geographical location of users and the time of day.  With its help, we increase or reduce the number of working nodes “in advance”.  Almost all users work with our service only during the working day.  Therefore, bursts are well noticeable at the beginning of the working day in the States (especially US West) and in China.  And if problems with the queue overload still occur, then we have time to smooth them in 4-5 minutes. <br><br>  Problem number 3 has not yet been resolved and is for us the most vulnerable spot.  The current connectivity of three things: control of access to data, knowledge of their specifics and location, and post-processing of computed data (Reduce step) - is far-fetched and subject to processing into separate layers. <br><br>  To be fair, the Reduce process comes down to System.arraycopy (...), and the total amount of data in memory (requests + parts of ready subtasks) on one instance of the back end has never exceeded 1 GB, which easily fits into JVM heap. <br><br>  <b>Deployment</b> <br><br>  Any changes in the existing system go through several stages of testing: <br><br><ul><li>  Unit testing.  This process is integrated into a build that runs on TeamCity after each commit. </li><li>  Integration testing.  Once a day (sometimes less) TeamCity launches several builds that check the interaction of modules.  As test data, we use pre-prepared files, the processing result of which is known.  As we expand the set of functional features, we add specific cases to the test code. </li><li>  If the changes concern the user interface, then human intervention is sometimes required at the final stage. </li></ul><br><br>  For the described subsystem, the changes, in their basis, relate to the performance and support of new types of input data.  Therefore, unit and integration testing is usually sufficient. <br><br>  After each successful build from the “production” branch, TeamCity publishes artifacts, which are ready-to-use JARs and scripts that control a set of parameters for running the application.  When starting a new instance from a pre-prepared AMI (or reloading an existing one), the startup script loads the latest production build from TeamCity and starts the application using the script supplied with the build. <br><br>  Thus, all you need to do for deploying a new version in production is to wait for the end of the tests and click on the “magic” button that restarts the instances.  By monitoring the set of running instances and dividing the flow of tasks into different RabbitMQ queues, you can perform A / B testing for groups of users. <br><br><h3>  Hostess note </h3><br><ul><li>  Know how your data is arranged.  Provide random access to any part in the shortest possible time.  <b>[Keywords]:</b> <i>Amazon S3, random access.</i> </li><li>  Use spot queries to save money.  <b>[Keywords]:</b> <i>Amazon EC2, spot requests.</i> </li><li>  Be sure to build prototypes based on existing solutions.  At a minimum - get experience.  As a maximum - get a virtually turnkey solution. </li></ul><br><br><h3>  And in the end I will tell... </h3><br>  In this review article, we described our approach to solving a fairly typical problem.  The project continues to evolve, becoming every day more and more functional.  We will be happy to share our experience with the audience and answer your questions. </div><p>Source: <a href="https://habr.com/ru/post/262431/">https://habr.com/ru/post/262431/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../262415/index.html">Objective C Class Organization</a></li>
+<li><a href="../262419/index.html">Windows Remote Arduino - control a desk lamp directly from a universal Windows application</a></li>
+<li><a href="../262423/index.html">Simulation and analysis of computational processes</a></li>
+<li><a href="../262427/index.html">Truly responsive letters. Part ... first again</a></li>
+<li><a href="../262429/index.html">Condition as a compromise</a></li>
+<li><a href="../262433/index.html">IDA Pro Upgrade. Debugger plugin. Part I. Theory</a></li>
+<li><a href="../262435/index.html">Simplify unit tests with the AutoFixture bundle and xUnit</a></li>
+<li><a href="../262437/index.html">Automatic regulator of temperature of a geyser</a></li>
+<li><a href="../262439/index.html">Optimizing Asterisk Dialplan Listing with MySQL</a></li>
+<li><a href="../262443/index.html">A simple replacement for Boost :: Optional for using nullable types in C ++ projects</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

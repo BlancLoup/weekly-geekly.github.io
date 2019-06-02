@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Golang to AeroFS</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Translation of the AeroFS engineer’s article on the transfer of their microservice architecture from Java to Go. 
+
+ TLDR; By porting some of our micro...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Golang to AeroFS</h1><div class="post__text post__text-html js-mediator-article">  <i>Translation of the AeroFS engineer’s article on the transfer of their microservice architecture from Java to Go.</i> <br><br>  TLDR;  By porting some of our microservices from Java to Go, we reduced the memory usage <b>by several orders of magnitude</b> . <br><br><h4>  In the beginning was Java </h4>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/files/13a/a5a/a97/13aa5aa972854f8e8c080a9c14b349fa.png"><br><br>  The AeroFS Appliance architecture consists of many microservices, and the vast majority of them are written in Java.  This has never caused us problems, the entire system serves thousands of users from different clients without any performance problems. <br><a name="habracut"></a><br>  However, after our transition to Docker, we noted a sharp increase in memory usage by our system.  Having tried several fashionable tools for monitoring dockers, we stopped at this somewhat geeky, but very useful script: <br><pre><code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> line <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> `docker ps | awk <span class="hljs-string"><span class="hljs-string">'{print $1}'</span></span> | grep -v CONTAINER`; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> \ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> $(( `cat /sys/fs/cgroup/memory/docker/<span class="hljs-variable"><span class="hljs-variable">$line</span></span>*/memory.usage_in_bytes` / 1024 / 1024 ))MB \ $(docker ps | grep <span class="hljs-variable"><span class="hljs-variable">$line</span></span> | awk <span class="hljs-string"><span class="hljs-string">'{printf $NF" "}'</span></span>) ; \ <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> | sort -n</code> </pre> <br>  It lists the running containers, sorted by the amount of resident memory used.  Example script output: <br><pre> <code class="hljs">46MB web 66MB verification 74MB openid 82MB havre 105MB logcollection 146MB sp 181MB sparta</code> </pre><br>  Investigating the problem, we found that some Java services used a surprisingly large amount of memory, often without any correlation with their complexity or lack thereof.  We identified several major factors that led to this use of memory. <br><ol><li>  increasing the number of running JVMs as each tomcat servlet ran in a separate container </li><li>  a reduced opportunity for several JVMs to share read-only memory: the JVM itself, all dependent libraries, and, of course, many JARs used by different services </li><li>  memory isolation in some cases confused the heuristics of memory calculations, which led to large cache allocations in some services </li></ol><br><br>  Being a man of the old school, accustomed to writing in assembler for the Z80 for devices with 64kb of memory on board, I was very inspired by the idea of ​​how to return hundreds of megabytes of valuable RAM.  On a happy occasion, our next <a href="https://www.aerofs.com/blog/how-we-run-hackathons/">hackathon</a> was just a few days later, and it was a great chance to focus on a problem and a great excuse to try new tools. <br><br><h4>  Code Name: Greasefire </h4><br>  <i>(comment of the translator: greasefire - “the fire caused by the ignition of oil / fat on the stove”)</i> <br>  My main goal of this hackathon was to burn through the layers of metaphorical fat in order to reduce the total amount of AeroFS system memory used. <br><br>  In particular, my criteria for success were: <br><ul><li>  CPU usage should not increase significantly </li><li>  stability and memory security should remain </li><li>  resident memory usage should decrease 2 or more times </li></ul><br>  In the spirit of the hackathon, I also wanted to try new languages ​​and tools, so just correcting existing services was not an option. <br><br>  And in order to increase the likelihood of obtaining a result that can be shown, and possibly even closed, it was important to choose an adequate size and complexity target.  The obvious choice was TeamServer probe service (team-servers on the appliance status page) - a small tomcat servlet with a single HTTP call and very clear internal logic. <br><br>  As a result, the goal was the following - to create a server: <br><ul><li>  with completely identical API </li><li>  packed in docker image </li></ul><br><br><h4>  Trying new tools </h4><br>  To meet the criteria for CPU and memory, the main candidates were compiled languages ​​created for system programming.  And although the hackathon did not mean that the result would be immediately usable, I still adhered to the fact that the code should be easily maintained and leave darker alternatives. <br><br>  The pool of candidates quickly narrowed to two participants - Go and Rust.  Both compile the code quite easily into small static binary files, ideally sharpened to run in minimal containers.  Both promised adequate performance, memory integrity, good support for concurrent programming, and, what was especially important for me, less memory usage than in the case of the JVM. <br><br>  The intricate Rust type system looked especially intriguing.  But at the same time, Rust was much less mature than Go, at that time it had not even reached version 1.0.  The choice of Rust was also hampered by the lack of good libraries for HTTP and low-level networking. <br><br>  Earlier we tried to port one of our services to Go, in the year 2013, but at that time we got into some kind of memory leak, and decided to stop the experiment.  Two years later, Go looked much more mature and was chosen as the most suitable candidate for our experiment. <br><br>  Go is quite similar to the languages ​​from the C-family, which allows it to be picked up very quickly, but at the same time it contains enough features that require the first few days of constant switching between code and documentation.  Fortunately, the documentation is well written and very successfully incorporated into the source code of the standard library, which was incredibly useful for clarifying various points and understanding the idiomatic code. <br><br>  I was also very pleased to have a single standard for formatting the language, and the <a href="https://blog.golang.org/go-fmt-your-code">gofmt</a> magic utility that <a href="https://blog.golang.org/go-fmt-your-code">enforces</a> it and integrates very easily with a text editor like vim (a small insider: this hackathon was also my first attempt to use vim for something more than one-line editing) <br><br><img src="https://habrastorage.org/files/fc2/b38/fea/fc2b38fea81d4e259d04c8e8881291fa.png"><br><br><h4>  results </h4><br>  It took me about a day to get acquainted with Go and port a simple service chosen for the hackathon.  The results were very promising: <br><ul><li>  Code size was <b>halved</b> , from 175 lines to 96 </li><li>  Resident memory usage dropped from 87MB to just 3MB, <b>29x decrease</b> ! </li><li>  The resulting docker image has decreased from 668MB to 4.3MB - this is <b>155x reduction</b> !  I agree that the largest layers of docker-images are still reused by different services, so the real reduction in disk usage was much less with the use of many Java services.  Nevertheless, these figures are very pleasing to the eye. </li></ul><br><br>  Until the hackathon, there was still almost a whole day, and I noticed another service, the Certificate Authority (ca on the appliance status page).  This service accepts certificate signing requests from internal services and desktop clients and returns signed certificates that are used to encrypt the transfer of both peer-to-peer content between clients and for client-server communication. <br><br>  When this new CA finally replaced its Java equivalent, a few days after the end of the hackathon, it reduced the memory usage to an incredible <b>100x</b> ! <br><br>  This project won the nomination "Technical Steepness" <i>(orig. "Technical Amazingness")</i> , and turned into ongoing efforts to reduce the memory usage of the entire system. <br><br>  By version 1.1.5, four more services were ported to Go — 6 as a whole — and the total memory savings was <b>1 GB</b> .  In each case, we received a similar reduction in code size, and in some cases we even got a significant reduction in processor usage or better throughput. <br><br>  - Hugues &amp; the AeroFS Team. </div><p>Source: <a href="https://habr.com/ru/post/264251/">https://habr.com/ru/post/264251/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../264241/index.html">Introduction to machine learning with scikit-learn (translation of documentation)</a></li>
+<li><a href="../264243/index.html">CAD technology</a></li>
+<li><a href="../264245/index.html">Online Payment Statistics</a></li>
+<li><a href="../264247/index.html">Google and Samsung promise to regularly update Android</a></li>
+<li><a href="../264249/index.html">New Hyper-V vNext features</a></li>
+<li><a href="../264253/index.html">Analysis of all tasks of the final round of Yandex. Algorithm 2015</a></li>
+<li><a href="../264255/index.html">Best practices from Google to develop Android applications</a></li>
+<li><a href="../264257/index.html">How site developers create the future of TV</a></li>
+<li><a href="../264259/index.html">Banana Pi: via U-Boot to Arch Linux</a></li>
+<li><a href="../264261/index.html">Research gaming settings</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

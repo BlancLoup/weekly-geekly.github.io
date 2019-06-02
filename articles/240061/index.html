@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How I wrote my “bike” for rotating tables in Oracle and Postgre</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Greetings, Habr! 
+
+ In this article I will talk about how we struggled with the problem of the rapid growth of the size of tables in a database in a h...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How I wrote my “bike” for rotating tables in Oracle and Postgre</h1><div class="post__text post__text-html js-mediator-article">  Greetings, Habr! <br><br>  In this article I will talk about how we struggled with the problem of the rapid growth of the size of tables in a database in a high-load EMS system.  It adds its zest to the fact that the problem was solved for two databases: Oracle and Postgre.  Interested please under the cat. <br><a name="habracut"></a><br><h4>  Initial conditions </h4><br>  So, there is some kind of EMS-system that receives and processes messages from network elements.  A record of each message is recorded in the database tables.  According to customer requirements, the number of incoming messages (and, accordingly, the number of records in the table) is on average 100 per second, while the peak load can increase to 1500. <br>  It is easy to calculate that, on average, over 8 million records per table are collected per day.  The problem arose when it became clear that with data volumes of more than 20 million lines, some system queries begin to slow down and go beyond the time limits of work requested by the customer. <br><br><h4>  Task </h4><br>  Thus, it was necessary to figure out what to do with the data, so that no information was lost and the requests worked quickly.  At the same time, the system initially worked on Postgre, but in the near future it was planned to switch to Oracle and would like the transition to have a minimum of problems with the transfer of functionality. <br>  The option of using partitioning was dropped immediately, because  it was known that Oracle Partitioning would definitely not be included in the license, and we didn’t really want to redo it from one partitioning to another, so we began to think about the implementation of some kind of bicycle. <br>  The task was significantly simplified by the fact that logs older than a couple of days are not needed for display in the system, since  to investigate the vast majority of the problems should have been enough messages two days ago.  But to keep them "for every fireman" is still needed.  It was then that the idea was born of implementing procedures for periodically “rooting” the data in the tables, i.e.  transfer them from tables for display in some historical tables. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Solution and implementation </h4><br>  It was decided to keep 2 tables with the most relevant data for display (let's call them table - the main one and table_secondary - the additional one).  On these two tables, the table_view view is hung from which the data was taken for display: it is necessary so that after the moment of data transfer all records in the UI do not disappear abruptly.  Older records are transferred to historical tables with names of the type H $ table_NUM, where NUM is the number of the historical table (the higher the number in the table).  Historical tables, in order not to litter the main tablespace, are also periodically dragged into a “cold” tablespace, which tables can be stored on slow disks.  The operation is, generally speaking, difficult, so it is done less often as a separate procedure.  In addition, the same procedure removes too old tables from a cold tablespace. <br>  Regarding exactly how the data is transferred: due to the large number of indexes on the tables, transferring records directly using insert was slow, so an approach was chosen with renaming tables and re-creating indexes and triggers. <br>  Schematically, the procedures are shown in the figure: <br><img src="https://habrastorage.org/files/b30/78d/45b/b3078d45b2ad44af85a90e82530f38de.png" alt="image"><br><br>  So, the work algorithm turned out to be approximately the same (the algorithm and examples of the procedure code I cite for oracle, for postgre you can look at github): <br>  <i>The rotate_table (primary_table_name) procedure.</i>  <i>It is performed, say, every hour.</i> <br><ol><li>  We check that the number of rows in the main table has exceeded a certain limit; </li><li>  Check that there is a “cold” tablespace: <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COUNT</span></span>(*) <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> if_cold_ts_exists <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> USER_TABLESPACES <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> tablespace_name = <span class="hljs-string"><span class="hljs-string">'EMS_HISTORICAL_DATA'</span></span>;</code> </pre> <br></li><li>  Create an auxiliary empty table new_table based on the current main table.  For this, postgre has a convenient CREATE TABLE ... functionality (LIKE ... INCLUDING ALL), but for Oracle, we had to write our own analogue - the create_tbl_like_including_all procedure (primary_table_name, new_table_name, new_idx_trg_postfix, new_idx_trg_prefix), which creates a similar empty workstation, new_idx_trg_postfix, new_idx_trg_prefix), which creates a similar empty workstation, new_idx_trg_postfix, new_idx_trg_prefix), which creates a similar empty workstation, new_idx_trg_postfix, new_idx_trg_prefix), which creates a similar empty worktable, new_idx_trg_postfix, new_idx_trg_prefix), which creates a similar empty worktable, new_idx_trg_postfix, new_idx_trg_prefix), which creates a similar empty workflow. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">replace</span></span>(dbms_metadata.get_ddl(<span class="hljs-string"><span class="hljs-string">'TABLE'</span></span>, primary_table_name), primary_table_name, new_table_name) <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> ddl_query <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> dual; ddl_query := substr(ddl_query, 1, length(ddl_query) - 1); <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> ddl_query;</code> </pre><br>  As well as triggers and indexes to it: <br><br><pre> <code class="sql hljs">FOR idx IN (<span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> idxs.index_name <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> user_indexes idxs <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> idxs.table_name = primary_table_name) <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span> ddl_query := <span class="hljs-keyword"><span class="hljs-keyword">REPLACE</span></span>( <span class="hljs-keyword"><span class="hljs-keyword">REPLACE</span></span>(dbms_metadata.get_ddl(<span class="hljs-string"><span class="hljs-string">'INDEX'</span></span>, idx.index_name), primary_table_name, new_table_name), idx.index_name, new_idx_trg_prefix || idx.index_name || new_idx_trg_postfix); ddl_query := substr(ddl_query, 1, length(ddl_query) - 1); <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> ddl_query; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span>;</code> </pre><br></li><li>  Rename tables: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'alter table '</span></span> || secondary_table_name || <span class="hljs-string"><span class="hljs-string">' rename to '</span></span> || history_table_name; <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'alter table '</span></span> || primary_table_name || <span class="hljs-string"><span class="hljs-string">' rename to '</span></span> || secondary_table_name; <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'alter table '</span></span> || new_table_name || <span class="hljs-string"><span class="hljs-string">' rename to '</span></span> || primary_table_name;</code> </pre><br></li><li>  Rename triggers and indices for them; </li><li>  If the cold tablespace does not exist, then we consider that there is no need to store historical data, and delete the corresponding table: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'drop table '</span></span> || history_table_name || <span class="hljs-string"><span class="hljs-string">' cascade CONSTRAINTS'</span></span>;</code> </pre><br></li><li>  Perform a view rebuild (oracle only): <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'select * from '</span></span> || view_name || <span class="hljs-string"><span class="hljs-string">' where 1=0'</span></span>;</code> </pre><br></li></ol><br><br>  <i>Procedure move_history_logs_to_cold_ts (primary_table_name).</i>  <i>It is performed, for example, once a day.</i> <br><ol><li>  If a “cold” tablespace exists, look for all historical tables that are not in this tablespace: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'select table_name from user_tables where table_name like '''</span></span> || history_table_pattern || <span class="hljs-string"><span class="hljs-string">''' and (tablespace_name != ''EMS_HISTORICAL_DATA'' or tablespace_name is null)'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BULK</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COLLECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> history_tables;</code> </pre><br></li><li>  Move each table to a “cold” tablespace: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IMMEDIATE</span></span> <span class="hljs-string"><span class="hljs-string">'ALTER TABLE '</span></span> || history_tables(i) || <span class="hljs-string"><span class="hljs-string">' MOVE TABLESPACE ems_historical_data'</span></span>;</code> </pre><br></li><li>  We delete for the moved tables triggers and indexes; </li><li>  Perform deletion of too old tables from the cold tablespace. </li></ol><br><br>  The launching of scheduled procedures was done using Quartz Sheduler in the case of Postgre, and using Oracle Scheduler in the case of Oracle, the configuration scripts for which are also in the source code. <br><br><h4>  Conclusion </h4><br>  The complete source of the procedures and scripts for configuring the scheduler can be viewed on <a href="https://github.com/SCORE1387/dbTablesRotation">GitHub</a> . <br><br>  Thanks for attention! </div><p>Source: <a href="https://habr.com/ru/post/240061/">https://habr.com/ru/post/240061/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../240051/index.html">Simple implementation of encrypting and decrypting files in Qt</a></li>
+<li><a href="../240053/index.html">Decentralized messaging system</a></li>
+<li><a href="../240055/index.html">Yesterday, CSS turned 20 years old. Interview with Haakon Wium Lee (Part 2)</a></li>
+<li><a href="../240057/index.html">Higher education in Germany has become free. For foreign students too</a></li>
+<li><a href="../240059/index.html">Back to the future of data centers</a></li>
+<li><a href="../240065/index.html">Secure web accessibility of HTML5 semantic areas through WAI-ARIA roles</a></li>
+<li><a href="../240067/index.html">Data mining makes scientific discoveries</a></li>
+<li><a href="../24007/index.html">Glitch Opera when writing to textarea</a></li>
+<li><a href="../240071/index.html">HP ProLiant DL360 Gen9 Server - Overview, Test and Outlook</a></li>
+<li><a href="../240073/index.html">LuCI moved to github</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

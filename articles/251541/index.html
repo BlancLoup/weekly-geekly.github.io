@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Merge Proxmox nodes into a cluster using OpenVPN</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Using the Proxmox virtualization environment, namely OpenVZ containers, to create a virtual hosting service will not be news for anyone. The server le...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Merge Proxmox nodes into a cluster using OpenVPN</h1><div class="post__text post__text-html js-mediator-article">  Using the Proxmox virtualization environment, namely OpenVZ containers, to create a virtual hosting service will not be news for anyone.  The server leased at the Hetzner site has successfully coped with its responsibilities for quite a long time. <br><br>  But as time went on, the amount of data increased, clients multiplied, LA grew ... A new server was rented, Proxmox was installed and configured, the administrator rushes <s>to</s> configure the cluster to migrate the loaded containers to the new server.  In google found deposits of instructions, and on the wiki Proxmox project itself has the necessary information. <br><a name="habracut"></a><br>  Servers are in different subnets.  Proxmox uses corosync to synchronize the settings of cluster nodes.  When adding a node to the cluster - error: <br><br><pre>  Waiting for quorum ... Timed-out waiting for cluster [FAILED] </pre><br>  Admin in a panic <br><img src="https://habrastorage.org/files/cb7/625/ee8/cb7625ee81314004a554ef5fabf28545.gif">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Task: </h4><br>  Configure synchronization of Proxmox nodes located in any data center and having an external IP address.  Organize a "cluster" in the understanding of Proxmox. <br><br><h4>  Given: </h4><br>  So, what we have is: <br><br><ul><li>  Proxmox 3.3, the “free” repository, </li><li>  Server node number 1: <br><ul><li>  dns: node1.example.com </li><li>  name: node1 </li><li>  external ip: 144.76.ab </li></ul><br></li><li>  Server node 2: <br><ul><li>  dns: node2.example.com </li><li>  name: node2 </li><li>  external ip: 144.76.cd </li></ul><br></li><li>  Cluster: <br><ul><li>  name: cluster </li></ul><br></li><li>  All hosting containers are running on internal subnets of nodes.  Cheap, angry, no comment. </li></ul><br>  We find out that synchronization does not work due to the fact that multicast requests, although sent, are cut by the equipment.  Nodes just do not see each other.  Also try to use the IP addresses of the available network interfaces for synchronization.  Those.  or external IP, or IP subnet for VM. <br><br><h4>  Decision: </h4><br>  We will make multicast requests sent by corosync to go inside the same network for all nodes of the cluster.  We will raise our private subnet with OpenVPN and routing. <br><br><h5>  0. Cleansing </h5><br>  First you need to roll back all the changes made by an unsuccessful attempt to add a node to the cluster.  It is assumed that nothing has been configured on "node2" yet, and there was no VM. <br><br><ul><li>  on node1: <br><br><pre><code class="bash hljs">pvecm nodes service pve-cluster restart pvecm expected 1 pvecm delnode node2 pvecm cman restart</code> </pre> <br></li><li>  on node2: <br><br><pre> <code class="bash hljs">service pve-cluster stop service cman stop rm /etc/cluster/cluster.conf rm -rf /var/lib/pve-cluster rm -rf /var/lib/corosync service pve-cluster start service cman start</code> </pre></li></ul><br><h5>  1. Network settings within the cluster </h5><br>  For some unification of settings, we will coordinate the following parameters for networks within our future cluster: <br><br><ul><li>  OpenVPN subnet: will be 10.0.0.0/24. </li><li>  The node on which the OpenVPN server will work we will call “master”. </li><li>  The subnet for containers on the nodes will be: 10. [1-254] .0.0 / 16, where the second octet is the node number. </li><li>  Suppose we have VMs with system services, for example, database servers. <br>  I assume in advance that the name-server is configured on the “master”, with a zone, for example, “.hosting.lan”. <br>  This will facilitate the transfer of VMs between nodes.  Just change the internal IP after the transfer. </li><li>  Configure the network interfaces on the Proxmox nodes accordingly.  We fix, if necessary, the settings on the VM. </li></ul><br><h5>  2. Set up the “master” node </h5><br><h6>  2.1 OpenVPN </h6><br>  I will not go into much of the OpenVPN configuration, since  articles written a lot.  Including on <a href="http://habrahabr.ru/post/233971/">Habré</a> .  I will describe only the main features and settings: <br><br><ol><li>  Install: <br><br><pre> <code class="bash hljs">apt-get install openvpn</code> </pre> <br></li><li>  Create a file with the settings /etc/openvpn/node1.conf and allow it to run in / etc / default / openvpn <br><br></li><li>  In the settings file you need to enter the following parameters: <br><br><pre> <code class="hljs css">#     <span class="hljs-selector-tag"><span class="hljs-selector-tag">tap</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">dev</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">tap</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">proto</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">udp</span></span> #   <span class="hljs-selector-tag"><span class="hljs-selector-tag">UDP</span></span>  <span class="hljs-selector-tag"><span class="hljs-selector-tag">sndbuf</span></span> 393216 <span class="hljs-selector-tag"><span class="hljs-selector-tag">rcvbuf</span></span> 393216 #   <span class="hljs-selector-tag"><span class="hljs-selector-tag">server</span></span> 10<span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 255<span class="hljs-selector-class"><span class="hljs-selector-class">.255</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.255</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> #  <span class="hljs-selector-tag"><span class="hljs-selector-tag">-</span></span>     # <span class="hljs-selector-tag"><span class="hljs-selector-tag">corosync</span></span>     <span class="hljs-selector-tag"><span class="hljs-selector-tag">vmbr0</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">route</span></span> 224<span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 240<span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 10<span class="hljs-selector-class"><span class="hljs-selector-class">.1</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.1</span></span> #       <span class="hljs-selector-tag"><span class="hljs-selector-tag">VPN</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">route</span></span> 10<span class="hljs-selector-class"><span class="hljs-selector-class">.2</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 255<span class="hljs-selector-class"><span class="hljs-selector-class">.255</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.255</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 10<span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.2</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">route</span></span> 10<span class="hljs-selector-class"><span class="hljs-selector-class">.3</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 255<span class="hljs-selector-class"><span class="hljs-selector-class">.255</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.255</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span> 10<span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.0</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.3</span></span> #      ... #   <span class="hljs-selector-tag"><span class="hljs-selector-tag">-</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">client-config-dir</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">clients</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">client-to-client</span></span></code> </pre><br></li><li>  In the / etc / openvpn / clients directory we create files for the settings of the client nodes: <br><br><pre> <code class="hljs objectivec">/etc/openvpn/clients/node2: <span class="hljs-meta"><span class="hljs-meta">#   1 —   push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"route 10.1.0.0 255.255.0.0"</span></span></span><span class="hljs-meta"> # , ,   3 —   # push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"route 10.3.0.0 255.255.0.0"</span></span></span><span class="hljs-meta"> # multicast —  VPN  master- push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"route 224.0.0.0 240.0.0.0"</span></span></span><span class="hljs-meta"> push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"dhcp-option DNS 10.0.0.1"</span></span></span><span class="hljs-meta"> push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"dhcp-option DOMAIN hosting.lan"</span></span></span><span class="hljs-meta"> push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"sndbuf 393216"</span></span></span><span class="hljs-meta"> push </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"rcvbuf 393216"</span></span></span><span class="hljs-meta"> #  tap- — IP + NetMask ifconfig-push 10.0.0.2 255.255.0.0</span></span></code> </pre><br></li><li>  Run vpn: <br><br><pre> <code class="bash hljs">service openvpn restart</code> </pre> <br></li><li>  Go to the node “node2”, also install openvpn, set the file “master” in / etc / default / openvpn. <br><br>  You will also need to install the resolvconf package.  Unlike the master.  Otherwise, magic with domains for the internal network may not work.  I also had to copy the original to tail file inside the /etc/resolvconf/resolv.conf.d/ directory.  Otherwise, name servers from hetzher were lost. <br><br>  Depending on the server settings, we create a settings file for the client, which should include the following parameters: <br><br><pre> <code class="hljs xml">/etc/openvpn/master.conf: client dev tap proto udp remote <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name"></span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">IP</span></span></span><span class="hljs-tag">   </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">master</span></span></span><span class="hljs-tag">&gt;</span></span></code> </pre><br></li><li>  Run vpn: <br><br><pre> <code class="bash hljs">service openvpn restart</code> </pre> <br></li></ol><br><h6>  2.2 Host and service settings for the cluster </h6><br><ol><li>  At each node, you need to edit the / etc / hosts file and bring it to the following form: <br>  <nobr># IPv4</nobr> <nobr><br></nobr>  <nobr>127.0.0.1 localhost.localdomain localhost</nobr> <nobr><br></nobr>  <nobr># external address and domain host</nobr> <nobr><br></nobr>  <b>144.76.ab node1.example.com</b> <br>  # <br>  # IPv6 <br>  :: 1 ip6-localhost ip6-loopback <br>  fe00 :: 0 ip6-localnet <br>  ff00 :: 0 ip6-mcastprefix <br>  ff02 :: 1 ip6-allnodes <br>  ff02 :: 2 ip6-allrouters <br>  ff02 :: 3 ip6-allhosts <br><br>  xxxx: xxx: xxx: xxxx :: 2 ipv6.node1.example.com ipv6.node1 <br><br>  # <br>  # VPN <br><br>  <b>10.0.0.1 node1 master cluster</b> <b><br></b>  <b>10.0.0.2 node2</b> <br>  # and so for each new node ... <br><br>  Specifying separately the IP addresses from the VPN subnet for nodes, we force their use, because  Proxmox services use short domain names. <br><br></li><li>  On the "master" edit the file /etc/pve/cluster.conf, add the line multicast: <br><br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">cman</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">keyfile</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"/var/lib/pve-cluster/corosync.authkey"</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">multicast</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">addr</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"224.0.2.1"</span></span></span><span class="hljs-tag">/&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;/</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">cman</span></span></span><span class="hljs-tag">&gt;</span></span></code> </pre><br>  If the file cannot be saved, then try to restart the service: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> /etc service pve-cluster restart</code> </pre><br>  and try again to edit. <br>  After editing: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> /etc service pve-cluster restart service cman restart</code> </pre><br></li><li>  Check the status of "master": <br><br><pre> <code class="bash hljs">pvecm status</code> </pre><br>  As a result, the following should be seen: <br>  <nobr>...</nobr> <nobr><br></nobr>  <nobr>Node ID: 1</nobr> <nobr><br></nobr>  <nobr>Multicast addresses:</nobr> <b>224.0.2.1</b> <br>  Node addresses: <b>10.0.0.1</b> <br></li></ol><br><h5>  3. Add a node to the cluster </h5><br>  These settings should already be enough for the cluster to work.  Add a node to the cluster according to the instructions from the wiki: <br><br><ol><li>  Go to the node "node2" </li><li>  Enter: <br><br><pre> <code class="bash hljs">pvecm add master</code> </pre><br>  We answer questions, we wait.  We see that the quorum is reached. <br><br><pre> <code class="bash hljs">pvecm status</code> </pre><br>  <nobr>...</nobr> <nobr><br></nobr>  <nobr>Node ID: 2</nobr> <nobr><br></nobr>  <nobr>Multicast addresses:</nobr> <b>224.0.2.1</b> <br>  Node addresses: <b>10.0.0.2</b> <br></li></ol><br><h4>  Result </h4><br><h5>  Positive </h5><br><ul><li>  Proxmox sees nodes in a cluster.  In theory, you can organize a cluster of nodes located anywhere.  It is necessary for the master node to have an “external, white” IP address. </li><li>  Settings are synchronized. </li><li>  VMs migrate between nodes. </li><li>  The speed between the nodes and the “master” can exceed 400Mbit, if you enable compression in OpenVPN.  Depends on the data and settings of the external network, of course. </li></ul><br><br><h5>  Negative </h5><br>  Alas, not everything is as good as we would like. <br><br><ul><li>  Sometimes the quorum is broken, the settings cease to remain.  Restarting cluster services helps - pve-cluster, cman.  It is not clear yet, these are problems of corosync or openvpn.  In these moments it is very fun to migrate VM. </li><li>  The cluster is not exactly a cluster, is it?  What happens if the master node goes down?  Here we also assign the strictly prescribed IP addresses of the nodes in the VPN, hosts settings. </li><li>  Virtual machine traffic between node2 and node3 will go through the master via VPN.  Such a scheme will be convenient only for the case when master master VMs and master VMs on additional nodes. <br></li></ul><br><br><h4>  Links </h4><br>  <a href="http://habrahabr.ru/post/233971/">habrahabr.ru/post/233971</a> - Installation and configuration guide for OpenVPN <br>  <a href="https://pve.proxmox.com/wiki/Proxmox_VE_2.0_Cluster">pve.proxmox.com/wiki/Proxmox_VE_2.0_Cluster</a> <br>  <a href="https://pve.proxmox.com/wiki/Multicast_notes">pve.proxmox.com/wiki/Multicast_notes</a> <br>  <a href="http://www.nedproductions.biz/wiki/configuring-a-proxmox-ve-2.x-cluster-running-over-an-openvpn-intranet">www.nedproductions.biz/wiki/configuring-a-proxmox-ve-2.x-cluster-running-over-an-openvpn-intranet</a> </div><p>Source: <a href="https://habr.com/ru/post/251541/">https://habr.com/ru/post/251541/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../251531/index.html">Formatting Python Code</a></li>
+<li><a href="../251533/index.html">Market growth, games from The Sun, Angry Birds in Chinese - and other news of the week for a mobile developer</a></li>
+<li><a href="../251535/index.html">How to create 40% more sales in the online store using cashback services</a></li>
+<li><a href="../251537/index.html">Fractal Flame - Build Algorithm</a></li>
+<li><a href="../251539/index.html">Another thermostat on Arduino, but with OpenTherm</a></li>
+<li><a href="../251543/index.html">We add MVP to games on Unity3D</a></li>
+<li><a href="../251545/index.html">Creating a system for blogging and working with documentation: The experience of the Kato messenger team</a></li>
+<li><a href="../251547/index.html">Secure cisco</a></li>
+<li><a href="../251549/index.html">Smilies in domain names</a></li>
+<li><a href="../251551/index.html">Lectures Technopark. Search and verification of new business ideas: a look from the dark side</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PID problem 1 zombie reaping in Docker</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr! 
+ We in Hexlet are actively using Docker both for launching the application itself and associated servers, and for launching custom code in ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PID problem 1 zombie reaping in Docker</h1><div class="post__text post__text-html js-mediator-article">  <i>Hi, Habr!</i> <i><br></i>  <i>We in Hexlet are actively using Docker both for launching the application itself and associated servers, and for launching custom code in practical programming exercises.</i>  <i>Without these lightweight containers, it would be much harder for us to cope with these tasks.</i>  <i>Docker is a wonderful technology, but sometimes there are unexpected problems.</i>  <i>One of these problems (and its solution) is described in the Phusion blog (the creators of Phusion Passenger), today we publish its translation.</i> <br><br>  About a year ago, when Docker was in version 0.6, we were the first to introduce Baseimage-docker.  This is a minimal Ubuntu image modified specifically for Docker.  People can pull this base image from the Docker Registry and use it as a basis for their images. <br><br>  We were early Docker users, using it for CI and for creating a working environment long before the release of version 1.0.  The basic image we made to solve problems specific to the principles of the Docker.  For example, Docker does not start processes under a special init process, which would correctly handle child processes, so a situation is possible when zombie processes cause a lot of problems.  The docker also doesn’t do anything with syslog, so important messages may be lost.  And so on. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      However, we found out that many people do not understand the problems we are facing.  Yes, these are rather low-level Unix system mechanisms that are far from clear to everyone.  Therefore, in this post we describe the most important problem that we solve - PID 1 zombie reaping problem. <br><br><img src="https://habrastorage.org/files/405/56c/f8f/40556cf8f5ac4f8ea21ee08751c590e8.jpg"><br><a name="habracut"></a><br>  It turned out: <br><ol><li>  The problems that we solve are relevant for many people. </li><li>  Many people do not know about their existence, therefore, at some point, unexpected problems (the Murphy's law) are sure to begin. </li><li>  It will be very inefficient if everyone solves problems on their own. </li></ol><br>  Therefore, we have made a decision in a universal base image that everyone can use: Baseimage-docker.  This image adds a bunch of useful tools needed (as we believe) to the Docker image developer.  We use Baseimage-docker as the basis for all our images. <br><br>  The community likes what we do: our image is the third most popular in the Docker Registry after the official images of Ubuntu and CentOS. <br><br><img src="https://habrastorage.org/files/7d1/a48/15d/7d1a4815d9cd4add8774c660f0a84f0d.png"><br><br><h4>  The PID 1 problem: collecting zombies </h4><br>  All processes in Unix are represented as a tree.  Each process generates child processes, and each process has a parent except the highest (or root) one. <br><br>  The root process is init.  It is started by the kernel when the system boots.  init is responsible for starting the rest of the system, such as the SSH daemon, the Docker daemon, running Apache / Nginx, starting the graphical interface, and so on.  Each of them, in turn, runs its child processes. <br><br><img src="https://habrastorage.org/files/7f5/c10/9e8/7f5c109e8e364b74987220cbaa7ba0a1.png"><br><br>  Nothing unusual.  But what happens when the process ends?  Suppose the bash process (PID 5) has been completed.  It turns into the so-called “defunct process”, also known as the “zombie process”. <br><br><img src="https://habrastorage.org/files/9f8/844/e83/9f8844e8313a489a924908f608b2d3b3.png"><br><br>  Why is this happening?  Unix is ​​made in such a way that the parent process waits for the completion of the child to get an exit code (exit status).  The zombie process exists until the parent process completes this action using the waitpid () family of system calls.  Here is a quote from man: <br><blockquote>  A child that terminates, but has not been waited for becomes a “zombie.”  There is a complete set of information on how to complete the process. </blockquote><br>  Usually people consider zombie processes to be some kind of runaway processes that cause confusion.  But formally, from the point of view of the Unix operating system, zombie processes are clearly defined.  These are processes that have ended, but their parent processes are still waiting for them to complete. <br><br>  In most cases, this is not a problem.  The waitpid () system call for handling zombies is called “reaping” (gathering, processing).  Many applications handle their child processes correctly.  In the sshd example above, if bash is terminated, the OS will send a SIGCHLD signal to the sshd process to wake it up.  Sshd will notice this and process (“reaps”) the child process. <br><br><img src="https://habrastorage.org/files/577/483/d53/577483d53d39471dab29830580735e0b.png"><br><br>  But there is a special case.  Imagine that the parent process terminated, intentionally or because of a user action.  What happens to its child processes?  They no longer have a parent, so they become “orphans” (this is a technical term). <br><br>  This is where the init process comes into play.  The init process - PID 1 - has a special task: to “adopt” orphaned processes (this is again a real technical term).  This means that init becomes the parent of such processes, despite the fact that they were not actually generated by init. <br><br>  Consider the example of Nginx, which is demonized by default.  It works as follows: first, Nginx creates a child process.  Then the main Nginx process ends.  Now the Nginx child process is adopted by init. <br><br><img src="https://habrastorage.org/files/ddd/294/3c6/ddd2943c6eb3407fb514b26bbf5393c5.png"><br><br>  The OS kernel expects special behavior from init: the kernel believes that init should handle (build, “reap”) adopted processes, too. <br><br>  This is a very important feature in Unix.  It is so fundamental that many programs are designed to work correctly.  Most of the demons are designed for the fact that the demonized processes will be adopted and processed (that is, correctly completed after becoming a zombie) init. <br><br>  I use demons as an example, but this mechanism applies not only to them.  Every time the process that has children ends, he expects init to clean up everything.  This is described in detail in two very good books: <a href="http://www.amazon.com/Operating-System-Concepts-Abraham-Silberschatz/dp/0470128720">Operating System Concepts</a> and <a href="http://www.amazon.com/Programming-Environment-Addison-Wesley-Professional-Computing/dp/0321525949">Advanced Programming in the UNIX Environment</a> . <br><br><h4>  Why are zombie processes harmful </h4><br>  Why are zombie processes harmful, despite the fact that they are just completed processes?  After all, surely the memory allocated to the process has already been released, and the zombies are just a string in ps? <br><br>  Yes, the memory of this process is already released.  But the fact that the process is still visible in ps means that it uses kernel resources.  Here is a quote from man on waitpid: <br><blockquote>  This is a way to create further processes. <br><br>  Until the zombie is removed from the system using wait, it will use the slot in the kernel's process table, and if this table is full, it will not be possible to create new processes. <br></blockquote><br><h4>  And here Docker </h4><br>  And here is the Docker?  Many people run only one process in their container.  But most likely this process does not behave like the correct init.  That is, instead of correctly processing the adopted processes, he believes that another init process should do this.  And he thinks so quite rightly. <br><br>  Let's look at a specific example.  Suppose your container contains a web server that runs a CGI script written in bash.  The script calls grep.  Then the web server determines that the script has been processed for too long and kills it.  But grep remains running.  When he finishes his job, he turns into a zombie and is adopted by the PID 1 process (web server).  The web server does not know anything about grep, so it does not handle its completion and the zombie grep remains in the system. <br><br>  The problem applies to other situations.  Many create containers for third-party applications, such as PostgreSQL, and run these applications as the only process inside the container.  When you run someone else's code, are you sure that it does not spawn child processes, which then turn into zombies?  If you run your code and know exactly what it does and the libraries it uses, then everything is fine.  But in general, you need to run the correct init to solve problems. <br><br><h4>  But doesn’t launching a full system init turn a container into a heavy thing like a virtual machine? </h4><br>  The init system is not necessarily heavy.  Perhaps you are thinking about Upstart, Systemd, SysV, and so on.  Perhaps you think that you need to run the whole system inside the container.  This is not true.  “Full init system” is optional and not needed. <br><br>  The system we need is a simple little program whose task is to launch your application and collect the adopted processes.  Using such a simple init system is fully consistent with the Docker philosophy. <br><br><h4>  Simple init system </h4><br>  Perhaps there are ready-made solutions?  Nearly.  Good old bash.  Bash handles adopted processes.  Bash can run anything.  So instead of such a line in the Dockerfile ... <br><br><pre><code class="bash hljs">CMD [<span class="hljs-string"><span class="hljs-string">"/path-to-your-app"</span></span>]()</code> </pre> <br>  can write <br><pre> <code class="bash hljs">CMD [<span class="hljs-string"><span class="hljs-string">"/bin/bash"</span></span>, <span class="hljs-string"><span class="hljs-string">"-c"</span></span>, <span class="hljs-string"><span class="hljs-string">"set -e &amp;&amp; /path-to-your-app"</span></span>]()</code> </pre><br>  (The -e directive prohibits bash from recognizing the script as a simple command and exec () writing it directly). <br><br>  This will result in the following hierarchy of processes: <br><br><img src="https://habrastorage.org/files/333/f52/47a/333f5247a9274bcbb0812f32afb9c87b.png"><br><br>  But, unfortunately, this approach has a problem.  It does not process signals!  Suppose you use kill to send a SIGTERM signal to the bash process.  Bash ends, but does not send SIGTERM to its child processes! <br><br><img src="https://habrastorage.org/files/9ac/2cd/eb8/9ac2cdeb8af84e72bf9e5a6fca8d5d3e.png"><br><br>  When bash is completed, the kernel ends the entire container with all the processes inside.  These processes are terminated with SIGKILL.  Therefore, there is no way to complete these processes cleanly.  Suppose your application is writing something to a file.  The file may be damaged if the application terminated in this way during recording.  Unclean termination of processes is bad.  It's almost like pulling the power cord off the server. <br><br>  But why should we care that the init process ends with a SIGTERM signal?  Because docker stop sends SIGTERM to the init process.  “Docker stop” should stop the container correctly so that it can be started later with “docker start”. <br><br>  The bash experts will probably want to write a normal EXIT handler that sends signals to their children, like this: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># !/bin/bash function cleanup() { local pids=`jobs -p` if [\\[ "$pids" != "" ]()]; then kill $pids \\&gt;/dev/null 2\\&gt;/dev/null fi } trap cleanup EXIT /path-to-your-app</span></span></code> </pre><br>  Unfortunately, this does not solve the problem.  Sending signals to child processes is not enough.  init must also wait for the completion of the child processes before terminating itself.  If init is completed earlier, then all child processes will be killed (not cleanly) by the kernel. <br><br>  Obviously, a slightly more complicated solution is required, but a complete init system with Upstart, Systemd and SysV is too fat for a lightweight docker container.  Fortunately, Baseimage-docker has a solution.  We wrote our own lightweight init system specifically for use inside the docker container.  Not inventing anything better, we called it <a href="https://github.com/phusion/baseimage-docker/blob/rel-0.9.16/image/bin/my_init">my_init</a> .  This is a Python program of 350 lines. <br><br>  Key functions of my_init: <br><ul><li>  Process (reap) child processes </li><li>  Runs subprocesses </li><li>  Waits for completion of all subprocesses before its own termination, with a maximum timeout. </li><li>  Logs activity in “docker logs” </li></ul><br><br><h4>  Will Docker solve this problem himself? </h4><br>  Ideally, the problem with PID 1 should be solved natively by Docker himself.  It would be great, but so far, in January 2015, we have not heard anything like this from the Docker team.  This is not a criticism - Docker is very ambitious, and I am sure that their team has more important problems.  The PID 1 problem is easily solved at the user level.  So until Docker solves this problem officially, we recommend that people solve it themselves using a system like the one described above. <br><br><h4>  Is this a problem at all? </h4><br>  The problem may seem hypothetical.  If you have never seen a zombie in your container, it may seem all right.  But the only way to make sure that there is no problem is to check all your code, all your libraries and all the libraries that are used by the libraries.  If you have not done so, then perhaps there is a string somewhere that starts a child process, which then turns into a zombie. <br><br>  Do not forget about the law of Murphy. <br><br>  Besides the fact that zombies clog up a table of kernel resources, they can also interfere with the correct operation of programs that check for processes.  For example, <a href="https://www.phusionpassenger.com/">Phusion Passenger</a> manages processes.  It restarts the processes when they fall.  It parses the ps output and sends a 0 signal to the process.  The zombie is visible in ps and responds to signal 0, so Phusion Passenger thinks the process is still alive. <br><br>  All you need to protect yourself from problems with zombies is to spend 5 minutes connecting Baseimage-docker or importing <a href="https://github.com/phusion/baseimage-docker/blob/rel-0.9.16/image/bin/my_init">350 lines of my_init</a> .  Additional costs for disk and memory are minimal: only a couple of megabytes are added to memory. <br><br><h4>  Conclusion </h4><br>  The PID 1 problem is real.  One solution is to use <a href="https://github.com/phusion/baseimage-docker">Baseimage-docker</a> .  Is this the only way?  Of course not.  The goals of Baseimage-docker are: <br><br><ol><li>  Tell people about a few important points when working with Docker containers. </li><li>  Provide a ready-made solution so that people do not reinvent the wheel. </li></ol><br><br>  In this case, several solutions are possible, the main thing is that they cope with the task described.  You can write your own version in C, Go, Ruby or something else. <br><br>  You may not want to use a basic Ubuntu image.  Maybe you are using CentOS.  But Baseimage-docker can still be useful to you.  For example, the project <a href="https://github.com/phusion/passenger_rpm_automation">ourpassenger_rpm_automation</a> uses CentOS containers.  We simply extracted my_init and pasted it there. <br><br>  Happy Dockage! </div><p>Source: <a href="https://habr.com/ru/post/248519/">https://habr.com/ru/post/248519/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../248505/index.html">Repository pattern. Basics and explanations</a></li>
+<li><a href="../248507/index.html">WebSocket RPC or how to write a live web browser application</a></li>
+<li><a href="../248509/index.html">Qt Android and system audio control dialog</a></li>
+<li><a href="../248511/index.html">Website without backend: user authentication in BaaS parse.com through social networks</a></li>
+<li><a href="../248517/index.html">CMakeProjectManager2: a bit of convenience when working with CMake in Qt Creator</a></li>
+<li><a href="../248521/index.html">We collect bad data - 2. 1.5 years later, about how not to publish open data</a></li>
+<li><a href="../248525/index.html">Workflow in Document Approval System</a></li>
+<li><a href="../248527/index.html">How to write great pull requests</a></li>
+<li><a href="../248529/index.html">HP server conference online — only 10 days to win 2 tablets</a></li>
+<li><a href="../248531/index.html">Ubiquiti lightning protection. Recommendations for connecting devices without a grounding screw on the case</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

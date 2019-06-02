@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Garbage collector in Go: solving the problem of responsiveness in Go 1.5</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This material is a translation of a blog post in real time by the guys from Sourcegraph from the GopherCon 2015 conference, which takes place these da...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Garbage collector in Go: solving the problem of responsiveness in Go 1.5</h1><div class="post__text post__text-html js-mediator-article">  <i>This material is a translation of a blog post in real time by the guys from Sourcegraph from the GopherCon 2015 conference, which takes place these days in Denver, Colorado.</i>  <i>Full video and slides of the report will be added to the post as soon as they are available.</i> <br><br>  Richard L. Hudson (Rick) is famous for his work in memory management, including the invention of the Train, Sapphire and Mississippi Delta algorithms, as well as GC stack maps, which allowed for garbage collection in statically-typed languages ​​like Java, C # and Go.  Under his authorship were published documents about runtimes of languages, memory management, multithreading, synchronization, memory models and transactional memory.  Rick is now a member of the Go team at Google and is working on the problems of the garbage collector and runtime. <br><br><img src="https://habrastorage.org/files/ce4/897/ad0/ce4897ad07f34b8f8e1ed0270823e5de.jpg"><br><a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In economics, there is the concept of "closed loop", when one process strengthens another, which leads to the strengthening of the first.  Historically, in the computer world, such a “closed loop” was between the development of hardware and software.  The processors became faster, which contributed to the writing of more powerful software, which, in turn, stimulated a further increase in the speed of the processors and the power of the computer as a whole.  This cycle worked until about 2004, when Moore's Law stopped working. <br><br><img src="https://habrastorage.org/files/cc3/592/a6e/cc3592a6e53c436f9501e1c9d4d66f76.jpg"><br><br>  Nowadays, a twofold increase in the number of transistors does not mean a twofold acceleration of programs.  More transistors == more processor cores, but the programs did not evolve enough to use more cores.  And precisely because modern programs do not use multi-core to the fullest, the guys developing processors simply do not add more cores.  The loop is dead. <br><br>  Go's long-term mission is to restart this cycle, giving the world more parallel, competitive programs.  A more short-term mission is to increase acceptance of Go by the global developer community.  And one of the biggest complaints about Go at the moment is that the garbage collector’s pauses are too long. <br><br>  When their team initially took up the problem, he jokingly says that their initial reaction, as engineers, was not to solve the problem itself, but to find a workaround, something like this: <br><br><ul><li>  add eye tracking to computers, and start the garbage collector when no one is looking </li><li>  show the network idle icon during the garbage collection phase, and blaming for the pauses is not a garbage collector, but network latency or something else </li></ul><br><br><img src="https://habrastorage.org/files/926/f8b/123/926f8b12391544d3ae13c5d5afd59597.jpg"><br><br>  But Russ Cox, for some reason, flunked these ideas in the bud, and they decided to roll up their sleeves and actually improve the garbage collector at Go.  They came up with an algorithm that reduces GC pauses, but makes the program a little slower.  Go programs will become a bit slower in exchange for guaranteed low pauses of garbage collection phases. <br><br>  What delays can we distinguish? <br><br><ul><li>  Nanosecond: Grace Hopper compared time with distance.  Nanosecond is 11.8 inches. </li><li>  Microsecond: 5.4 microseconds is the time it takes for the light to travel 1 mile in a vacuum. </li><li>  Milliseconds: <br><ul><li>  1: 1MB sequential read with SSD. </li><li>  20: Reading 1MB from a rotating disk. </li><li>  50: Threshold perception (reaction threshold) </li><li>  50+: Various Network Delays </li><li>  300: Blinking eyes </li></ul></li></ul><br>  So how much garbage collection work can we have in one millisecond? <br><br><h4>  Java GC vs Go GC </h4><br><img src="https://habrastorage.org/files/7a7/09c/3f3/7a709c3f33c74f0d969bef6339299819.jpg"><br><br>  Go: <br><ul><li>  thousand gorutin </li><li>  channel synchronization </li><li>  runtime is written in Go using its features like regular code </li><li>  control of spatial locality (you can embed structures, internal pointers (&amp; foo.field)) </li></ul><br><br>  Java: <br><ul><li>  dozens of Java threads </li><li>  synchronization through objects / locks </li><li>  runtime written in C </li><li>  objects are linked via pointers </li></ul><br><br>  The biggest difference here is the issue of spatial locality.  In Java, everything is a pointer, but in Go you can embed structures one into another.  When you have to follow links to many levels in depth, this can create a lot of problems for the garbage collector. <br><br><h4>  Garbage Collection Basics </h4><br>  Here is a brief example of how a garbage collector works.  Usually, it consists of two phases: <br><br><img src="https://habrastorage.org/files/5c5/e4f/69f/5c5e4f69fc4e4921b26ea4a7be0543b3.jpg"><br><br><ol><li>  Scan Phase: Determine which items in the heap are reachable.  This includes pointers to stacks, registers, global variables, and further pointers on the heap. </li><li>  Marking Phase: Pass through the pointer graph.  Mark objects as achievable during the execution of the program.  From the point of view of the garbage collector, the easiest way is to “stop the world” so that the pointers do not change during this phase at all.  A really parallel garbage collector is very difficult to do, because pointers are constantly changing.  The program uses so-called “write barriers” to write to the garbage collector that this object does not need to be captured.  In practice, however, recording barriers can produce even worse results than “stopping the world”. </li></ol><br><br><h4>  Garbage collector in Go </h4><br>  The new Go garbage collection algorithm uses a combination of write barriers and short pauses to “stop the world.”  Here are its phases: <br><br><img src="https://habrastorage.org/files/ca6/908/c61/ca6908c61f4d40c0934a72015ad69331.jpg"><br><br>  This is how the garbage collector in Go 1.4 looked like: <br><br><img src="https://habrastorage.org/files/4c0/427/837/4c04278372124a78807761c0d05c07a4.jpg"><br><br>  And this is how it looks in Go 1.5: <br><br><img src="https://habrastorage.org/files/6da/941/661/6da9416612e14d3daeac45d9f98197ac.jpg"><br><br>  Notice that the pause for “stop the world” is much shorter.  While running the parallel garbage collector, it uses 25% of the processor. <br><br>  Here are the test results: <br><br><img src="https://habrastorage.org/files/505/292/f23/505292f23a7b4134b5e8e82b5df358a4.png"><br><br>  In previous versions of Go, garbage collector pauses were generally much longer and increased as the size of the heap grew.  In Go 1.5, garbage collector pauses have become more than an order of magnitude smaller. <br><br>  If you bring the numbers closer, you can see that there is still a weak positive correlation between the heap size and the duration of GC pauses.  But they know the reason and it will be eliminated in Go 1.6. <br><br><img src="https://habrastorage.org/files/f82/cd1/bd7/f82cd1bd71474385b4809e890cb05390.png"><br><br>  There is a small performance penalty with the new algorithm, but this penalty decreases as the heap volume grows. <br><br><img src="https://habrastorage.org/files/9b9/62a/50e/9b962a50e3fa40c4b4e80f96a7de9787.jpg"><br><br><h4>  Looking to the future </h4><br>  Tell people that garbage collector pauses are no longer a problem in Go.  Looking to the future, they plan to tinker up with the garbage collector to achieve even shorter pauses, more productivity and more predictability.  They want to find the optimal ratio in this compromise.  The development of Go 1.6 will depend on feedback, so they are very much waiting for feedback from the community. <br><br><img src="https://habrastorage.org/files/823/a6a/b83/823a6ab833714cf197e46c606c253e75.jpg"><br><br>  The new garbage collector will make Go an even more suitable replacement for languages ​​with manual memory management. <br><br><h4>  Links </h4><br>  Slides: <a href="https://talks.golang.org/2015/go-gc.pdf">talks.golang.org/2015/go-gc.pdf</a> <br><br><h4>  More about the garbage collector in Go </h4><br>  <a href="https://docs.google.com/document/d/1wmjrocXIWTr1JxU-3EQBI6BK6KgtiFArkG47XK73xIQ/edit"><b>Go 1.5 concurrent garbage collector pacing</b></a> <br>  <a href="https://docs.google.com/document/d/16Y4IsnNRCN43Mx0NZc5YXZLovrHvvLhK_h0KN8woTO4/edit"><b>Go 1.4+ Garbage Collection (GC) Plan and Roadmap</b></a> </div><p>Source: <a href="https://habr.com/ru/post/262335/">https://habr.com/ru/post/262335/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../262319/index.html">Another critical vulnerability has been discovered in Adobe Flash Player.</a></li>
+<li><a href="../262321/index.html">Three thoughts for Android fans based on I / O 2015</a></li>
+<li><a href="../262323/index.html">Spring without XML. Part 1</a></li>
+<li><a href="../262327/index.html">Dojo 2</a></li>
+<li><a href="../262333/index.html">Tekla Structures API (Delphi): Connection and Simple Examples</a></li>
+<li><a href="../262339/index.html">2 Pi or not 2 Pi - that is the question</a></li>
+<li><a href="../262341/index.html">We sign data: HMAC in practice in API and Web-forms</a></li>
+<li><a href="../262343/index.html">We recognize Morse codes using Rx.js</a></li>
+<li><a href="../262345/index.html">Generating and solving a maze using the depth-depth search method</a></li>
+<li><a href="../262349/index.html">The end is only the beginning.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

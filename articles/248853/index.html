@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Dual ETL project or how we built Disaster Recovery for Greenplum</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article I want to talk about another stage in the development of DWH in Tinkoff Bank . 
+
+ It's no secret that the requirements for the presenc...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Dual ETL project or how we built Disaster Recovery for Greenplum</h1><div class="post__text post__text-html js-mediator-article">  In this article I want to talk about another stage in the development of <b>DWH</b> in <b>Tinkoff Bank</b> . <br><br>  It's no secret that the requirements for the presence of Disaster Recovery (hereinafter referred to as DR) in modern business information systems fall into the category of “must have”.  So, a little over a year ago, the team involved in the development of DWH in the bank was tasked with implementing DR for DWH, on which both the offline and online processes of the bank are built. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/f76/830/dab/f76830dabc7d4149824e3009406daf40.png"></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <a name="habracut"></a><br><br><h1>  Formulation of the problem </h1><br>  So, what was given: <br><ul><li>  The system for capturing changes on the side of data sources and applying them to the Online Operational Data layer (hereinafter <a href="http://habrahabr.ru/company/tcsbank/blog/205454/">referred to as</a> OOD) - <a href="http://habrahabr.ru/company/tcsbank/blog/205454/">Attunity Replicate</a> ; <br></li><li>  Loading, data conversion, IN / OUT data integration, storefront calculation and the whole ETL / ELT - <a href="http://habrahabr.ru/company/tcsbank/blog/155763/">SAS Data Integration Studio</a> , <b>~ 1700 ETL tasks</b> ; <br></li><li>  The main DBMS on which DWH is built in the bank is MPP DBMS Pivotal Greenplum, <b>data volume ~ 30TB</b> ; <br></li><li>  Reporting, Business Intelligence, Ad-hoc - SAP BusinessObjects + SAS Enterprise Guide; <br></li><li>  Two data centers, geographically separated at different ends of Moscow, between which there is a network channel. <br></li></ul><br><br>  <b>Objective: to</b> ensure, within an <b>hour</b> after a failure, leading to the inoperability of Greenplum at the main site, the operability of all DWH processes on the Greenplum backup circuit.  In essence, the task is to build a hot standby for Greenplum. <br><br><h1>  Study </h1><br>  About a month was given to us for research and development of the concept. <br><br>  Of course, the first thing that occurred to us was to dig in the direction of the vendor - Pivotal, i.e.  EMC.  As a result of the research, we found that Greenplum does not have a regular tool for building hot standby, and the DR solution for Greenplum can potentially be built using the EMC Data Domain.  But with a deeper study of Data Domain, it came to be understood that this technology is sharpened to create a large number of backups and in view of this is quite expensive.  Also, the Data Domain out of the box does not have the functionality of supporting the second loop in the current state.  We refused to consider the EMC Data Domain. <br><br>  The second option that we worked out is to use the third-party replication tool GreenplumToGreenplum.  The option quickly became obsolete because  at that time, there were no replication tools in nature that support Greenplum as a source. <br><br>  The third option that we set about is the Dual Apply class solution.  Having looked at their solution called Informatica dual load for Teradata dual active solution ( <a href="http://www.teradatamagazine.com/v10n02/Connections/Dynamic-duo/">Teradata Magazine</a> ) from Teradata and Informatica, they began to explore the technology market to build a similar solution for Greenplum.  But they did not find anything ready. <br><br>  After research, we decided that our own development would be the best option.  So we started writing our own system and called it Dual ETL (in the development community, the project was called “Duet”). <br><br><h1>  Duet and how we built it </h1><br><h2>  Conceptual architecture </h2><br>  The principle of building a system is based on the principle: as soon as ETL has built a table on the main contour of Greenplum, the system must catch this event and transfer the data of this table to the backup contour of Greenplum.  Thus, observing this principle, we synchronously, with some time delay, build DWH on two circuits in two geographically distant data centers. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/d6b/d68/4fa/d6bd684fa92f48c698f37f8f32a63c31.jpg"></div><br>  <i>Fig.1 Conceptual architecture</i> <br><br>  During the development of the architecture, the system was divided into six components: <br><ul><li>  Component Backup, which should work on the main site and be responsible for receiving data; <br></li><li>  A transport component responsible for transferring data between the primary and backup sites; <br></li><li>  The Restore component, which should work on the backup site and be responsible for applying the data; <br></li><li>  Component transfer to the storage and collection of daily backup; <br></li><li>  The controlling component that must steer all the processes of the system; <br></li><li>  And the monitoring component, which was supposed to give an understanding of what is happening in the system and how much the reserve site lags behind the main site. <br></li></ul><br><br><h2>  Completion of the existing ETL </h2><br>  In order to inform the system about the readiness of the table, a queue was implemented in which we taught our ETL to add an object (ie, a table) as soon as it finished building it.  Thus, the event transmission functionality was implemented to the system, after which the system had to rebuild this table on the Greenplum backup circuit. <br><br><h2>  Implementation of the control component </h2><br>  Due to the fact that our ETL Task Scheduler is written in SAS, plus the DWH team has extensive expertise in working with the SAS Macro language, it was decided to write a control mechanism in SAS. <br><br>  The implemented mechanism performs such simple actions as: get a new table from the queue, start the Backup component, send the resulting dump table to the backup site, start the Restore component.  In addition to this, multithreading is implemented, while the number of threads can be adjusted for each type of tasks (Backup, transport, Restore, transfer of buckup-s to the storage system), and of course such necessary functionality as logging and e-mail notification . <br><br><h2>  Implementing Backup Components </h2><br>  The Backup component, for the transferred table, calls the gp_dump utility.  We get dump tables spread over the main site Greenplum segment servers.  An example of calling the gp_dump utility: <br><br><pre><code class="bash hljs">gp_dump --username=gpadmin --gp<span class="hljs-_"><span class="hljs-_">-d</span></span>=<span class="hljs-variable"><span class="hljs-variable">$DIRECTORY</span></span> --gp-r=<span class="hljs-variable"><span class="hljs-variable">$REPORT_DIR</span></span> <span class="hljs-variable"><span class="hljs-variable">$COMPRESS</span></span> -t <span class="hljs-variable"><span class="hljs-variable">$TABLE</span></span> db_<span class="hljs-variable"><span class="hljs-variable">$DWH_DP_MODE</span></span> &amp;&gt; /tmp/gp_dump_<span class="hljs-variable"><span class="hljs-variable">$NOW</span></span></code> </pre> <br><br><h2>  Implementation of the transport component </h2><br>  The main task of the transport component is to quickly transfer dump files from the Greenplum segment of the main site to the corresponding Greenplum segment of the backup site.  Here we are faced with a network constraint, namely: the segments of the main circuit do not see the segments of the backup circuit on the network.  Thanks to the knowledge of our administrators, DWH has thought of a way to get around this using SSH tunnels.  SSH tunnels were raised on the secondary Greenplum master servers of each of the circuits.  Thus, each slice of the table’s dump was transferred from the server segment of the primary site to the server segment of the backup site. <br><br><h2>  Implements Restore Components </h2><br>  After the completion of the transport component, we get a dump of the table spread over the Greenplum segment servers of the backup site.  For this table, the Restore component runs the gp_restore utility.  As a result, we get an updated table on the reserve site.  The following is an example of calling the gp_restore utility: <br><br><pre> <code class="bash hljs">gp_restore <span class="hljs-variable"><span class="hljs-variable">$COMPRESS</span></span> --gp<span class="hljs-_"><span class="hljs-_">-d</span></span>=<span class="hljs-variable"><span class="hljs-variable">$SOURCE</span></span> --gp-r=<span class="hljs-variable"><span class="hljs-variable">$REPORT_DIR</span></span> --gp-k=<span class="hljs-variable"><span class="hljs-variable">$KEY</span></span> -s --status=<span class="hljs-variable"><span class="hljs-variable">$SOURCE</span></span> -d db_<span class="hljs-variable"><span class="hljs-variable">$DWH_DP_MODE</span></span> &gt; /tmp/gp_restore_$(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-variable"><span class="hljs-variable">$KEY</span></span>)_<span class="hljs-variable"><span class="hljs-variable">$RAND</span></span> 2&gt;&gt;/tmp/gp_restore_$(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-variable"><span class="hljs-variable">$KEY</span></span>)_<span class="hljs-variable"><span class="hljs-variable">$RAND</span></span></code> </pre><br><br><h2>  Monitoring implementation </h2><br>  After completion of the development of the main components and the first launches, we received a generally working system.  The tables were rebuilt at the backup site, logging worked, letters came in the mail and it seemed like the system worked, but we didn’t have a clear understanding of what was going on at a specific point in time.  We attended to the issue of monitoring, which was divided into two steps: the allocation of metrics for monitoring the system and the technological component of monitoring implementation. <br><br>  The metrics were allocated rather quickly, which, in our opinion, should as a whole unambiguously make it clear at a specific point in time what is happening in the system: <br><ul><li>  The number of objects in the status; <br></li><li>  The number of errors in the status; <br></li><li>  The backlog from the moment of entering the queue; <br></li><li>  Delay at the start of the stage; <br></li><li>  The average duration of the stage (for the last 10 objects); <br></li><li>  As well as monitoring the number of working threads at each stage. <br></li></ul><br><br>  The technical implementation was also determined quite quickly - Graphite + Graphana.  Deploying Graphite on a separate virtual machine and programming invented metrics was not difficult.  And with Graphana on a working Graphite, a beautiful dashboard was developed. <br><br>  All of the above metrics found visualization and, not least, online: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/be4/191/914/be4191914b694e5c801aeaa2fec6f9f4.jpg"></div><br>  <i>Fig.2 Number of objects in statuses</i> <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/bea/c5f/5b0/beac5f5b0ebd4c1a86b4c17b35590574.jpg"></div><br>  <i>Fig.3 Number of errors in statuses</i> <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/6eb/84b/343/6eb84b34398e402386344d32bca40535.jpg"></div><br>  <i>Fig.4 Backlog from the moment of entering the queue</i> <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/49a/ee3/30b/49aee330beee498cae2819721820a119.jpg"></div><br>  <i>Fig.5. Delay at the start of the stage</i> <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/461/7fc/bc8/4617fcbc827a4601add063bf0753cbb3.jpg"></div><br>  <i>Fig.6 Average duration of the stage (for the last 10 objects)</i> <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/c75/6be/58c/c756be58ccb743139ea2b5fb33cde35c.jpg"></div><br>  <i>Fig.7. Number of working threads at each stage</i> <br><br><h2>  Post processing </h2><br>  After the restore process is complete, the dump files are transferred to the storage system, on the backup site.  Replication is configured between storage at the backup site and storage at the main site, this replication is implemented based on the NetApp SnapMirror technology.  Thus, if a failure occurs at the main site that requires data recovery, we already have a prepared backup on the data storage system for these operations. <br><br><h1>  Results </h1><br><h2>  What we got </h2><br>  The system was developed and everything turned out not even very bad.  The tasks that the system was intended to accomplish are closed to it completely.  After the development was completed, a number of regulations were developed that allowed the transition to a backup site as part of the DWH support process. <br>  The main thing that we got is, of course, the opportunity to move to a backup site in the event of a failure on the main one within <b>30 minutes</b> , which significantly minimizes a simple DWH as an information system and, as a result, enables business to work continuously with reports provided for analysis, performing ad- hoc and do not stop a number of online processes.  The system also allowed us to abandon the procedure of daily routine backup, in favor of the backup received by the Dual ETL system. <br><br><h2>  Job statistics </h2><br>  About <b>6500 objects (tables)</b> with a total volume of about <b>20TB</b> pass through the system per day. <br>  On the example of the “Lagging from the moment of entering the queue” metric (see fig. 8) <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/024/707/a52/024707a52e4549ad94b6187531ab1fb4.jpg"></div><br>  <i>Fig.8 Backlog from the moment of entering the queue</i> <br><br>  You can observe the lag of the reserve site from the main one.  During the work of the night planner, when ETL is actively building a repository, the lag at the peak reaches 2-3 hours.  By the time the storage is completed, 10 am, the backlog is reduced and remains at the level of 5-10 minutes.  During the day, there may be lags of lag during the work of the online scheduler, within 30 minutes. <br><br>  And also relatively recently, our system had a small anniversary, with <b>1,000,000 (millionth)</b> object flying through it! <br><br><h1>  Epilogue </h1><br>  The DWH team at Tinkoff Bank takes a strategic course towards Hadoop.  In the following articles we plan to highlight the topics "ETL / ELT on Hadoop" and "Ad-hoc reporting on Hadoop". </div><p>Source: <a href="https://habr.com/ru/post/248853/">https://habr.com/ru/post/248853/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../248841/index.html">What I wanted to know at the beginning of my development career. Part 1</a></li>
+<li><a href="../248843/index.html">How to encrypt and hide a hard disk partition using CyberSafe</a></li>
+<li><a href="../248845/index.html">PostgreSQL vs MySQL</a></li>
+<li><a href="../248847/index.html">Unification and search with return on C #</a></li>
+<li><a href="../248851/index.html">Bitcoin and previously created anonymous electronic money systems</a></li>
+<li><a href="../248855/index.html">Overview of updates to the Microsoft Azure platform in January</a></li>
+<li><a href="../248857/index.html">Go main advantage</a></li>
+<li><a href="../248863/index.html">Clustering: tell me what you buy and I will tell you who you are</a></li>
+<li><a href="../248867/index.html">Interview: CISSP, CISA, SecurityPlus and other words that only IT security experts can understand</a></li>
+<li><a href="../248869/index.html">The digest of interesting materials from the world of web development and IT for the last week №144 (January 19 - 25, 2015)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

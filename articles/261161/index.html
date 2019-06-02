@@ -1,0 +1,253 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Capture packages in Linux at speeds of tens of millions of packages per second without using third-party libraries</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="My article will tell you how to take 10 million packets per second without using such libraries as Netmap, PF_RING, DPDK and others. We will do this b...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Capture packages in Linux at speeds of tens of millions of packages per second without using third-party libraries</h1><div class="post__text post__text-html js-mediator-article">  My article will tell you how to take 10 million packets per second without using such libraries as Netmap, PF_RING, DPDK and others.  We will do this by the usual Linux kernel version 3.16 and a certain amount of code in C and C ++. <br><br><img src="https://habrastorage.org/files/0a7/541/d6f/0a7541d6ffe84bcbb881752bd97b6d27.JPG"><br><br>  First, I would like to share a word about how pcap works — a well-known way to capture packets.  It is used in such popular utilities as iftop, tcpdump, arpwatch.  In addition, it has a very high load on the processor. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      So, you opened the interface for them and wait for packages from it using the usual approach - bind / recv.  The kernel, in turn, receives data from the network card and saves it in the kernel space, then it detects that the user wants to receive it in the user space and passes through the argument of the recv command the address of the buffer where to put this data.  The kernel meekly copies the data (for the second time!).  It’s pretty hard, but not all pcap problems. <br><br>  In addition, recall that recv is a system call and we call it on every packet coming to the interface, system calls are usually very fast, but the speeds of modern 10GE interfaces (up to 14.6 million calls per second) mean that even a light call becomes very costly for the system solely because of the frequency of calls. <br><br>  It is also worth noting that we usually have more than 2 logical cores on our server.  And the data can fly to any of them!  And an application that accepts data by pcap uses a single core.  Here we have locks on the kernel side and dramatically slow down the capture process - now we are not only copying memory / processing packets, but are waiting for the release of locks occupied by other cores.  Believe me, blocking can often take up to 90% of the processor resources of the entire server. <br><br>  Good list of problems?  So, we heroically try to solve them all! <br><a name="habracut"></a><br>  So, for definiteness, let's note that we are working on mirrored ports (which means that from somewhere outside the network we receive a copy of all the traffic of a specific server).  On them, in turn, is traffic - SYN flood packets of the minimum size at a speed of 14.6 mpps / 7.6GE. <br><br>  Network ixgbe, drivers with SourceForge 4.1.1, Debian 8 Jessie.  Module configuration: modprobe ixgbe RSS = 8.8 (this is important!).  I have a processor i7 3820, with 8 logical cores.  Therefore, wherever I use 8 (including in the code), you must use the number of cores that you have. <br><br><h2>  Distribute interrupts on existing cores </h2><br>  I draw attention to the fact that packets arrive to the port, the target MAC addresses of which do not coincide with the MAC address of our network card.  Otherwise, the Linux stack of TCP / IP will turn on and the machine will be choked with traffic.  This moment is very important, we are now discussing only the capture of someone else's traffic, and not the processing of the traffic that is intended for this machine (although for this my method works with ease). <br><br>  Now let's check how much traffic we can accept if we start listening to all the traffic. <br><br>  Enable promisc mode on the network card: <br><pre><code class="bash hljs">ifconfig eth6 promisc</code> </pre> <br><br>  After this, in the htop we will see a very unpleasant picture - the complete overload of one of the cores: <br><br><pre> 1 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||||| 100.0%]     
+ 2 [0.0%]     
+ 3 [0.0%]     
+ 4 [0.0%]     
+ 5 [0.0%]
+ 6 [0.0%]
+ 7 [0.0%]
+ 8 [0.0%]
+</pre><br><br>  To determine the speed on the interface, use the pps.sh special script: <a href="https://gist.github.com/pavel-odintsov/bc287860335e872db9a5">gist.github.com/pavel-odintsov/bc287860335e872db9a5</a> <br><br>  The speed on the interface is rather small - 4 million packets per second: <br>  bash /root/pps.sh eth6 <br><pre> TX eth6: 0 pkts / s RX eth6: 3882721 pkts / s
+ TX eth6: 0 pkts / s RX eth6: 3745027 pkts / s
+</pre><br><br>  To solve this problem and distribute the load across all logical cores (I have 8), run the following script: <a href="https://gist.github.com/pavel-odintsov/9b065f96900da40c5301">gist.github.com/pavel-odintsov/9b065f96900da40c5301</a> which will distribute interrupts from all 8 queues of the network card to all existing logical cores. <br><br>  Fine, the speed immediately flew up to 12mpps (but this is not a capture, this is just an indication that we can read traffic at that speed from the network): <br><pre>  bash /root/pps.sh eth6
+ TX eth6: 0 pkts / s RX eth6: 12528942 pkts / s
+ TX eth6: 0 pkts / s RX eth6: 12491898 pkts / s
+ TX eth6: 0 pkts / s RX eth6: 12554312 pkts / s
+</pre><br><br>  And the load on the core stabilized: <br><pre> 1 [|||||  7.4%]     
+ 2 [|||||||  9.7%]     
+ 3 [||||||  8.9%]    
+ 4 [||  2.8%]     
+ 5 [|||  4.1%]
+ 6 [|||  3.9%]
+ 7 [|||  4.1%]
+ 8 [|||||  7.8%]
+</pre><br><br>  Immediately I’ll draw your attention to the fact that two code examples will be used in the text, here they are: <br>  AF_PACKET, AF_PACKET + FANOUT: <a href="https://gist.github.com/pavel-odintsov/c2154f7799325aed46ae">gist.github.com/pavel-odintsov/c2154f7799325aed46ae</a> <br>  AF_PACKET RX_RING, AF_PACKET + RX_RING + FANOUT: <a href="https://gist.github.com/pavel-odintsov/15b7435e484134650f20">gist.github.com/pavel-odintsov/15b7435e484134650f20</a> <br><br>  These are complete applications with the highest level of optimizations.  I don’t provide intermediate (obviously slower versions of the code) - but all the checkboxes for managing all the optimizations are highlighted and declared in the code as bool - you can easily repeat my way around. <br><br><h2>  First attempt to launch AF_PACKET capture without optimizations </h2><br>  So, we start the application for capturing traffic with AF_PACKET: <br><pre> We process: 222048 pps
+ We process: 186315 pps
+</pre><br><br>  And the load on the ceiling: <br><pre> 1 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||||  86.1%]     
+ 2 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||  84.1%]     
+ 3 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||  79.8%]     
+ 4 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||  88.3%]     
+ 5 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||  83.7%]
+ 6 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||  86.7%]
+ 7 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||||||  89.8%]
+ 8 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||| 90.9%]
+</pre><br><br>  The reason is that the kernel has sunk into locks for which it spends all the CPU time: <br><pre> Samples: 303K of event 'cpu-clock', Event count (approx.): 53015222600
+   59.57% [kernel] [k] _raw_spin_lock
+    9.13% [kernel] [k] packet_rcv
+    7.23% [ixgbe] [k] ixgbe_clean_rx_irq
+    3.35% [kernel] [k] pvclock_clocksource_read
+    2.76% [kernel] [k] __netif_receive_skb_core
+    2.00% [kernel] [k] dev_gro_receive
+    1.98% [kernel] [k] consume_skb
+    1.94% [kernel] [k] build_skb
+    1.42% [kernel] [k] kmem_cache_alloc
+    1.39% [kernel] [k] kmem_cache_free
+    0.93% [kernel] [k] inet_gro_receive
+    0.89% [kernel] [k] __netdev_alloc_frag
+    0.79% [kernel] [k] tcp_gro_receive
+</pre><br><br><h2>  Optimize AF_PACKET capture with FANOUT </h2><br>  So what to do?  Just think a little :) Locks occur when several processors try to use one resource.  In our case, this is due to the fact that we have one socket and one application serves it, which forces the remaining 8 logical processors to stand in constant waiting. <br><br>  Here we will come to the aid of a great function - FANOUT, and if in Russian - branching.  For AF_PACKET, we can run several (of course, the most optimal in our case will be the number of processes equal to the number of logical cores).  In addition, we can specify an algorithm by which data will be distributed over these sockets.  I chose the PACKET_FANOUT_CPU mode, since in my case the data is very evenly distributed across the queues of the network card and this, in my opinion, is the least resource-intensive version of balancing (although I can’t vouch here - I recommend looking in the kernel code). <br><br>  Adjust the bool use_multiple_fanout_processes = true; <br><br>  And run the application again. <br><br>  Oh miracle!  10 times acceleration: <br><pre> We process: 2250709 pps
+ We process: 2234301 pps
+ We process: 2266138 pps
+</pre><br>  Processors, of course, are still fully loaded: <br><pre> 1 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||| 92.6%]     
+ 2 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||||||| 93.1%]     
+ 3 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||| 93.2%]     
+ 4 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||||||| 93.3%]     
+ 5 [|||||||||||||||||||||||||||||||||||||||||||||||| ||||||||||| 93.1%]
+ 6 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||| 93.7%]
+ 7 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||| 93.7%]
+ 8 [|||||||||||||||||||||||||||||||||||||||||||||||| |||||||||| 93.2%]
+</pre><br><br>  But the perf top map looks completely different - there are no more locks: <br><pre> Samples: 1M of event 'cpu-clock', Event count (approx.): 110166379815
+   17.22% [ixgbe] [k] ixgbe_clean_rx_irq      
+    7.07% [kernel] [k] pvclock_clocksource_read          
+    6.04% [kernel] [k] __netif_receive_skb_core    
+    4.88% [kernel] [k] build_skb     
+    4.76% [kernel] [k] dev_gro_receive    
+    4.28% [kernel] [k] kmem_cache_free 
+    3.95% [kernel] [k] kmem_cache_alloc 
+    3.04% [kernel] [k] packet_rcv 
+    2.47% [kernel] [k] __netdev_alloc_frag 
+    2.39% [kernel] [k] inet_gro_receive
+    2.29% [kernel] [k] copy_user_generic_string
+    2.11% [kernel] [k] tcp_gro_receive
+    2.03% [kernel] [k] _raw_spin_unlock_irqrestore
+</pre><br><br>  In addition, the sockets (although I'm not sure about AF_PACKET) have the opportunity to set the receive buffer, SO_RCVBUF, but on my test bench it did not give any results. <br><br><h2>  Optimization of AF_PACKET capture using RX_RING - ring buffer </h2><br>  What to do and why still slow?  The answer here is in the build_skb function, it means that there are still two copies of memory inside the kernel! <br><br>  Now let's try to figure out how to allocate memory by using RX_RING. <br><br>  And hooray 4 MPPS top is taken !!! <br><pre> We process: 3582498 pps
+ We process: 3757254 pps
+ We process: 3669876 pps
+ We process: 3757254 pps
+ We process: 3815506 pps
+ We process: 3873758 pps
+</pre><br><br>  This speed increase was ensured by the fact that the memory is copied from the network card buffer now only once.  And when transferring from the kernel space to the user space, repeated copying is not performed.  This is provided by the common buffer allocated in the kernel and skipped in the user space. <br><br>  The approach to work is also changing - we can no longer hang and listen when the packet arrives (remember, this is an overhead projector!), Now with the help of the poll call we can wait for a signal when the whole block is filled!  And then begin processing it. <br><br><h2>  Optimize AF_PACKET capture with RX_RING using FANOUT </h2><br>  But still we have problems with locks!  How to beat them?  The old method is to turn on FANOUT and allocate a block of memory for each handler thread! <br><pre> Samples: 778K of event 'cpu-clock', Event count (approx.): 87039903833
+   74.26% [kernel] [k] _raw_spin_lock
+    4.55% [ixgbe] [k] ixgbe_clean_rx_irq
+    3.18% [kernel] [k] tpacket_rcv
+    2.50% [kernel] [k] pvclock_clocksource_read
+    1.78% [kernel] [k] __netif_receive_skb_core
+    1.55% [kernel] [k] sock_def_readable
+    1.20% [kernel] [k] build_skb
+    1.19% [kernel] [k] dev_gro_receive
+    0.95% [kernel] [k] kmem_cache_free
+    0.93% [kernel] [k] kmem_cache_alloc
+    0.60% [kernel] [k] inet_gro_receive
+    0.57% [kernel] [k] kfree_skb
+    0.52% [kernel] [k] tcp_gro_receive
+    0.52% [kernel] [k] __netdev_alloc_frag
+</pre><br><br>  So, connect the FANOUT mode for the RX_RING version! <br><br>  HOORAY!  RECORD!!!  9 MPPS !!! <br><pre> We process: 9611580 pps
+ We process: 8912556 pps
+ We process: 8941682 pps
+ We process: 8854304 pps
+ We process: 8912556 pps
+ We process: 8941682 pps
+ We process: 8883430 pps
+ We process: 8825178 pps
+</pre><br><br>  perf top: <br><pre> Samples: 224K of event 'cpu-clock', Event count (approx.): 42501395417
+   21.79% [ixgbe] [k] ixgbe_clean_rx_irq
+    9.96% [kernel] [k] tpacket_rcv
+    6.58% [kernel] [k] pvclock_clocksource_read
+    5.88% [kernel] [k] __netif_receive_skb_core
+    4.99% [kernel] [k] memcpy
+    4.91% [kernel] [k] dev_gro_receive
+    4.55% [kernel] [k] build_skb
+    3.10% [kernel] [k] kmem_cache_alloc
+    3.09% [kernel] [k] kmem_cache_free
+    2.63% [kernel] [k] prb_fill_curr_block.isra.57
+</pre><br><br>  By the way, for the sake of justice, the update to the kernel 4.0.0 of the branch did not give any special acceleration.  The speed was kept in the same range.  But the load on the core dropped significantly! <br><pre> 1 [|||||||||||||||||||||||||||||||||||||  55.1%]     
+ 2 [||||||||||||||||||||||||||||||||||||  52.5%]     
+ 3 [|||||||||||||||||||||||||||||||||||||||||||  62.5%]     
+ 4 [|||||||||||||||||||||||||||||||||||||||||||  62.5%]     
+ 5 [|||||||||||||||||||||||||||||||||||||||  57.7%]
+ 6 [|||||||||||||||||||||||||||||||||  47.7%]
+ 7 [|||||||||||||||||||||||||||||||||||||||  55.9%]
+ 8 [|||||||||||||||||||||||||||||||||||||||||  61.4%]
+</pre><br><br>  In conclusion, I would like to add that Linux is simply a terrific platform for analyzing traffic, even in an environment where no specialized kernel module can be built.  It is very, very happy.  It is hoped that in the nearest kernel versions it will be possible to process 10GE on a full wire-speed of 14.6 million / second packets using an 1800 megahertz processor :) <br><br>  Recommended reading materials: <br>  <a href="https://www.kernel.org/doc/Documentation/networking/packet_mmap.txt">www.kernel.org/doc/Documentation/networking/packet_mmap.txt</a> <br>  <a href="http://man7.org/linux/man-pages/man7/packet.7.html">man7.org/linux/man-pages/man7/packet.7.html</a> </div><p>Source: <a href="https://habr.com/ru/post/261161/">https://habr.com/ru/post/261161/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../261149/index.html">Intel RealSense SDK Architecture</a></li>
+<li><a href="../261151/index.html">A simple alarm clock with a web interface on Asterisk</a></li>
+<li><a href="../261155/index.html">ICANN suspended Freenom accreditation</a></li>
+<li><a href="../261157/index.html">Gateway through the Chinese firewall</a></li>
+<li><a href="../261159/index.html">5 ways to calculate Fibonacci numbers: implementation and comparison</a></li>
+<li><a href="../261163/index.html">The easiest and most complex Java builder</a></li>
+<li><a href="../261171/index.html">Simple words about the Twelve-Factor App</a></li>
+<li><a href="../261173/index.html">ReactOS - No.2 in the plans of the Russian government for import substitution software</a></li>
+<li><a href="../261175/index.html">The implementation of the idea of ​​a subscription is not per person, as in Twitter / instagram, but in place</a></li>
+<li><a href="../261177/index.html">Open law enforcement data - statistics and data for each crime</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

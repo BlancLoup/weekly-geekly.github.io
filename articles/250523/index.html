@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Lock-free data structures. Concurrent maps: rehash, no rebuild</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Let's follow in the footsteps of C ++ 2015 Russia further. 
+ In the previous article, we reviewed the algorithm for the lock-free ordered list and, ba...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Lock-free data structures. Concurrent maps: rehash, no rebuild</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/4e3/317/fa0/4e3317fa037748138cb0ed6e90a788a6.png" align="right"><br>  Let's follow in the footsteps of <a href="http://meetingcpp.ru/">C ++ 2015 Russia</a> further. <br>  In the <a href="http://habrahabr.ru/post/250383/">previous</a> article, we reviewed the algorithm for the lock-free ordered list and, based on it, made the simplest lock-free hash map.  This hash map has a flaw: the size of the hash table is constant and cannot be changed as the number of elements in the container grows.  This is not a problem if we roughly represent the required container volume in advance.  And if not? <br><a name="habracut"></a><br>  The procedure for increasing, as well as reducing, the size of the hash table (rehashing) is quite heavy <br><img src="https://habrastorage.org/files/600/095/c59/600095c5933d4fca8b6a95d12738e34c.png"><br>  As can be seen even from this simple picture, when rehasing, the keys are redistributed to other slots of the new hash table, there is a <i>complete restructuring of the</i> hash map.  It is quite difficult to implement atomic or at least without locks. <br>  Many times I mentioned Nir Shavit together with Ori Shalev looked at the problem from the other side: well, we can not atomically redistribute the keys to new slots (buckets), but maybe we can just insert a new bucket into an existing one, thus breaking (splitting) it into two parts?  This idea formed the basis of the <a href="http://www.cs.ucf.edu/~dcm/Teaching/COT4810-Spring2011/Literature/SplitOrderedLists.pdf">split-ordered list</a> algorithm developed by them in 2003. <br><br><h2>  Split-ordered list </h2><br><br>  <a href="https://www.google.com/search%3Fq%3D%25D0%25BD%25D0%25B5%25D0%25BB%25D1%258C%25D0%25B7%25D1%258F%2B%25D0%25BF%25D1%2580%25D0%25BE%25D1%2581%25D1%2582%25D0%25BE%2B%25D1%2582%25D0%25B0%25D0%25BA%2B%25D0%25B2%25D0%25B7%25D1%258F%25D1%2582%25D1%258C%26sa%3DX%26biw%3D1168%26bih%3D677%26tbm%3Disch%26tbo%3Du%26source%3Duniv">You cannot just take</a> and insert a new bucket, - see the picture above: the keys are re-distributed between the buckets when rehashing, and we need their positions not to change.  We want something <s>strange</s> like this: <br><img src="https://habrastorage.org/files/968/330/491/96833049100d4067a91ddafaa8c7bd4d.png"><br>  It is based on the lock-free ordered list already reviewed by us.  Two types of nodes appeared in it: regular nodes (oval) and auxiliary (sentinel) nodes (square).  Auxiliary nodes play the role of starting marks for buckets and are never deleted;  The hash table contains pointers to these auxiliary nodes. <br>  Looking at this picture, you can ask: the list is ordered, but this is not visible - the keys are arranged chaotically, what's the matter?  Answer: the list is <i>ordered</i> , but we will invent the order criterion a little later. <br>  So, we have a hash table with two slots pointing to the auxiliary nodes.  The size of the list is 4 (auxiliary nodes are not taken into account when counting the number of elements), load factor is 2 (this is my voluntarist solution).  We want to insert a new item with key 10: <br><img src="https://habrastorage.org/files/915/a94/8b8/915a948b8b7b4e2ebb6f2e730ca9e506.png"><br>  When we try to insert new elements, we find out that our list is full - the number of elements becomes 5, the number of buckets is 2, <code>5/2 &gt; load factor</code> , - we need to extend the table <code>T[]</code> .  Suppose we have somehow expanded it - it has 4 buckets, the first two are initialized, the last two are not.  The new element 10 should get into the bucket 2 ( <code>10 mod 4 = 2</code> , hereinafter I consider for clarity that <code>hash(key) == key</code> ), which is not yet initialized.  So, you first need to insert auxiliary element 2, that is, to make the <i>splitting of</i> some existing bucket.  First you need to find this existing bucket, called the <i>parent</i> : <br><img src="https://habrastorage.org/files/2ed/729/421/2ed7294211ea4df7874d39c3b037af02.png"><br>  The splitting bucket is perhaps the most subtle point in the algorithm.  The parent bucket, which is not yet known to us, must be in the first half of the hash table, that is, in our case, this is bucket 0 or 1. <br>  Bucket is <code>hash(key) mod 2**(m+1)</code> , where <code>2**(m+1)</code> is the size of the hash table.  The new bucket splits the parent, that is, it divides the elements of the parent bucket into two camps: some are in the parent bucket, and the second are in the <code>parent_bucket + 2**m</code> .  It follows that for the new bucket 2 the parent is bucket 0. <br>  In C ++, the procedure for calculating the parent bucket looks very simple: <br><pre> <code class="hljs java"> <span class="hljs-function"><span class="hljs-function">size_t </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">parent_bucket</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">( size_t nBucket )</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">assert</span></span>( nBucket &gt; <span class="hljs-number"><span class="hljs-number">0</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> nBucket &amp; ~( <span class="hljs-number"><span class="hljs-number">1</span></span> &lt;&lt; MSB( nBucket ) ); }</code> </pre><br>  where <code>MSB</code> is the most significant bit - the number of the most significant single bit. <br><div class="spoiler">  <b class="spoiler_title">Recursive split-ordering</b> <div class="spoiler_text">  The attentive reader will notice that there may be a situation when the parent bucket is missing - the corresponding slot in the hash table is empty.  In this case, recursion comes to the rescue: we similarly calculate the parent bucket for the parent bucket, etc.  For recursion to be possible, bucket 0 must always be present in the split-ordered list, that is, bucket 0 is created at the time of initialization of the list. <br></div></div><br>  So, to insert element 10, first of all you should create a new bucket 2 and insert it into bucket 0. We have a ready- <i>ordered</i> list algorithm, so it's time to decide how our split-ordered list should be ordered. <br>  Note that all the operations that we have done so far have been based on arithmetic modulo two.  Let's look at the binary representation of the keys: <br><img src="//habrastorage.org/files/f6a/779/962/f6a779962e724b6693b318a9ac7d6cfc.png"><br>  And now - attention: if you read the binary key values <i>from right to left</i> , we get a sorted list: <br><img src="//habrastorage.org/files/954/4b0/03f/9544b003f8b644be9cbc997cbeb35435.png"><br>  I call such reversed hash values ​​shah. <br>  So, the list sorting criterion is based on reversed (read from right to left) key hash values. <br><div class="spoiler">  <b class="spoiler_title">Reversing the order of bits</b> <div class="spoiler_text">  Interestingly, none of the processor architectures I know supports the operation of reversing the order of bits in a word, although it would seem that such an operation can naturally and without special problems be implemented in hardware.  Therefore it is necessary to reverse the order of bits programmatically, in several stages, for example, like this: <br><pre> <code class="hljs django"><span class="xml"><span class="xml"> uint32_t reverse_bit_order( uint32_t x ) { // swap odd and even bits x = ((x &gt;&gt; 1) &amp; 0x55555555) | ((x &amp; 0x55555555) </span><span class="hljs-tag"><span class="xml"><span class="hljs-tag">&lt;&lt; </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">1</span></span></span></span><span class="xml"><span class="hljs-tag">); // </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">swap</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">consecutive</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">pairs</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">x</span></span></span></span><span class="xml"><span class="hljs-tag"> = </span></span><span class="hljs-string"><span class="xml"><span class="hljs-tag"><span class="hljs-string">((x</span></span></span></span><span class="xml"><span class="hljs-tag"> &gt;</span></span></span><span class="xml">&gt; 2) &amp; 0x33333333) | ((x &amp; 0x33333333) </span><span class="hljs-tag"><span class="xml"><span class="hljs-tag">&lt;&lt; </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">2</span></span></span></span><span class="xml"><span class="hljs-tag">); // </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">swap</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">nibbles</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">...</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">x</span></span></span></span><span class="xml"><span class="hljs-tag"> = </span></span><span class="hljs-string"><span class="xml"><span class="hljs-tag"><span class="hljs-string">((x</span></span></span></span><span class="xml"><span class="hljs-tag"> &gt;</span></span></span><span class="xml">&gt; 4) &amp; 0x0F0F0F0F) | ((x &amp; 0x0F0F0F0F) </span><span class="hljs-tag"><span class="xml"><span class="hljs-tag">&lt;&lt; </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">4</span></span></span></span><span class="xml"><span class="hljs-tag">); // </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">swap</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">bytes</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">x</span></span></span></span><span class="xml"><span class="hljs-tag"> = </span></span><span class="hljs-string"><span class="xml"><span class="hljs-tag"><span class="hljs-string">((x</span></span></span></span><span class="xml"><span class="hljs-tag"> &gt;</span></span></span><span class="xml">&gt; 8) &amp; 0x00FF00FF) | ((x &amp; 0x00FF00FF) </span><span class="hljs-tag"><span class="xml"><span class="hljs-tag">&lt;&lt; </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">8</span></span></span></span><span class="xml"><span class="hljs-tag">); // </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">swap</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">2-byte</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">long</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">pairs</span></span></span></span><span class="xml"><span class="hljs-tag"> </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">return</span></span></span></span><span class="xml"><span class="hljs-tag"> ( </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">x</span></span></span></span><span class="xml"><span class="hljs-tag"> &gt;</span></span></span><span class="xml">&gt; 16 ) | ( x </span><span class="hljs-tag"><span class="xml"><span class="hljs-tag">&lt;&lt; </span></span><span class="hljs-attr"><span class="xml"><span class="hljs-tag"><span class="hljs-attr">16</span></span></span></span><span class="xml"><span class="hljs-tag"> ); }</span></span></span></span></code> </pre><br>  The last two actions reversing the byte order are sometimes implemented in hardware. <br></div></div><br>  It turns out interesting: bucket'y calculated by the hash values ​​of the keys, and sorting by reversed hash values.  The main thing - do not get confused. <br>  But that's not all.  Looking at the picture again, we will see that the node with key 2 is already in the list — this is a regular node, and we need to insert an auxiliary with the same key.  Auxiliary and regular nodes are completely different objects, even in their internal structure: regular nodes contain a key and a value (value), and auxiliary ones that serve as marks of the beginning of buckets, only hash values.  A regular node can be removed from the list, but never a secondary node.  Therefore, we need to somehow distinguish these two types of nodes.  The authors propose to use for this the most significant bit of the hash value (in the converted hash value it will be the least significant bit): in the hash values ​​of the regular nodes, the most significant bit is set to 1, and in the auxiliary bits it is set to 0: <br><img src="//habrastorage.org/files/b4e/206/f2b/b4e206f2b2fd4461b0c21be75a97b191.png"><br>  This bit also plays the role of a limiter when searching for a key in a bucket, - we never get out of the bucket’s boundaries. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      To summarize all of the above.  Key 10 is inserted in two stages: first, a new auxiliary node 2 is added to the parent bucket 0: <br><img src="//habrastorage.org/files/d5f/5b7/101/d5f5b7101e4345b6a73ddbe8ae69f695.png"><br>  Then an element with the key 10 is inserted into the bucket 2: <br><img src="//habrastorage.org/files/eb4/91b/57e/eb491b57e1b34cb49f44e72a93654275.png"><br>  The split-ordered list is based on the lock-free ordered list, which we discussed in the <a href="http://habrahabr.ru/post/250383/">previous article</a> , so there should be no difficulty inserting / deleting.  By the way, about deleting, - the algorithm does not have any special features for deleting from the split-ordered list, we simply calculate the bucket using the key and call the delete function from the lock-free list with the start in the auxiliary node of this bucket.  Auxiliary nodes are never deleted, that is, a hash table in a split-ordered list can only grow dynamically, but not shrink. <br><br>  The split-ordered list algorithm is interesting in that it contradicts all canonical ideas about hash tables.  Recall that Knut, in his monograph, proves that in order to build a good hash table, its size must be a prime number, therefore, all arithmetic must be modulo prime numbers.  For a split-ordered list, the opposite is true: this algorithm relies heavily on a binary representation of hash values, all arithmetic is modulo-two.  Such sharpening under <code>2**N</code> fits very well on modern processors, which, despite significant progress, are still blunt on integer division, but they really like the replacement of division by shifts. <br><br>  There remains one unexplained question - the dynamic extension of the hash table.  The authors propose a segment organization of the hash table: <br><img src="//habrastorage.org/files/1e8/f0b/9ba/1e8f0b9bac1541ca9cdbaf2c8063f8b3.png"><br>  Instead of a single <code>T[N]</code> array, the <code>Segment[M]</code> segment array is used, which is created when the split-ordered list object is initialized.  Here <code>M</code> is a power of two.  The segment number is the most significant bits of the hash value.  Each segment points to the <code>T[N]</code> table, these tables are created dynamically as needed, except for the <code>Segment[0]</code> table, which is initialized when the split-ordered list object is created (remember, I noted that bucket 0 should always be). <br>  With such an organization, at the time of creating the list object, you still need to know the expected number of elements in order to calculate the size of the table of segments <code>M</code> (there is no special algorithm for this calculation — I have selected some boundaries empirically so that both <code>Segment[]</code> and each <code>T[]</code> are comparable in size).  But still, the algorithm allows the <i>growth of the</i> hash table, albeit in such an unusual form. <br><br><h2>  Results </h2><br><img src="//habrastorage.org/files/7f5/9f6/d67/7f59f6d676904ab5818ceed4936ddf6a.png" align="right"><br>  This article describes a very original lock-free split-ordered list algorithm that allows you to do rehash without rebuild, that is, without rebuilding the hash table.  This algorithm is also interesting because it basically has a regular lock-free ordered list and can be used as a testing ground for debugging various implementations of ordered lists. <br>  The implementation of this algorithm in <a href="https://github.com/khizmax/libcds">libcds</a> shows very good results in tests, but it is still slightly worse than the simplest hash map described in the previous article.  There are two reasons for this: <br><ul><li>  This is a fee for dynamically generated buckets. </li><li>  reversing the order of the hash value bits is still quite a hard operation if it is implemented programmatically.  It would be interesting to have this operation in the gland </li></ul><br>  From an architectural point of view, it was very exciting to develop this algorithm in order to highlight the ordered list as a strategy for the split-ordered list. <br><br>  In the next article I will talk about another reincarnation of the lock-free ordered list.  This time we will not build a hash map, but an <i>ordered</i> map. <br><br><div class="spoiler">  <b class="spoiler_title">Lock-free data structures</b> <div class="spoiler_text">  <a href="http://habrahabr.ru/company/ifree/blog/195770/">Start</a> <br>  Basics: <br><ul><li>  <a href="http://habrahabr.ru/company/ifree/blog/195948/">Atomicity and atomic primitives</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/196548/">Where did the memory barriers go from</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/197520/">Memory model</a> </li></ul><br>  Inside: <br><ul><li>  <a href="http://habrahabr.ru/company/ifree/blog/202190/">Memory management circuits</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/206984/">RCU</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/216013/">Stack evolution</a> </li><li>  <a href="http://habrahabr.ru/company/ifree/blog/219201/">Another treatise</a> </li><li>  <a href="http://habrahabr.ru/post/230349/">Queue dissection</a> </li><li>  <a href="http://habrahabr.ru/post/250383/">Concurrent maps: warm up</a> </li><li>  <a href="http://habrahabr.ru/post/250523/">Concurrent maps: rehash, no rebuild</a> </li><li>  <a href="http://habrahabr.ru/post/250815/">Concurrent maps: skip list</a> </li><li>  <a href="https://habrahabr.ru/post/251267/">Concurent maps: trees</a> </li><li>  <a href="https://habrahabr.ru/post/314948/">Iterators: multi-level array</a> </li><li>  <a href="https://habrahabr.ru/post/317882/">Iterable list</a> </li></ul><br>  Outside: <br><ul><li>  <a href="http://habrahabr.ru/company/ifree/blog/196834/">Introduction to libcds</a> </li></ul><br></div></div></div><p>Source: <a href="https://habr.com/ru/post/250523/">https://habr.com/ru/post/250523/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../250507/index.html">Arduino Leonardo as a SegaMegaDrive Gamepad Adapter-> USB</a></li>
+<li><a href="../250511/index.html">How to start developing iron using FPGAs - step by step instructions</a></li>
+<li><a href="../250513/index.html">Node v0.12.0</a></li>
+<li><a href="../250517/index.html">We develop analytics system</a></li>
+<li><a href="../250519/index.html">Free training on Microsoft courses on Software Assurance vouchers at TC MUK (Kiev)</a></li>
+<li><a href="../250525/index.html">Another plugin manager for Vim</a></li>
+<li><a href="../250527/index.html">Basic statistics: just about complex formulas</a></li>
+<li><a href="../250529/index.html">Mobile App Distribution Services for iOS. Part 2: HockeyApp</a></li>
+<li><a href="../250531/index.html">Antivirus, Android and x86. Interaction features</a></li>
+<li><a href="../250535/index.html">Annual Review: What's new for eBay?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Ruby 2.2 incremental garbage collector</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article discusses the incremental garbage collector (incremental GC), which was introduced in Ruby 2.2. We call this algorithm RincGC. RincGC all...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Ruby 2.2 incremental garbage collector</h1><div class="post__text post__text-html js-mediator-article">  This article discusses the incremental garbage collector (incremental GC), which was introduced in Ruby 2.2.  We call this algorithm RincGC.  RincGC allows for a shorter pause (GC pause time) compared to Ruby 2.1. <br><br>  About the author: <a href="https://github.com/ko1">Koichi Sasada</a> (Koichi Sasada) works in Heroku along with Nobu and Matz on the ruby ​​core.  He wrote <a href="https://en.wikipedia.org/wiki/YARV">YARV</a> , Generation Garbage Collector (RgenGC) for Ruby 2.1, as well as incremental GC for ruby ​​2.2 and this article. <br><a name="habracut"></a><br><h4>  Premise </h4><br>  Ruby uses GC to automatically collect unused objects.  Thanks to the garbage collector, ruby ​​programmers do not have to delete objects manually and don’t have to worry about bugs during such a deletion. <br>  The first version of Ruby has already used the mark and sweep (M &amp; S) algorithm.  M &amp; S is one of the most simple GC algorithms, which consists of two stages: <br>  1. Mark: walk through all living objects and mark them as “living object” <br>  2. Sweep: dispose of all unlabeled objects as they are no longer used. <br><br>  M &amp; S is based on the knowledge that all objects found from among living objects are living objects.  The M &amp; S algorithm is very simple and because of this it works very well. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/files/747/f2d/af5/747f2daf53624016b8e3ebdd69b96a99.png" alt="image"><br>  <i>Mark &amp; ​​sweep GC algorithm</i> <br><br>  This simple and efficient algorithm (and the conservative garbage collection method) makes it easy to write extensions in C.  As a result, there are many useful extensions in Ruby.  However, because of this algorithm, it is difficult to apply moving GC algorithms such as compaction and copying. <br><br>  Now the writing of C-extensions is not so important, because we can use the FFI (foreign function interface).  But in the beginning, having a large number of extensions and providing many features via C-extensions was a big advantage, which made the Ruby interpreter more popular. <br><br>  Despite the fact that the M &amp; S algorithm is simple and works fine, there are several problems.  The most important potential problems are performance (throughput) and pause time (pause time).  GC slows down your Ruby program due to the overhead of garbage collection.  In other words, poor GC performance increases the total execution time of your application.  Each garbage collection suspends your application.  Long pauses affect web application UI / UX. <br><br>  To solve the performance problem, Ruby 2.1 has a generational GC.  Generational GC breaks the heap space into several parts for several generations (in Ruby, we divide the heap space into: young and old space).  The newly created objects are in the “young space” and are accordingly marked as “young objects”.  After the young objects survive several garbage collections (3 in Ruby 2.2), they go into the category of “old objects” and will be in the “old space”.  We know that in object-oriented programming, most objects die young.  Therefore, we need to start garbage collection only for the “young space”.  If there is not enough space in the young space to create objects, then the garbage collector for the “old space” is started.  We call “Minor GC” when the garbage collector works in a young space, and “Major GC” for everyone: for the young and for the old spaces.  We implemented the generational GC algorithm with some changes and called our algorithm and the implementation of garbage collection "RGenGC".  You can find out more details by looking at <a href="https://www.youtube.com/watch%3Fv%3D92zMKGt7Qlk">my presentation</a> and <a href="http://atdot.net/~ko1/activities/rubyconf2013-ko1_pub.pdf">slides</a> on EuRuKo. <br><br>  RGenGC significantly increases garbage collection performance due to the very fast Minor GC.  It is worth noting that Major GC suspends program execution for a long time and this time is equal to the length of the pause in Ruby 2.0 and earlier versions.  Most garbage collections are done by Minor GC. <br><br><img src="https://habrastorage.org/files/ae1/5b2/4f9/ae15b24f96d445e388de97aa06e3008f.png" alt="image"><br>  <i>Pause in Major GC and Minor GC</i> <br><br>  To solve a problem with a long pause, an incremental garbage collector is best. <br><br><h4>  Incremental garbage collection </h4><br>  The incremental garbage collection algorithm divides the build process itself into several small processes and alternates GC processes and Ruby processes.  Instead of a long pause, the incremental garbage collector produces many short pauses.  The total duration of the pauses will remain the same (or slightly more due to the overhead of using the incremental garbage collector), but each individual pause will be shorter.  This allows for more stable performance. <br><br>  In Ruby 1.9.3, a “lazy sweep” GC appeared, which reduces the duration of pauses in the sweep-phase.  The meaning of the laze sweep is to start the sweep phase not immediately, but step by step.  Lazy sweep reduces the duration of individual pauses and is half the incremental GC algorithm.  Now we need to make the Major GC stage of work incremental. <br><br>  Let's introduce three concepts to explain the process of incrementally marking objects: “white object” (white object) - unlabeled objects, “gray object” (gray object) - marked, but can refer to white objects, “black object” (black object) - marked, but do not indicate any white object. <br><br>  Using these three colors, we can explain the “mark and sweep” algorithm as follows: <br>  1. All existing objects are marked as white. <br>  2. Explicit living objects, such as objects on the stack, are marked gray. <br>  3. Select any gray object and mark the object to which it refers also gray.  Change the color of the original object to black.  Repeat until there are gray objects, and there will be only black and white. <br>  4. Collect white objects, since all living objects are painted black. <br><br>  To make the whole process incremental, it is necessary to make step (3) incremental.  The plan is this: select some gray objects and also mark the objects they refer to with gray, then we switch to Ruby code execution, then we return to the tagging process, etc. <br><br><img src="https://habrastorage.org/files/c9f/3bb/f5b/c9f3bbf5b83e4f2a8ff6381fae3cce4f.png" alt="image"><br>  <i>The usual tagging process (STW: stop the world) versus incremental</i> <br><br>  With the incremental marking process of objects, there is one problem.  Black objects may indicate white while Ruby code is being executed.  This is a problem, since a black object by definition cannot refer to white objects.  To prevent this occurrence, we use a write barrier (write-barrier) to detect the creation of such a black object reference to white. <br><br>  For example, the array object 'ary' is already marked black. <br><pre><code class="ruby hljs">ary = [] <span class="hljs-comment"><span class="hljs-comment"># GC    </span></span></code> </pre> <br>  The object 'obj = Object.new' will be white if we execute this code. <br><pre> <code class="ruby hljs">ary &lt;&lt; obj <span class="hljs-comment"><span class="hljs-comment">#   obj GC  </span></span></code> </pre><br>  Now the black object refers to the white object.  If there are no gray objects referring to 'obj', then 'obj' will be white at the end of the tagging of objects and, accordingly, disposed of by mistake.  Collecting all living objects is a blunder and should be avoided. <br><br>  The write barrier is called every time an object starts to reference a new object.  The entry barrier determines when the link from the black object to the white one was created.  When this happens, the black object changes its color to gray (or gray with a pointer to a white object).  Record barriers completely solve the problem of collecting all living objects. <br><br>  This is the basic meaning of the incremental algorithm.  As you can see, it is not so difficult.  Perhaps you have a question: “why is Ruby still not using this simple GC algorithm?” <br><br><h4>  Ruby 2.2 incremental garbage collector </h4><br>  When implementing the incremental tagging process in the Ruby (CRuby) interpreter, a serious problem arises - the lack of write barriers. <br><br>  Generational GC, which was implemented in Ruby 2.1, also needed write barriers.  To implement a generational GC, we invented a new method - “write barrier unprotected objects” (write barrier unprotected objects).  This means that we have divided all objects into protected and unprotected.  In this way, we can guarantee that all referenced protected objects are under control.  We cannot control links from unprotected objects.  With the introduction of the concept of an unprotected object, you can implement a generational GC in Ruby 2.1 <br><br>  We can also properly implement incremental GC using unprotected objects: <br>  1. Color all existing objects in white <br>  2. Paint all obviously living objects in gray, including objects on the stack. <br>  3. Take one gray object and paint in gray all the objects to which it refers.  Change its color to black.  Repeat until no gray objects remain.  Only black and white.  This phase is carried out in stages. <br>  4. Collect white objects, because  all living objects are black <br><br>  So we can guarantee that we do not have white living objects. <br><br><img src="http://habrastorage.org/files/fbe/3b7/780/fbe3b778050c4521968051fe064b979d.png" alt="image"><br>  <i>Rescan from the barrier to write unprotected objects (WB unp.) At the end of the tagging process</i> <br><br>  Unfortunately, the fourth stage can create a long pause, which we hope to avoid.  However, the total pause time is related to the number of barriers to recording of live unprotected objects.  Most objects in Ruby are String, Array, Hash, or simple (pure) objects created by the programmer.  They are protected objects.  In practice, the pause for the barrier to write unprotected objects does not create any problems in most cases. <br><br>  We have done an incremental tagging process only for major GC, since  Nobody complains about pauses in minor GC.  The maximum pause length in our incremental GC is less than in minor GC.  If you are satisfied with the pause time in minor GC, then you do not need to worry about the pause time in major GC. <br><br>  I also used a trick to implement incremental GC in Ruby.  We have a set of “black and unprotected” objects.  In order for the garbage collector to work quickly, we created an “unprotected” bitmap, which is an unprotected object, and a separate “tagged” bitmap that shows which objects were marked.  Using a logical work, we can find “black and unprotected” objects. <br><br><h4>  Estimation of the duration of pause incremental GC </h4><br>  In order to measure the duration of pauses in the process of garbage collection, we will use <a href="https://rubygems.org/gems/gc_tracer">gc_tracer</a> .  In gc_tracer, there is a GC: Tracer module, which allows you to track parameters related to the garbage collection process.  gc_tracer prints every such parameter to a file. <br><br>  Garbage collection includes the following events: <br>  start <br>  end_mark <br>  end_sweep <br>  newobj <br>  freeobj <br>  enter <br>  exit <br><br>  As I described above, GC in Ruby has two phases: “mark” and “sweep”.  The event “start” means the start of the mark-phase, and “end_mark” - its completion.  The end_mark event also marks the beginning of the sweep phase.  Obviously, “end_sweep” speaks of the end of the sweep phase and also means the completion of the garbage collection process. <br><br>  "Newobj" and "freeobj" are events when memory is allocated for an object and released. <br><br>  We use the "enter" and "exit" events to measure the duration of pauses.  Incremental GC (incremental marking and lazy sweeping) uses the mark-phase and sweep-phase suspension.  "Enter" means "entering GC related event".  Finally, “exit” means “exitting GC related event” <br><br>  The following figure shows the distribution of events over time in the current incremental GC: <br><br><img src="http://habrastorage.org/files/424/b77/4c0/424b774c010646c4abd548321adb2973.png" alt="image"><br><br>  We can measure the current time (in Linux, the current time is the result of calling gettimeofday ()) for each event.  Thus, we can measure the duration of pauses in the GC using the “enter” and “exit” events. <br><br>  I use the <a href="https://github.com/tenderlove/ko1-test-app">ko1-test-app</a> to compare performance.  ko1-test-app is a simple Rails application written for me by Aaron Patterson. <br><br>  To use the gc_tracer jam, I added the rake rule "test_gc_tracer": <br><br><pre> <code class="diff hljs">diff --git a/perf.rake b/perf.rake index f336e33..7f4f1bd 100644 --- a/perf.rake +++ b/perf.rake @@ -54,7 +54,7 @@ def do_test_task app body.close end -task :test do +def test_run app = Ko1TestApp::Application.instance app.app @@ -67,6 +67,22 @@ task :test do } end +task :test do + test_run +end + +task :test_gc_tracer do + require 'gc_tracer' + require 'pp' + pp GC.stat + file = "log.#{Process.pid}" + GC::Tracer.start_logging(file, events: %i(enter exit), gc_stat: false) do + test_run + end + pp GC.stat + puts "GC tracer log: #{file}" +end + task :once do app = Ko1TestApp::Application.instance app.app</code> </pre><br>  And I launched <i>bundle exec rake test_gc_tracer KO1TEST_CNT = 30000</i> .  A value of "30,000" means that we will simulate 30,000 requests.  The results will be written to the file "log.xxxx", where xxxx is the process id of the application.  The file should look like this: <br><br><pre> <code class="hljs dos"><span class="hljs-built_in"><span class="hljs-built_in">type</span></span> tick major_by gc_by have_finalizer immediate_sweep state enter <span class="hljs-number"><span class="hljs-number">1419489706840147</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping <span class="hljs-keyword"><span class="hljs-keyword">exit</span></span> <span class="hljs-number"><span class="hljs-number">1419489706840157</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping enter <span class="hljs-number"><span class="hljs-number">1419489706840184</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping <span class="hljs-keyword"><span class="hljs-keyword">exit</span></span> <span class="hljs-number"><span class="hljs-number">1419489706840195</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping enter <span class="hljs-number"><span class="hljs-number">1419489706840306</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping <span class="hljs-keyword"><span class="hljs-keyword">exit</span></span> <span class="hljs-number"><span class="hljs-number">1419489706840313</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping enter <span class="hljs-number"><span class="hljs-number">1419489706840612</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> newobj <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> sweeping ...</code> </pre><br>  My file has 1,142,907 lines. <br><br>  The “type” column contains the name of the event, “tick” - the current time (the result of gettimeofday (), the number of microseconds since the beginning of the era).  We can see the duration of the pause using this information.  Using the first two lines above, we can measure the pause length: 10 μs (1419489706840157 - 1419489706840147). <br><br>  The following small script shows the duration of each pause: <br><br><pre> <code class="ruby hljs">enter_tick = <span class="hljs-number"><span class="hljs-number">0</span></span> open(ARGV.shift){<span class="hljs-params"><span class="hljs-params">|f|</span></span> f.each_line{<span class="hljs-params"><span class="hljs-params">|line|</span></span> e, tick, * = line.split(<span class="hljs-regexp"><span class="hljs-regexp">/\s/</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> e <span class="hljs-keyword"><span class="hljs-keyword">when</span></span> <span class="hljs-string"><span class="hljs-string">'enter'</span></span> enter_tick = tick.to_i <span class="hljs-keyword"><span class="hljs-keyword">when</span></span> <span class="hljs-string"><span class="hljs-string">'exit'</span></span> st = tick.to_i - enter_tick puts st <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> st &gt; <span class="hljs-number"><span class="hljs-number">100</span></span> <span class="hljs-comment"><span class="hljs-comment"># over 100 μs else # puts line end } }</span></span></code> </pre><br>  There will be many lines in the log file, as this script prints a pause length every 100μs. <br><br>  The following figure shows the measurement result: <br><br><img src="http://habrastorage.org/files/9dd/750/e06/9dd750e065e24cc8a0c2d3f7f7f16a9f.png" alt="image"><br><br>  We see that generational GC has 7 huge pauses.  This should be a pause caused by the launch of major GC.  The maximum pause time is approximately 15ms (15Kμs).  However, incremental GC reduces the maximum pause time to 2ms (2Kμs).  Fine. <br><br><h4>  Conclusion </h4><br>  Ruby 2.2 uses the incremental garbage collection algorithm to reduce pause time during garbage collection. <br><br>  Note that incremental GC is not a “silver bullet”.  As I have already described, incremental GC does not affect performance.  This will not affect the response time if the request is too long and causes major GC several times.  The total garbage collection time will not be reduced by the incremental GC. </div><p>Source: <a href="https://habr.com/ru/post/250079/">https://habr.com/ru/post/250079/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../250065/index.html">The fundamental problem of package managers for programming languages</a></li>
+<li><a href="../250067/index.html">Full stack vs micro framework, Docker ecosystem and other things with which lucky pythonists (UPD: video)</a></li>
+<li><a href="../250071/index.html">Product design digest, January 2015</a></li>
+<li><a href="../250073/index.html">DevCon Digest # 1. Immerse in .NET</a></li>
+<li><a href="../250075/index.html">PHP Digest number 56 - interesting news, materials and tools (January 25 - February 8, 2015)</a></li>
+<li><a href="../250081/index.html">Announcement of the Mobius 2015 conference: reports on iOS, Android and Mobile Security</a></li>
+<li><a href="../250083/index.html">Parsing interface texts on Bucking - how I did them audit</a></li>
+<li><a href="../250085/index.html">How I integrated WebSockets into an existing PHP system</a></li>
+<li><a href="../250087/index.html">Design of scientific results: the integration of LaTeX and Gnuplot</a></li>
+<li><a href="../250089/index.html">Improving search results on mobile devices</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

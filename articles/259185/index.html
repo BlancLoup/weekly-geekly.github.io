@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Game server on Scala + Akka: Case study</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Last time, I outlined the use of Akka for the game server. 
+ Now we will sort simple, but nevertheless working example of the server. 
+
+ Diskleimer 
+ ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Game server on Scala + Akka: Case study</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/ed9/210/762/ed92107622fa43d9a82cf7ec113bb463.png"><br><br>  <a href="http://habrahabr.ru/post/229045/">Last time,</a> I outlined the use of Akka for the game server. <br>  Now we will sort simple, but nevertheless working example of the server. <br><a name="habracut"></a><br><h4>  Diskleimer </h4><br>  Those who fumble in the subject, may find inaccuracies and simplifications in the description.  So it was intended.  I wanted to show general points for those who do not know what it is and how it can be used.  The given example should be considered not as ready for production code.  But rather as a working pattern for experiments. <br><br>  In the last article, it was already described in general terms why akka is good. <br>  Therefore, immediately proceed to create a server. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Architecture </h4><br>  Our task is to make a multiplayer game, well, let it be tanchiki (yeah, fresh idea). <br>  In source codes, on githabe, there will be both a server and a client.  But here we consider only the server. <br><br>  The server itself will consist of several services. <br>  Each service is an actor that receives messages.  In a real system, this actor is likely to be the supervisor for the actors directly processing the message.  Those.  the service actor itself will not do any work. <br><br>  It will only launch the working actors and monitor their work, for example, restart if necessary.  We have a simplified situation.  Therefore, the actors will do all the work themselves. <br><br>  So let's first draw what we generally do. <br><br>  This is our megaproved client.  Full 3D, by the way: <br><br><img src="https://habrastorage.org/files/35e/d00/44f/35ed0044f340443cb2c8cc8a53a079fa.png"><br><br>  And this is the server: <br><br><img src="https://habrastorage.org/files/deb/b2f/fdc/debb2ffdccc64d81ae418e24255b7143.png"><br><br>  Arrows indicate the message flows between actors. <br>  1. <b>TCP service</b> - service responsible for connecting clients.  We have a TCP option. <br>  2. <b>Session</b> - actor of the game session.  Responsible for messaging with the client. <br>  3. <b>Task service</b> - a service for performing common tasks. <br>  4. <b>Auth service</b> - a service that authenticates the player. <br>  5. <b>GM service</b> - game mechanics service.  Responsible for managing rooms and general game activities ... <br>  6. <b>Room</b> - these are the actors who play the role of the rooms in which the game takes place. <br>  7. <b>Storage</b> - a service for working with data storage.  DB SQL or something else. <br><br>  Let us write in more detail what we got. <br>  I will give here only pieces of code.  All code is laid out on githab. <br><br><h5>  TCP service </h5><br>  Akka, at the moment, in the standard package supports TCP and UDP connections.  In the experimental branch there is also a WebSocket.  We will use TCP.  The network stack in Akka takes its roots from Spray and works more efficiently than, for example, Netty.  Although Netty, at the same time, more functionality. <br><br>  So, the client connects to the <b>TCP service</b> .  It creates the <b>connection</b> actor responsible for the connection.  After the connection is established, we create the <b>Session</b> actor, which is responsible for the game session and through the <b>connection</b> exchanges messages with the client. <br><br>  When working with TCP there are some nuances.  TCP is a persistent connection.  And not always the system can say for sure whether the client is still connected or not. <br><br>  Therefore, to verify the client using the so-called Heartbeat.  The server periodically pings the client, with an empty packet, to see if there is still a connection. <br>  To do this, a scheduller is started in the <b>Session</b> , which in our case pings the client every 10 seconds. <br><br><pre><code class="scala hljs">scheduler = context.system.scheduler.schedule(<span class="hljs-number"><span class="hljs-number">10.</span></span>seconds, <span class="hljs-number"><span class="hljs-number">10.</span></span>seconds, self, <span class="hljs-type"><span class="hljs-type">Heartbeat</span></span>)</code> </pre> <br>  Further, as soon as the connection with the client is established, it sends a command for authentication to the server.  It takes the actor <b>Session</b> . <br>  Session forwards the message to the <b>Task service</b> .  What would he figure out what kind of message it is and what to do with it.  It looks like this: <br><br><pre> <code class="scala hljs"><span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">CommandTask</span></span></span><span class="hljs-class">(</span><span class="hljs-params"><span class="hljs-class"><span class="hljs-params">session: </span></span><span class="hljs-type"><span class="hljs-class"><span class="hljs-params"><span class="hljs-type">ActorRef</span></span></span></span><span class="hljs-class"><span class="hljs-params">, comm: </span></span><span class="hljs-type"><span class="hljs-class"><span class="hljs-params"><span class="hljs-type">PacketMSG</span></span></span></span></span><span class="hljs-class">)</span></span></code> </pre><br>  Yes, I forgot to explain.  As a transport, use <b>Protobuf</b> .  So here <b>PacketMSG</b> is a protoobafovsky object, our message from the client.  <b>Session</b> is a link to a player's session actor. <br><br><h5>  Task service </h5><br>  This service is responsible for common tasks performed on the server.  In our case, it is the main command router from the client.  But this, of course, is not a silver bullet.  The message system in Akka is very flexible.  And you can quite cleverly configure message routing with built-in tools.  But you need to move from simple to complex.  Immediately not cover all the possibilities. <br><br>  In general, the <b>Task service</b> in the real server itself will not do anything.  It only launches child actors, which will already do all the work.  Or themselves to generate more of its subsidiary actors to perform specific actions.  In general, there are already many options.  In our case, the <b>Task service</b> will determine that it is an authentication request and simply send a message to the <b>Auth service</b> , with the task to check if there is a player with the specified authentication parameters. <br><br><pre> <code class="scala hljs"> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">handlePacket</span></span></span></span>(task: <span class="hljs-type"><span class="hljs-type">CommandTask</span></span>) = { task.comm.getCmd <span class="hljs-keyword"><span class="hljs-keyword">match</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-type"><span class="hljs-type">Cmd</span></span>.<span class="hljs-type"><span class="hljs-type">Auth</span></span>.code =&gt; authService ! <span class="hljs-type"><span class="hljs-type">Authenticate</span></span>(task.session, task.comm) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-type"><span class="hljs-type">Cmd</span></span>.<span class="hljs-type"><span class="hljs-type">Join</span></span>.code =&gt; gameService ! <span class="hljs-type"><span class="hljs-type">JoinGame</span></span>(task.session) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-type"><span class="hljs-type">Cmd</span></span>.<span class="hljs-type"><span class="hljs-type">Move</span></span>.code =&gt; gameService ! <span class="hljs-type"><span class="hljs-type">PlayerMove</span></span>(task.session, task.comm) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> _ =&gt; log.info(<span class="hljs-string"><span class="hljs-string">"Crazy message"</span></span>) } }</code> </pre><br><h5>  Auth service </h5><br>  Service responsible for authentication.  We have it very primitive.  Able only to go to the database for the user: <br><br><pre> <code class="scala hljs"> <span class="hljs-keyword"><span class="hljs-keyword">override</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">receive</span></span></span><span class="hljs-function"> </span></span>= { <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> task: <span class="hljs-type"><span class="hljs-type">Authenticate</span></span> =&gt; handleAuth(task) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> task: <span class="hljs-type"><span class="hljs-type">SomePlayer</span></span> =&gt; handleAuthenticated(task) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> task: <span class="hljs-type"><span class="hljs-type">AuthenticatedFailed</span></span> =&gt; handleFailed(task) <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> _ =&gt; log.info(<span class="hljs-string"><span class="hljs-string">"unknown message"</span></span>) }</code> </pre><br>  If it gets Authenticate, then you should go to the database to check: <br><br><pre> <code class="scala hljs"><span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">GetPlayerByName</span></span></span><span class="hljs-class">(</span><span class="hljs-params"><span class="hljs-class"><span class="hljs-params">session: </span></span><span class="hljs-type"><span class="hljs-class"><span class="hljs-params"><span class="hljs-type">ActorRef</span></span></span></span><span class="hljs-class"><span class="hljs-params">, comm: </span></span><span class="hljs-type"><span class="hljs-class"><span class="hljs-params"><span class="hljs-type">PacketMSG</span></span></span></span></span><span class="hljs-class">)</span></span></code> </pre><br>  If it receives SomePlayer, it means that the authentication is successful and you can communicate this good news to all those interested.  Player and GM. <br><br><pre> <code class="scala hljs"> task.session ! <span class="hljs-type"><span class="hljs-type">Send</span></span>(<span class="hljs-type"><span class="hljs-type">Cmd</span></span>.<span class="hljs-type"><span class="hljs-type">AuthResp</span></span>, login.build().toByteArray) gameService ! task</code> </pre><br>  And if AuthenticatedFailed, it means that they did not find a player, and this sad news must also be reported to all those interested.  In this case, only the player.  By the way, in a real server such attempts can be considered and punished as stubborn: <br><br><pre> <code class="scala hljs">task.session ! <span class="hljs-type"><span class="hljs-type">Send</span></span>(<span class="hljs-type"><span class="hljs-type">Cmd</span></span>.<span class="hljs-type"><span class="hljs-type">AuthErr</span></span>, <span class="hljs-type"><span class="hljs-type">Array</span></span>[<span class="hljs-type"><span class="hljs-type">Byte</span></span>]())</code> </pre><br>  Actually, no one bothers to screw it in full, providing a variety of authentication options. <br><br><h5>  Storage </h5><br>  Working with the database in Akka is a separate topic.  Since  inside work happens on ordinary flows.  By creating many “long-playing” tasks for actors, you can hang the whole system.  Actors should be lightweight.  We use the usual list as “DB”.  Therefore, nothing will slow down.  But the real database will block the stream for a long time.  Therefore, in a real project, an actor working with a database is allocated a separate stream, or a pool of threads, so that it does not slow down the entire system. <br><br>  If a player is found, a message with successful authentication is sent to the <b>Session</b> actor, which will already pack it and send it to the client. <br><br>  Well, we went into the game. <br>  Next, the client sends the message "Start the game."  <b>Task service will</b> redirect the GM service message, it will create a room and place the player in it. <br><br>  Then he informs the client about the start of the game. <br>  But our implementation is simple, so immediately after connecting the first player, the server automatically creates a room and places the player in it.  Thus, all connected, will be in the same room. <br><br><h5>  GM service </h5><br>  This is the main service of the game.  He knows about all the connected players.  He knows how many rooms he has created and can act as part of a load balancing system.  We have a session game, so the whole game mechanics is calculated in the rooms.  The actor <b>Room is</b> created for them. <br><br>  And there are nuances.  If the game is turn-based.  Well, sort of checkers or cards.  So to distribute the load on the rooms, in general, do not need anything.  All available iron resources will be utilized by Akka evenly. <br>  If the game is realtime like ours, then you can do some optimizations. <br><br>  The fact is that while we have a small load.  Few players or game mechanics are easy, then the calculation of game mechanics in the general pool of threads may not slow down.  But as soon as the load increases, the lags will be noticeable. <br><br>  Next, I will describe what can be done with this. <br><br>  In the meantime, we started the room and added a player to it.  The game is real-time, so we need to notify players about changes in the state of the game regularly.  Well, let's say, every 100ms.  Although, of course, this time is individual for games. <br><br>  The world in a real-time game, especially shooters with physics, is calculated deterministically, i.e.  in steps.  During the step, we take the game world, apply player commands to it obtained by this moment, calculate physics, collisions, hits, some in-game events, NPCs, etc. Accordingly, the faster the game situation is calculated, the more frames give the server.  And the more smoothly the game will go. <br><br>  To do this, we start a sheduller, which every 100ms will be sent to us by “Tick”. <br>  An event that means it's time to recalculate the game situation. <br><br><pre> <code class="scala hljs">scheduler = context.system.scheduler.schedule(<span class="hljs-number"><span class="hljs-number">100.</span></span>millisecond, <span class="hljs-number"><span class="hljs-number">100.</span></span>millisecond, self, <span class="hljs-type"><span class="hljs-type">Tick</span></span>)</code> </pre><br>  It turns out that each room itself will periodically say “it's time to recalculate the game.” <br>  The recalculation results are sent to all connected players in the room. <br>  In our case, only movements of players are taken into account. <br><br><pre> <code class="scala hljs"> players.keySet.map(p =&gt; getPoint(move, p)) players.values.map(s =&gt; s ! <span class="hljs-type"><span class="hljs-type">Send</span></span>(<span class="hljs-type"><span class="hljs-type">Cmd</span></span>.<span class="hljs-type"><span class="hljs-type">Move</span></span>, move.build().toByteArray))</code> </pre><br>  As a matter of fact, we created a simple game server, covering basic things.  Connection, authentication, work with the database room. <br><br>  An experienced reader, looking at the code, will say: <br>  - Semyon Semyonitch, yes, I, too, on the simple threads I forget about without problems. <br><br>  Well, in general, it is.  The message system is written on the knee for a couple of hours.  We connect Netty and forward, dawn towards.  We select each service in a flow, and we exchange messages through collections. <br>  Why use some complicated Akka? <br><br>  And what can Akka offer us in this case? .. <br>  Well, about the fact that we have all the code is very simple, single-threaded.  And about the other amenities Akka, I already wrote.  I will not repeat. <br><br>  In general, simple implementations are bad because they do not reflect the many problems of real applications.  For example, you can write to this server in general in one stream.  And for the time being, it will work. <br><br>  Well, for example, rooms that can (and will in most cases) load the CPU with work.  In the usual version, if we need to divide the rooms into streams, we will have to think about it.  Think and write code for this separation. <br><br>  What do we have now? <br><br>  A room is a simple class actor.  It is very simple.  All code is executed in the common thread pool.  On the test with a couple of players, at my place, it will not be enough to feel. <br><br>  But now we need to test the server already for example with 50 players.  We decide to allocate each room to our stream.  To do this, simply indicate that this actor uses a separate thread, and not a shared pool.  That's all, we did not think about synchronization, did not think about shared data.  Moreover, in Akka there is a cluster out of the box.  This means that transferring rooms to individual machines on the network will not be a big problem.  The code of the room itself will not change at all.  It will be the same actor, only it will work on a separate machine. <br><br>  Each actor has an address.  And all the work with him goes through it.  The whole system doesn't care where this actor works.  In the general pool, in a separate thread, on a separate machine or even on separate machines.  There is an address to which we send the message, and what is located behind it, the flow, the machine or the cluster, we already define the config.  This gives us on the one hand a convenient and fast scalability, well, if suddenly the game tramples and it will be necessary to quickly raise the server with game mechanics.  On the other hand, the convenience of development.  The entire cluster can be raised both on the same developer machine and on the cluster.  This will be determined only by the config. <br><br>  Those.  any actor or a group of actors in the system can be run either in the common thread pool, or in a separate thread, or in separate threads, or on a separate machine simply by changing the config.  While maintaining its simple single-threaded code. <br><br>  For a game server, this is a very big plus.  Akka takes on a very large amount of work.  And at the same time practically does not limit the developer.  After all, if there is no suitable dispatcher, router or mailbox, you can always write your own implementation.  Perfect for the occasion. <br><br>  If the topic is interesting, it will be possible to continue with refactoring, bringing the code closer to a more realistic production. <br><br>  All the code, including the server and client, is laid out on <a href="https://github.com/solverit/akka-server">GitHub</a> . </div><p>Source: <a href="https://habr.com/ru/post/259185/">https://habr.com/ru/post/259185/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../259173/index.html">Data Lake - from theory to practice. Tale about how we build ETL on Hadoop</a></li>
+<li><a href="../259175/index.html">Attackers use Linux / Moose to compromise Linux-embedded systems, part 1</a></li>
+<li><a href="../259177/index.html">Hola VPN extension sells user traffic and contains remote code execution vulnerabilities</a></li>
+<li><a href="../259181/index.html">Reuters: US plans to target Stuxnet to North Korea</a></li>
+<li><a href="../259183/index.html">16 reasons why players leave your game</a></li>
+<li><a href="../259187/index.html">Shadow DOM (Shady DOM)</a></li>
+<li><a href="../259189/index.html">The implementation of one of the variants of the mobile version of the site</a></li>
+<li><a href="../259191/index.html">Sudden sofa of a leopard coloring</a></li>
+<li><a href="../259193/index.html">Qucs project news: preparing for release 0.0.19</a></li>
+<li><a href="../259195/index.html">The digest of interesting materials for the mobile # 105 developer (on May 25-31)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

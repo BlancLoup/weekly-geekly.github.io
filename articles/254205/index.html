@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>TLS decryption of Java application traffic using logs</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Debugging SSL / TLS-protected integrations in Java applications sometimes becomes a very nontrivial task: the connection is not established / broken, ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>TLS decryption of Java application traffic using logs</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/d73/21e/116/d7321e116d8f460c8bad5ee5f214b106.png"><br><br>  Debugging SSL / TLS-protected integrations in Java applications sometimes becomes a very nontrivial task: the connection is not established / broken, and application logs can be scarce, access to editing source codes may not be available, interception of the Wireshark traffic and decryption by the server's private key ( even if there is one) it can fail if a cipher with <abbr title="Perfect Forward Secrecy - Perfect Forward Secrecy">PFS</abbr> was used in the channel;  a proxy server like Fiddler or Burp may not be suitable, because the application does not know how to go through a proxy or refuses to trust the certificate slipped onto the segment ... <br><br>  Recently <a href="http://habrahabr.ru/post/253521/">, a publication</a> from <a href="http://habrahabr.ru/users/valdikss/" class="user_link">ValdikSS</a> <a href="http://habrahabr.ru/post/253521/">appeared</a> on Habré about how you can use Wireshark to decrypt any traffic from the Firefox and Chrome browsers without having a private server key, without replacing certificates and without a proxy.  She suggested the author of the current article to the idea - is it possible to apply this approach to Java applications, using JVM debugging records instead of the session key file?  It turned out - it is possible, today, dear odnakhabryane, I will tell you how to do it. <br><a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Recipe idea </h4><br>  From recent versions, the Firefox and Chrome browsers have learned to output enough data into a specially defined file to derive session keys that encrypt the traffic they send (as well as received traffic, because symmetric encryption is used inside SSL / TLS).  Strictly speaking, it is not the browsers themselves that do this, but the <abbr title="Network socket security">NSS</abbr> library in their composition;  it is the one that sets the <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format">format of the</a> recorded files.  This format can be read and used by Wireshark to decrypt SSL-records encrypted with the appropriate keys.  The idea of ​​our “dish” is to learn how to create such files independently for Java applications, relying as a source on debug logs that are written to the standard output with the <em>javax.net</em> option <em>javax.net.debug</em> . <br><br><h4>  Ingredients </h4><br>  We will need: <ul><li>  <b>A Java application</b> for which we can set launch parameters (JVM options). <br>  For definiteness, we assume that the application acts as a <em>client</em> when establishing a connection. <br>  The JDK (JRE) version is desirable to have 1.6 or 1.7, on others (so far) it has not been tested; </li><li>  <b>Wireshark</b> version 1.6.0 or higher; <br></li><li>  <b>A text editor</b> , for example, Notepad ++; </li><li>  Pinch of patience, attentiveness and time. </li></ul><br><br><h4>  Kneading </h4><br><h5>  Launch parameters </h5><br>  Since logs will be one of the main sources of information for us, the first thing is to properly configure their receipt.  The JVM <b>javax.net.debug = ssl: handshake: data</b> option will be the working version.  Immediately make a reservation that it does not have to have such a value, you can (probably) get <i>along with the</i> universal <i>javax.net.debug = all</i> , but working with the results of this choice can be complicated (the volume of logs can be gigantic).  Our choice is explained by the following: <ol><li>  <em>ssl</em> - to write to the log messages related only to SSL; </li><li>  <em>handshake</em> - to see every message within the main stage for us - <abbr title="from English 'handshake'">handshake</abbr> ; </li><li>  <em>data</em> - for the lazy, so as not to manually translate some values ​​from the decimal number system to hexadecimal (hex); </li></ol><br>  The presence of such an option should provide us with output to the log (or standard output) of debug information, to which we will return a little later. <br><br><h5>  Sniffer setup </h5><br>  Sniffing the traffic of the Wireshark target application is possible only after setting the above option, otherwise we will not have session keys.  In addition, we must remember that the keys are “ephemeral” - they are only suitable for one SSL session, that is, the log from one session is not suitable for decrypting the traffic of another session.  Well, in order to breathe quite easily, I recommend immediately when starting the sniffer to indicate the host with which you plan to exchange data;  this will allow one more “on the coast” to reject unnecessary packets passing through the network interface being listened: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/ec2/1ea/ec6/ec21eaec607f482cba212d33b8e7dba0.png"></div><br><br><h5>  Take and write </h5><br>  After setting the desired application launch parameters and sniffer settings, you can start the application itself and enable packet capture in Wireshark.  Then, when the application tries to connect to a <i>(secure)</i> connection with any server, our “saucepans” will begin to fill up.  From the point of view of Wireshark, it will look something like this: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/482/eef/9cb/482eef9cbcc94557b7930b878cd825d5.png"></div><br>  <sup>As you can see, Wireshark explicitly identifies some SSL records as encrypted;</sup>  <sup>records of the type <i>Application Data</i> are the same.</sup> <br><br>  And from the standpoint of the standard output (logs) of the application - something like this: <br><pre><code class="bash hljs">... *** ClientHello, TLSv1 RandomCookie: GMT: 1427238714 bytes = { 246, 5, 6, 214, 168, 159, ... , 140, 141, 50, 196 } Session ID: {} Cipher Suites: [SSL_RSA_WITH_RC4_128_MD5, SSL_RSA_WITH_RC4_128_SHA, ..., SSL_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA] Compression Methods: { 0 } ...</code> </pre> <br>  In fact, many more things will be output to the log (the debugging output format is not specified anywhere and changes from Java version to version), but for now we need to see at least that. <br><br><h4>  "Proofing" </h4><br>  Possessing debug entries from an SSL / TLS session, we can generate a session key file in the NSS format.  To do this, we first need to determine what method of session key distribution was used in our communication session: <i>exchange method</i> (aka RSA) or <i>generation method</i> (aka DH or PFS, although these are different things).  What is their essence and differences can be found in the wonderful <a href="http://www.sans.org/reading-room/whitepapers/authentication/ssl-tls-whats-hood-34297">work of Sally Vandeven</a> .  We only need to know the method itself, and you can define it in at least two ways: <br><ol><li>  By the name of the cipher output to the log or defined by the sniffer.  For example, according to this conclusion <br><pre> <code class="bash hljs">*** ServerHello, TLSv1 RandomCookie: GMT: 1037995915 bytes = { 168, 183, ... 204, 178 } Session ID: {141, 155, ... 214, 36} Cipher Suite: SSL_RSA_WITH_RC4_128_SHA ...</code> </pre>  it can be seen that the cipher has no mention of DH in the name, but it explicitly calls itself RSA.  However, such clarity is not always present, so you can use Plan B: <br></li><li>  For the presence of SSL <b>ServerKeyExchange</b> messages in the interception of traffic in Wireshark (see the screenshot in the subsection “Removing and Recording”) - it is present for DH methods and absent for RSA (an explanation of why is beyond the scope of this article).  Of course, the presence of this message can be determined by the same logs. </li></ol><br>  Having defined the method of distributing session keys, we turn to the <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format">description of the</a> NSS file <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format">format</a> , which instructs us to distinguish the lines of each file just by these two methods.  Consider each of them in more detail. <br>  To begin with, suppose that in our communication session we used some RSA-based cipher.  According to the format description, the corresponding line of the file must begin with <b>RSA</b> text, followed by 16 bytes of the HEX-coded <b>PreMasterSecret</b> encrypted key, and another space - 96 bytes of the HEX-coded <u>non-</u> encrypted <b>PreMasterSecret</b> key .  This key is the basis for generating the master key, MasterSecret, and is transmitted from the client to the server in a <b>ClientKeyExchange</b> message, being encrypted with the server's public key.  This means that the first part of the string (the encrypted representation of this key) should be visible in Wireshark.  We find the right message and make sure - yes, it is: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/a54/a14/405/a54a144054ad4ba99c5778bd88f0d741.png"></div><br><div class="spoiler">  <b class="spoiler_title">Note for literary traders</b> <div class="spoiler_text">  An experienced habroved is entitled to interrupt the narration by asking why in the NSS file format only <i>16</i> bytes are needed, while the length of the encrypted key is <i>256</i> bytes? <br>  This is explained by the fact that the encrypted value is used by Wireshark just as an index - it is needed only to find the record containing the suitable MasterSecret from the potential set of lines in the NSS file.  This can be done by sequential comparison of the encrypted version of this key (taken from intercepted traffic) with the first (after “RSA”) element of each line of the file.  Actually, this is what Wireshark does, and matching the key along the entire length in this case is not at all necessary, 16 bytes are quite enough. <br></div></div><br>  By the way, the same value can be obtained from the application logs, and here we just need the JVM option " <b>: data</b> ": <br><br><img src="https://habrastorage.org/files/026/cf5/9fb/026cf59fb20a4f4ca5ae1d7ea69da754.png"><br><br>  The found value (16 bytes) can be inserted into the generated NSS file.  Now we check the same operation for the second element of the line - the eigenvalue of the <b>PreMasterSecret</b> key.  Since it is obviously never transmitted over the network in the open form (actually, that's why it is called <i>... Secret</i> ), it will only be necessary to get it out of the logs.  Fortunately, with unequivocal prompts from the JVM, it is not particularly difficult to do this: <br><br><img src="https://habrastorage.org/files/359/03b/2dc/35903b2dc31b4d4f8d809427c20441e9.png"><br><br>  Now we need to add this value to the NSS file line that we form and “brush” the line so that we get something like this <i>(comments in standard notation are quite acceptable)</i> : <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># SSL/TLS secrets log file, generated by Toparvion RSA 75ff866e23beca1c 03012aede74befa88233253e3207bb1320935ab206696512674df5c6dee7dfaa2156932bc559631c8f3bb46ae38a71ff</span></span></code> </pre><br>  For those for whom RSA is “just the case” (as a rule, these are applications before Java 7), you can already go to the section “Tasting”.  Those who have come across PFS (often Java 7 or higher) will have to read further ... <br><br>  Like the RSA method, the string for decrypting records based on PSF should consist of three elements, separated by a space: <ol><li>  Record type;  in this case, it should be equal to <b>CLIENT_RANDOM;</b> </li><li>  64 bytes of HEX-coded client random number <b>Random</b> ; </li><li>  96 bytes of HEX-coded <b>MasterSecret</b> master key; </li></ol><br>  Data sources for the second and third element are also similar to the previous method, but there are some subtleties.  The client random number is the concatenation of the current time in milliseconds of GMT and the random value itself.  In the case of accessing Wireshark it is clearly visible: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/33e/0ad/e78/33e0ade7827a40d9b60b5f0c12b61016.png"></div><br><br>  But when accessing the logs it is easy to make a mistake, but you can use the following hint: <br><br><img src="https://habrastorage.org/files/3a4/d2a/720/3a4d2a720e464ba893ca8141f5d18523.png"><br><br>  Here also the entry <i>": data"</i> in the meaning of the <i>jVM</i> option <i>javax.net.debug</i> saves us from having to manually convert the number systems.  All we need is 64 bytes of a random number, then all of it is entirely (and not just the beginning, as was the case with RSA).  It will also play the role of an index when Wireshark searches for a suitable entry in the NSS file. <br>  The third element of the line - the <b>MasterSecret master</b> key - can also be extracted from the application logs: <br><br><img src="https://habrastorage.org/files/482/6c5/1ae/4826c51aeb0e45a6afd541c3ab2cec47.png"><br><br>  After extracting the master key from the logs, we supplement the generated string with it, we “brush” it and get something like: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># SSL/TLS secrets log file, generated by Toparvion CLIENT_RANDOM 551435582740bdc1386b20b7fcb51428fe3042e06c8e6e94c910786f577a2ada 976dc1d54dd74d3c2e715109c8a4fb8e743efc084614abc0e12fdb78e472c30e3590ac5eb383424b2d8fa3de84c8b0f5</span></span></code> </pre><br>  It is impossible not to notice that Wireshark is very sensitive to the format of the NSS-file, so it is better now to carefully double-check whether the number of bytes in each element of the line converges and whether there are any extra spaces anywhere;  It can save time in the future. <br><br><h4>  Tasting </h4><br>  Now that all the “manual” steps have been completed, it’s time to give the word to Wireshark - we present the created file to it exactly as described in the <a href="http://habrahabr.ru/post/253521/">article</a> mentioned at the beginning: <br><ol><li>  Open the context menu in Wireshark on any SSL / TLS package; </li><li>  Choose <i>Protocol Preferences -&gt; Secure Socket Layer Preferences ...</i> ; </li><li>  In the window that opens, in the <i>(Pre-) Master Secret log filnename column,</i> specify the path to the NSS file that we formed. </li></ol><br>  Click OK and look at the changes in the intercepted traffic: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/a67/ed2/124/a67ed2124663482e884c7cad4edc0ce5.png"></div><br><br>  If the decryption is successful, then packages that previously had Encrypted in their names will acquire specific names.  This is what happened with the <b>Finished</b> teams shown in the figure above. <br>  In addition (and this is probably the most pleasant moment) you can now select any packet with SSL or TLS protocol and click on <b>Follow SSL Stream</b> in its context menu - the result should not require comments: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/306/2a9/37f/3062a937f1fc4ed5966b7aa4369bf7bc.png"></div><br><br>  As you can see, despite the HTTP <b><u>S</u></b> request, we see the transmitted traffic and can export it for further analysis. <br><br><h4>  If, however, did not work ... </h4><br>  Errors on this slippery slope can be made a lot.  One of the most valuable sources of information is the log of Wireshark itself - it is kept if the path to the log file in the <b>SSL debug file</b> column is specified in the same SSL settings window. <br>  It is important to note that no filtering is provided for the log, but Wireshark is very detailed, so if you keep the log constantly turned on, it will, firstly, grow very quickly, and secondly, it may lead to Wireshark’s deceleration (since apparently spelled synchronously).  In this regard, it is best to specify the log file only before the application of the NSS file, and at the end of the analysis - to clean it (but not delete it). <br><br><h4>  Conclusion </h4><br>  The article considered another approach to decrypting SSL / TLS traffic of Java applications with a view to debugging them. <br>  In the above form, the approach is hardly applicable in practice, as it requires a significant investment of time and the availability of certain knowledge and skills from the performer.  However, the presented description will allow to formalize, and therefore, automate (program) this approach and, thus, put it in the service of people.  Such work has already begun by the author.  If this idea is interesting and you - welcome!  Do not forget to tell about it on Habré. <br><br>  Thank you for reading! <br><br><h4>  <b>Update</b> </h4><br>  Dear ones, for those who are interested in the approach described in the article, but <s>finally can</s> not be <s>too lazy to</s> use it manually, the <a href="https://github.com/Toparvion/nss-java-maker">NSS Java Maker utility is available on GitHub</a> , which automates the steps described in the article to parse the JVM debug log and generate an output NSS file for Wireshark. <br>  The syntax for its launch is simple, you only need to specify the source file of the JVM log: <br><pre> <code class="bash hljs">java -jar nssjavamaker.jar some/directory/java-ssl-debug.log</code> </pre><br>  At the output in the current directory, an NSS-file <b>session-keys.nss</b> will be created, ready for import into Wireshark.  To change this path and other parameters, refer to the <a href="https://github.com/Toparvion/nss-java-maker">Readme file</a> or run the utility with absolutely no parameters. <br>  A ready-to-run JAR can be <a href="https://github.com/Toparvion/nss-java-maker/releases/latest">downloaded</a> from the latest version page. <br>  Suggestions / suggestions / comments / remarks on the utility are welcome in <a href="https://github.com/Toparvion/nss-java-maker/issues">the application section of the project page</a> , as well as at <a href="">toparvion@gmx.com</a> .  Good luck in job! </div><p>Source: <a href="https://habr.com/ru/post/254205/">https://habr.com/ru/post/254205/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../254195/index.html">Dart for the whole web</a></li>
+<li><a href="../254197/index.html">Alternative mouse gesture control for Chrome and Firefox extensions</a></li>
+<li><a href="../254199/index.html">My "Smart Home" on the PLC and with the web interface. Part 1. Introduction</a></li>
+<li><a href="../254201/index.html">Trojan mobile jar study</a></li>
+<li><a href="../254203/index.html">Clearing HTML tags from attributes</a></li>
+<li><a href="../254207/index.html">English company blames Facebook for using its proprietary data center project for the Open Compute Project</a></li>
+<li><a href="../254209/index.html">What answers do I expect at the testing interview?</a></li>
+<li><a href="../254211/index.html">Long live fragrant soap, or how to fix improper scaling of Windows programs</a></li>
+<li><a href="../254213/index.html">Another article about indexing ajax sites by search engines</a></li>
+<li><a href="../254215/index.html">10 tips on prototyping in Sketch</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

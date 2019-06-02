@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Making the code cleaner: A few words about the managed resources in the Linux kernel for device drivers</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Watching the emerging drivers in the Linux kernel, I can not help but note that developers are not well aware of the kernel infrastructure, or rather ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Making the code cleaner: A few words about the managed resources in the Linux kernel for device drivers</h1><div class="post__text post__text-html js-mediator-article">  Watching the emerging drivers in the Linux kernel, I can not help but note that developers are not well aware of the kernel infrastructure, or rather the internal API, which greatly simplifies life when writing device drivers.  Today I will touch on the topic of managed resources.  In particular, I will explain how they work and how they simplify the development of drivers. <a name="habracut"></a><br><br>  Conditionally break the provided API into: <br><ul><li>  Memory, including allocated for DMA and I / O </li><li>  Interruptions </li><li>  Voltage regulators </li><li>  For drivers on tires (PCI, SPI, IIO) </li><li>  GPIO, Pin control </li><li>  Rest </li></ul><br><br>  In each of the categories, I will provide a list of available functions and, if necessary, additional information that is worth paying attention to.  But first I will briefly tell you the principle of how these resources are managed. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h2>  <font color="blue">Resource Management for Devices</font> </h2><br>  Back in 2007, Tejun Heo proposed to simplify device drivers using managed device resources, creating the so-called devres API. <br><br><div class="spoiler">  <b class="spoiler_title">The case in 2007</b> <div class="spoiler_text">  commit 9ac7849e35f705830f7b016ff272b0ff1f7ff759 <br>  Author: Tejun Heo &lt;htejun@gmail.com&gt; <br><br>  devres: device resource management <br></div></div><br>  The idea is as follows.  Each device corresponds to its representation, a <code>struct device</code> , in the Linux kernel device tree.  The <code>devres_head</code> field was added to the <code>devres_head</code> (in fact, another one for access synchronization), which indicates the list of managed resources, if such were used at the stage <code>-&gt;probe()</code> .  A managed resource is a dedicated memory on the heap associated with a data structure, in the case of <code>kmalloc()</code> , for example, it is simply a <code>void *</code> pointer. <br><br>  At the stage <code>-&gt;probe()</code> , as I have already said, the list of managed resources is being replenished, at the stage <code>-&gt;remove()</code> basic part of the driver maintenance will take care of freeing all occupied resources exactly in the reverse order of adding them. <br><br>  For exceptional cases, it is possible to cause an appropriate release earlier and clearly.  Here lies the <a href="https://habr.com/ru/post/255459/">problem</a> , which we will examine with an example in the next section. <br><br><h2>  <font color="blue">Memory, including allocated for DMA and I / O</font> </h2><br>  The following basic functions can be used for memory allocation: <br><blockquote>  devm_kasprintf () <br>  devm_kcalloc () <br>  devm_kmalloc () <br>  devm_kmemdup () <br>  devm_kstrdup () <br>  devm_kzalloc () <br></blockquote><br>  The purpose of each in my opinion is obvious, I will not dwell on this.  Let us turn to the example of use. <br><br>  Suppose we allocate memory for our structure and want it to be automatically released when the driver completes. <br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">my_cool_device</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">device</span></span></span><span class="hljs-class"> *</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">dev</span></span></span><span class="hljs-class">;</span></span> <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> *memregion; }; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">mydev_probe</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(...)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">device</span></span></span><span class="hljs-class"> *</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">dev</span></span></span><span class="hljs-class"> = ...;</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">my_cool_device</span></span></span><span class="hljs-class"> *</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">cool</span></span></span><span class="hljs-class">;</span></span> cool = devm_kzalloc(dev, ...); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!cool) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> -ENOMEM; cool-&gt;memregion = devm_kmalloc(dev, ...); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!cool-&gt;memregion) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> -ENOMEM; cool-&gt;dev = dev; dev_info(dev, <span class="hljs-string"><span class="hljs-string">"Found my cool device\n"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>; } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">mydev_remove</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(...)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-comment"><span class="hljs-comment">/* Nothing! */</span></span> }</code> </pre><br><br>  Notice how beautifully the exit path looks like when an error occurs in the middle of a function?  And how wonderful it looks <code>-&gt;remove()</code> ! <br><a name="Issue"></a><br>  Now there are examples of how to free a resource, if for some reason you need to do this explicitly. <br>  Right: <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">mydev_remove</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(...)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">device</span></span></span><span class="hljs-class"> *</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">dev</span></span></span><span class="hljs-class"> = ...;</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">my_cool_device</span></span></span><span class="hljs-class"> *</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">cool</span></span></span><span class="hljs-class"> = ...;</span></span> devm_kfree(dev, cool-&gt;memregion); }</code> </pre><br>  Wrong: <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">mydev_remove</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(...)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">my_cool_device</span></span></span><span class="hljs-class"> *</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">cool</span></span></span><span class="hljs-class"> = ...;</span></span> kfree(cool-&gt;memregion); }</code> </pre><br><br>  To allocate memory suitable for DMA use <br><blockquote>  dmam_alloc_coherent () <br>  dmam_alloc_noncoherent () <br>  dmam_pool_create () <br></blockquote><br>  I / O resources can be allocated using the following functions. <br><blockquote>  devm_ioport_map () <br>  devm_ioremap () <br>  devm_ioremap_resource (): checks a resource, requests a region of memory, projects it onto the physical addresses of the device <br>  pcim_iomap () <br>  pcim_iomap_regions (): queries the region and projects the physical addresses specified in the required BARs onto it <br>  pcim_iomap_table (): an array of projected addresses indexed by the BAR number <br></blockquote><br>  Note that the bottom section refers to devices on the PCI bus, but it is in the I / O category. <br><br><h2>  <font color="blue">Interruptions</font> </h2><br><blockquote>  devm_request_any_context_irq () <br>  devm_request_irq () <br>  devm_request_threaded_irq () <br></blockquote><br><br><h2>  <font color="blue">Voltage regulators</font> </h2><br><blockquote>  devm_regulator_bulk_get () <br>  devm_regulator_get () <br>  devm_regulator_register () <br></blockquote><br><br><h2>  <font color="blue">For drivers on tires (PCI, SPI, IIO)</font> </h2><br>  Bus IIO: <br><blockquote>  devm_iio_device_alloc () <br>  devm_iio_device_register () <br>  devm_iio_kfifo_allocate () <br>  devm_iio_trigger_alloc () <br></blockquote><br>  MDIO Bus: <br><blockquote>  devm_mdiobus_alloc () <br>  devm_mdiobus_alloc_size () <br></blockquote><br>  PCI bus: <br><blockquote>  pcim_enable_device (): in case of successful completion all operations are assumed to be managed <br>  pcim_pin_device (): leave the device enabled after release <br></blockquote><br>  Pay particular attention to <code>pcim_enable_device()</code> .  Once applied, it is necessary to clean out the release of regions, even if their selection and projection is carried out in the old way.  For example, you can see the details in <a href="https://git.kernel.org/cgit/linux/kernel/git/tiwai/sound.git/commit/%3Fid%3D5618955c4269b07c8177f88a8075d4879e74cd27">commit 5618955c4269</a> . <br><br>  SPI Bus: <br><blockquote>  devm_spi_register_master () <br></blockquote><br><br><h2>  <font color="blue">GPIO, Pin control</font> </h2><br>  GPIO: <br><blockquote>  devm_gpiod_get () <br>  devm_gpiod_get_index () <br>  devm_gpiod_get_index_optional () <br>  devm_gpiod_get_optional () <br></blockquote><br>  Pin control: <br><blockquote>  devm_pinctrl_get () <br></blockquote><br><h2>  <font color="blue">Rest</font> </h2><br>  I have touched on only the most frequently used and helpful resource management functions.  The rest can be read in the relevant documentation on the kernel API: <a href="https://www.kernel.org/doc/Documentation/driver-model/devres.txt">devres.txt</a> . </div><p>Source: <a href="https://habr.com/ru/post/255459/">https://habr.com/ru/post/255459/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../255449/index.html">Analysis of all tasks of the qualifying game Yandex.Root</a></li>
+<li><a href="../255451/index.html">The story of one spacewalk</a></li>
+<li><a href="../255453/index.html">Microsoft Unveils New Container Technology for Next-Generation Cloud</a></li>
+<li><a href="../255455/index.html">Ice cream candy, or how to add some Material to your application</a></li>
+<li><a href="../255457/index.html">Lights Out and its unusual uses</a></li>
+<li><a href="../255461/index.html">How I did a Torrent-Box on a Raspberry Pi</a></li>
+<li><a href="../255463/index.html">ASP.NET 5 Middleware or where did my HTTP module go?</a></li>
+<li><a href="../255465/index.html">This watch writes time ...</a></li>
+<li><a href="../255471/index.html">Software Configurable Networks and Network Virtualization: Reality Check</a></li>
+<li><a href="../255473/index.html">Interactive tree menu</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

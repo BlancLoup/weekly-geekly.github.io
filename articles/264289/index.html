@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Making the code cleaner: Refactoring the PCI driver for a NAND Denali controller</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Using the example of a PCI driver for a NAND Denali controller, I will show how simplified the code is when using macros and helper functions availabl...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Making the code cleaner: Refactoring the PCI driver for a NAND Denali controller</h1><div class="post__text post__text-html js-mediator-article">  Using the example of a PCI driver for a NAND Denali controller, I will show how simplified the code is when using macros and helper functions available in relatively recent versions of the Linux kernel. <a name="habracut"></a><br><br>  This old driver is hardly used, but is a good example of code that can be refactored.  The driver itself is located in <i>drivers / mtd / nand / denali_pci.c</i> . <br><br><h2>  <font color="blue">Kconfig preparation</font> </h2><br>  First of all let's touch Kconfig.  Since the driver is broken according to the already classical scheme, namely: the main part + driver on the bus, following the logic (including <a href="https://lkml.org/lkml/2015/4/21/654">Torvalds himself</a> ), we need to hide the choice of the main part from the user.  Along the way, we replace spaces on tabs in those lines that we change. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      <a href="http://lists.infradead.org/pipermail/linux-mtd/2015-August/060851.html">Do it once!</a> <br><br><h2>  <font color="blue">Application macros</font> </h2><br>  The next step is to use the <code>module_pci_driver()</code> macro: <br><br><pre> <code class="diff hljs"><span class="hljs-comment"><span class="hljs-comment">--- a/drivers/mtd/nand/denali_pci.c +++ b/drivers/mtd/nand/denali_pci.c @@ -129,14 +129,4 @@ static struct pci_driver denali_pci_driver = { .remove = denali_pci_remove, }; -static int denali_init_pci(void) -{ - return pci_register_driver(&amp;denali_pci_driver); -} -module_init(denali_init_pci); - -static void denali_exit_pci(void) -{ - pci_unregister_driver(&amp;denali_pci_driver); -} -module_exit(denali_exit_pci); +module_pci_driver(denali_pci_driver);</span></span></code> </pre><br><br>  <a href="http://lists.infradead.org/pipermail/linux-mtd/2015-August/060850.html">Do two!</a> <br><br><h2>  <font color="blue">Transition to Managed Resource API</font> </h2><br>  Now we come to the most interesting, replacing calls with managed resources ( <a href="http://habrahabr.ru/post/255459/">here</a> I described them). <br><br>  Let's start with a simple, <code>devm_kzalloc()</code> : <br><br><div class="spoiler">  <b class="spoiler_title">Look what happened</b> <div class="spoiler_text"><pre> <code class="diff hljs"><span class="hljs-comment"><span class="hljs-comment">--- a/drivers/mtd/nand/denali_pci.c +++ b/drivers/mtd/nand/denali_pci.c @@ -35,14 +35,14 @@ static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id) unsigned long csr_len, mem_len; struct denali_nand_info *denali; - denali = kzalloc(sizeof(*denali), GFP_KERNEL); + denali = devm_kzalloc(&amp;dev-&gt;dev, sizeof(*denali), GFP_KERNEL); if (!denali) return -ENOMEM; ret = pci_enable_device(dev); if (ret) { pr_err("Spectra: pci_enable_device failed.\n"); - goto failed_alloc_memery; + return ret; } if (id-&gt;driver_data == INTEL_CE4100) { @@ -103,9 +103,6 @@ failed_req_regions: pci_release_regions(dev); failed_enable_dev: pci_disable_device(dev); -failed_alloc_memery: - kfree(denali); - return ret; } @@ -119,7 +116,6 @@ static void denali_pci_remove(struct pci_dev *dev) iounmap(denali-&gt;flash_mem); pci_release_regions(dev); pci_disable_device(dev); - kfree(denali); }</span></span></code> </pre><br></div></div><br><br>  Since the device is connected to the PCI bus, we use the devres API for PCI devices: <br><br><div class="spoiler">  <b class="spoiler_title">Look what happened</b> <div class="spoiler_text"><pre> <code class="diff hljs"><span class="hljs-comment"><span class="hljs-comment">--- a/drivers/mtd/nand/denali_pci.c +++ b/drivers/mtd/nand/denali_pci.c @@ -30,7 +30,7 @@ MODULE_DEVICE_TABLE(pci, denali_pci_ids); static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id) { - int ret = -ENODEV; + int ret; resource_size_t csr_base, mem_base; unsigned long csr_len, mem_len; struct denali_nand_info *denali; @@ -39,7 +39,7 @@ static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id) if (!denali) return -ENOMEM; - ret = pci_enable_device(dev); + ret = pcim_enable_device(dev); if (ret) { pr_err("Spectra: pci_enable_device failed.\n"); return ret; @@ -70,14 +70,13 @@ static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id) ret = pci_request_regions(dev, DENALI_NAND_NAME); if (ret) { pr_err("Spectra: Unable to request memory regions\n"); - goto failed_enable_dev; + return ret; } denali-&gt;flash_reg = ioremap_nocache(csr_base, csr_len); if (!denali-&gt;flash_reg) { pr_err("Spectra: Unable to remap memory region\n"); - ret = -ENOMEM; - goto failed_req_regions; + return -ENOMEM; } denali-&gt;flash_mem = ioremap_nocache(mem_base, mem_len); @@ -99,10 +98,6 @@ failed_remap_mem: iounmap(denali-&gt;flash_mem); failed_remap_reg: iounmap(denali-&gt;flash_reg); -failed_req_regions: - pci_release_regions(dev); -failed_enable_dev: - pci_disable_device(dev); return ret; } @@ -114,8 +109,6 @@ static void denali_pci_remove(struct pci_dev *dev) denali_remove(denali); iounmap(denali-&gt;flash_reg); iounmap(denali-&gt;flash_mem); - pci_release_regions(dev); - pci_disable_device(dev); }</span></span></code> </pre><br></div></div><br>  Unfortunately, it is not possible to get rid of <code>ioremap_nocache()</code> , there is no appropriate device at hand (and I’m not at all sure that such a thing exists in the world today) to check what information is stored in the corresponding PCI BARs. <br><br>  Combine the resulting in this chapter, and <a href="http://lists.infradead.org/pipermail/linux-mtd/2015-August/060848.html">do three!</a> <br><br><h2>  <font color="blue">Additional refactoring</font> </h2><br>  To restore complete beauty, replace <code>pr_err()</code> with <code>dev_err()</code> : <br><pre> <code class="diff hljs"><span class="hljs-comment"><span class="hljs-comment">--- a/drivers/mtd/nand/denali_pci.c +++ b/drivers/mtd/nand/denali_pci.c @@ -41,7 +41,7 @@ static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id) ret = pcim_enable_device(dev); if (ret) { - pr_err("Spectra: pci_enable_device failed.\n"); + dev_err(&amp;dev-&gt;dev, "Spectra: pci_enable_device failed.\n"); return ret; } @@ -69,19 +69,19 @@ static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id) ret = pci_request_regions(dev, DENALI_NAND_NAME); if (ret) { - pr_err("Spectra: Unable to request memory regions\n"); + dev_err(&amp;dev-&gt;dev, "Spectra: Unable to request memory regions\n"); return ret; } denali-&gt;flash_reg = ioremap_nocache(csr_base, csr_len); if (!denali-&gt;flash_reg) { - pr_err("Spectra: Unable to remap memory region\n"); + dev_err(&amp;dev-&gt;dev, "Spectra: Unable to remap memory region\n"); return -ENOMEM; } denali-&gt;flash_mem = ioremap_nocache(mem_base, mem_len); if (!denali-&gt;flash_mem) { - pr_err("Spectra: ioremap_nocache failed!"); + dev_err(&amp;dev-&gt;dev, "Spectra: ioremap_nocache failed!"); ret = -ENOMEM; goto failed_remap_reg; }</span></span></code> </pre><br><br>  <a href="http://lists.infradead.org/pipermail/linux-mtd/2015-August/060849.html">Make four!</a> <br><br>  Let's sum up: <br><br><pre> <code class="diff hljs"> drivers/mtd/nand/Kconfig | 13 +++++-------- drivers/mtd/nand/denali_pci.c | 43 +++++++++++-------------------------------- 2 files changed, 16 insertions(+), 40 deletions(-)</code> </pre><br><br>  The obvious good.  Do not forget to use the available API in the new code! <br><br>  <b>UPDATE.</b> <br>  All 4 are already in the <a href="">maintainer tree</a> .  Commit IDs: af83a67cad14, add243d5bc37, 2445d33d8523, 04868a67ed58. </div><p>Source: <a href="https://habr.com/ru/post/264289/">https://habr.com/ru/post/264289/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../264279/index.html">API interface for free PBX and telephony</a></li>
+<li><a href="../264281/index.html">PostgreSQL 9.5: what's new? Part 1. INSERT ... ON CONFLICT DO NOTHING / UPDATE and ROW LEVEL SECURITY</a></li>
+<li><a href="../264283/index.html">Welcome to Windows Camp - September 10, Moscow</a></li>
+<li><a href="../264285/index.html">Data Science: the path to professionalism</a></li>
+<li><a href="../264287/index.html">Two-factor authentication. New challenges</a></li>
+<li><a href="../264291/index.html">Creating The Blacksmith: animation, camera effects, audio / video</a></li>
+<li><a href="../264293/index.html">How we overcame USB data transfer</a></li>
+<li><a href="../264295/index.html">Secrets of testing Ethernet channels</a></li>
+<li><a href="../264297/index.html">Vim in full: Testing with xUnit</a></li>
+<li><a href="../264299/index.html">We assemble our OpenWRT on a Tp-Link TL-WR741ND v.4.25 router with vlan, openvpn, provider rotation and blackjack</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

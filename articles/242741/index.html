@@ -1,0 +1,260 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Open vSwitch as a virtual network core</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article uses KVM / libvirt for virtualization, but I’ll note right away that the article is not so much about KVM as about the features of the ad...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Open vSwitch as a virtual network core</h1><div class="post__text post__text-html js-mediator-article">  This article uses KVM / libvirt for virtualization, but I’ll note right away that the article is not so much about KVM as about the <s>features of the</s> advantages of using <nobr>Open vSwitch</nobr> to integrate virtual and physical network devices using VLAN technology (802.1q).  In epic times, all sorts of crutches and props of varying degrees of surprise were used to forward tagged traffic to the hypervisor (tuntap, brctl, vconfig, ebtables, etc.), which caused cluttering up the operating system hosting the hypervisor with a large number of unnecessary virtual network interfaces that appealed to the eyes ifconfig and generally grieving administrators with the need to build a standard network device (switch) from individual parts like a bicycle.  In addition to supporting 802.1q from the switch, in fact many more functions are required today.  So the need for a virtual device with the most appropriate for the functionality of a standard modern managed switch led to the emergence of the project <nobr>Open vSwitch</nobr> (hereinafter - OVS). <br><br><img src="https://habrastorage.org/files/6ca/091/e3e/6ca091e3e5cc4034b0f3b1a30022ee5e.png" alt="image"><blockquote>  Figure 1: Sandbox Project </blockquote><a name="habracut"></a>  The KDPV (Figure 1) depicts the OVS case for building a sandbox to prepare for replacing our outdated VPN routers with new ones.  It is necessary to configure new VPN routers in the same way as already installed in our company with the same IP addresses, filtering rules and dynamic routing settings.  And test everything in the sandbox, emulating ISPs (through which VPN routers connect) and sites of our localhost.  But again, this article is not about the complexity of setting up our VPN routers, but about how to connect them to our cozy virtual sandbox through VLAN in general and OVS in particular. <br>  Let's start from the very beginning by installing a clean copy of ubuntu-14.04.1-server-amd64 with the option "Virtual Machine host".  After installation, the system has the following form: <div class="spoiler">  <b class="spoiler_title">Displaying network options utilities</b> <div class="spoiler_text"><blockquote><blockquote>  root @ sandbox: ~ # <b>ifconfig | grep -vE 'RX | TX | coll | inet6 | MTU'</b> </blockquote><blockquote><pre>  eth0 Link encap: Ethernet HWaddr 00: 1b: 78: 9c: 2b: fc  
+           inet addr: 10.0.7.1 Bcast: 10.0.7.255 Mask: 255.255.255.0
+
+ lo Link encap: Local Loopback  
+           inet addr: 127.0.0.1 Mask: 255.0.0.0
+
+ virbr0 Link encap: Ethernet HWaddr 1a: 70: 19: e9: 3c: c7  
+           inet addr: 192.168.122.1 Bcast: 192.168.122.255 Mask: 255.255.255.0 </pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>route -n</b> </blockquote><blockquote><pre>  Kernel IP routing table
+ Destination Gateway Genmask Flags Metric Ref Use Iface
+ 0.0.0.0 10.0.7.254 0.0.0.0 UG 0 0 0 eth0
+ 10.0.7.0 0.0.0.0 255.255.255.0 U 0 0 0 eth0
+ 192.168.122.0 0.0.0.0 255.255.255.0 U 0 0 0 virbr0 </pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>cat / etc / network / interfaces | grep -v ^ #</b> </blockquote><blockquote><pre> auto lo
+ iface lo inet loopback
+
+ auto eth0
+ iface eth0 inet static
+	 address 10.0.7.1
+	 netmask 255.255.255.0
+	 network 10.0.7.0
+	 broadcast 10.0.7.255
+	 gateway 10.0.7.254
+	 # dns- * options are implemented by the resolvconf package, if installed
+	 dns-nameservers 10.0.1.1
+</pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>virsh net-list --all</b> </blockquote><blockquote><pre>  Name State Autostart Persistent
+ -------------------------------------------------- --------
+ default active yes yes </pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>virsh net-dumpxml default</b> </blockquote><blockquote><pre>  &lt;network&gt;
+   &lt;name&gt; default &lt;/ name&gt;
+   &lt;uuid&gt; 865fd53b-5bd5-430c-b7c7-664125dee9f6 &lt;/ uuid&gt;
+   &lt;forward mode = 'nat'&gt;
+     &lt;nat&gt;
+       &lt;port start = '1024' end = '65535' /&gt;
+     &lt;/ nat&gt;
+   &lt;/ forward&gt;
+   &lt;bridge name = 'virbr0' stp = 'on' delay = '0' /&gt;
+   &lt;ip address = '192.168.122.1' netmask = '255.255.255.0'&gt;
+     &lt;dhcp&gt;
+       &lt;range start = '192.168.122.2' end = '192.168.122.254' /&gt;
+     &lt;/ dhcp&gt;
+   &lt;/ ip&gt;
+ &lt;/ network&gt; </pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>brctl show</b> </blockquote><blockquote><pre>  bridge name bridge id STP enabled interfaces
+ virbr0 8000.000000000000 yes </pre></blockquote></blockquote></div></div>  Everything is very standard, or anything unusual. <br>  The picture is still simpler: <br><img src="https://habrastorage.org/files/165/fbc/7ab/165fbc7ab27248d38cb9326a2a488d76.png" alt="image"><blockquote>  Figure 2: Initial System Status </blockquote>  Install openvswitch: <blockquote>  <b>apt-get install openvswitch-switch</b> </blockquote>  After its installation, no changes in the network settings occur, only the OVS service is launched, waiting for our orders.  We will not keep him waiting.  Enter the following commands from the console or put them in a temporary .sh script and run: <blockquote><pre>  ovs-vsctl add-br ovs-br0
+ ovs-vsctl set port ovs-br0 tag = 7
+ ovs-vsctl add-port ovs-br0 eth0
+ ovs-vsctl set port eth0 trunks = 7,10,20,1010,1020,30,1030
+ ifconfig eth0 0
+ ifconfig ovs-br0 10.0.7.1/24 up
+ ip r add default via 10.0.7.254
+</pre></blockquote>  <b>switching the host to the tagged port of the switch</b> <div class="spoiler">  <b class="spoiler_title">Explanations</b> <div class="spoiler_text"><blockquote>  <b>ovs-vsctl add-br ovs-br0</b> </blockquote>  It creates an almost empty instance of the virtual switch, there is only one port to which the same-name internal interface ovs-br0 is connected. <blockquote>  <b>ovs-vsctl set port ovs-br0 tag = 7</b> </blockquote>  Configure this port as an access-port for VLAN 7. <blockquote>  <b>ovs-vsctl add-port ovs-br0 eth0</b> </blockquote>  We add to our switch another port to which we switch the interface eth0. <blockquote>  <b>ovs-vsctl set port eth0 trunks = 7,10,20,1010,1020,30,1030</b> </blockquote>  we do this port trunk for the specified VLAN ID.  In principle, the trunks parameter can be omitted at all, then the port will skip all VLAN IDs. <blockquote>  <b>ifconfig eth0 0</b> </blockquote>  Reset IP configuration for eth0.  It will no longer be associated with the OS IP stack. <blockquote>  <b>ifconfig ovs-br0 10.0.7.1/24 up</b> </blockquote>  Instead of eth0 to the IP stack of the OS, we screw the internal interface ovs-br0. <blockquote>  <b>ip r add default via 10.0.7.254</b> </blockquote>  Well, do not forget to restore the routing table <blockquote>  <b>We switch a host to the tagged port of the switch</b> </blockquote>  We are online!  (with) </div></div><div class="spoiler">  <b class="spoiler_title">We look that changed in network settings</b> <div class="spoiler_text"><blockquote><blockquote>  root @ sandbox: ~ # <b>ovs-vsctl show</b> </blockquote><blockquote><pre>  40952e4d-81ad-433b-b08b-f88ccd55f26a
+     Bridge "ovs-br0"
+         Port "ovs-br0"
+             tag: 7
+             Interface "ovs-br0"
+                 type: internal
+         Port "eth0"
+             trunks: [7,10,20,1010,1020,30,1030]
+             Interface "eth0"
+     ovs_version: "2.0.2" </pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>ifconfig | grep -vE 'RX | TX | coll | inet6 | MTU'</b> </blockquote><blockquote><pre>  eth0 Link encap: Ethernet HWaddr 00: 1b: 78: 9c: 2b: fc  
+
+ lo Link encap: Local Loopback  
+           inet addr: 127.0.0.1 Mask: 255.0.0.0
+
+ ovs-br0 Link encap: Ethernet HWaddr 00: 1b: 78: 9c: 2b: fc  
+           inet addr: 10.0.7.1 Bcast: 10.0.7.255 Mask: 255.255.255.0
+
+ virbr0 Link encap: Ethernet HWaddr 32: b9: dd: 38: 09: f5  
+           inet addr: 192.168.122.1 Bcast: 192.168.122.255 Mask: 255.255.255.0 </pre></blockquote></blockquote><blockquote><blockquote>  root @ sandbox: ~ # <b>route -n</b> </blockquote><blockquote><pre>  Kernel IP routing table
+ Destination Gateway Genmask Flags Metric Ref Use Iface
+ 0.0.0.0 10.0.7.254 0.0.0.0 UG 0 0 0 ovs-br0
+ 10.0.7.0 0.0.0.0 255.255.255.0 U 0 0 0 ovs-br0
+ 192.168.122.0 0.0.0.0 255.255.255.0 U 0 0 0 virbr0 </pre></blockquote></blockquote></div></div>  Well, in the form of pictures: <br><img src="https://habrastorage.org/files/95e/32c/edf/95e32cedff564506813ec8078d639f4d.png" alt="image"><blockquote><pre>  Figure 3: Install openvswitch and connect it to OS IP stack instead of eth0.
+ The virbr0 switch interface will not be shown later,  
+ it is not interesting for us and does not affect anything. </pre></blockquote>  Nothing unexpected, everything is logical and intuitive. <br>  Another nice moment for those who have already begun to worry about where to place the startup scripts for applying this configuration.  You don’t have to do anything else, the OVS configuration by the above ovs-vsctl commands is not only applied, but is automatically saved, so you don’t need to worry about the discrepancy between the current and the saved OVS configuration. <br>  And we only need to update the / etc / network / interfaces file only a little due to the replacement of the eth0 interface with ovs-br0: <blockquote><blockquote>  root @ sandbox: ~ # <b>cat / etc / network / interfaces | grep -v ^ #</b> </blockquote><blockquote><pre> auto lo
+ iface lo inet loopback
+
+ auto eth0
+ iface eth0 inet manual
+
+ auto ovs-br0
+ iface ovs-br0 inet static
+	 address 10.0.7.1
+	 netmask 255.255.255.0
+	 network 10.0.7.0
+	 broadcast 10.0.7.255
+	 gateway 10.0.7.254
+	 # dns- * options are implemented by the resolvconf package, if installed
+	 dns-nameservers 10.0.1.1
+</pre></blockquote></blockquote>  But the switch currently has only two ports, how can we connect our 5 virtual machines to it?  There are at least 2 ways.  The first, the most obvious one, is to add a port using the ovs-vsctl add-port command (access or trunk option). <blockquote><pre>  ovs-vsctl add-port ovs-br0 vlan10 tag = 10 - set interface vlan10 type = internal </pre><pre>  - (two lines) is used to execute several ovs-vsctl commands in one line. </pre></blockquote>  Then you can select it directly in the virt-manager GUI to connect the network interface of the virtual machine.  But we will go in a more scalable way.  At the same time, it is not necessary to create ports at all (as is the case with the standard linux core bridge).  Instead, you can create a port group for OVS.  Each port group is intended to connect the VM to the corresponding VLAN.  Unfortunately, their configuration from the virt-manager GUI is not available, you must manually prepare a simple XML file describing the necessary port groups and then apply it via the libvirt API using the virsh command, as follows: <div class="spoiler">  <b class="spoiler_title">XML config for the configuration shown in Figure 1</b> <div class="spoiler_text"><blockquote><pre> &lt;network&gt; &lt;name&gt; ovs-network &lt;/ name&gt; &lt;forward mode = 'bridge' /&gt; &lt;bridge name = 'ovs-br0' /&gt; &lt;virtualport type = 'openvswitch' /&gt; &lt;portgroup name = 'vlan-10 '&gt; &lt;vlan&gt; &lt;tag id = '10' /&gt; &lt;/ vlan&gt; &lt;/ portgroup&gt; &lt;portgroup name = 'vlan-20'&gt; &lt;vlan&gt; &lt;tag id = '20 '/&gt; &lt;/ vlan&gt; &lt;/ portgroup&gt; &lt;portgroup name = 'vlan-1010'&gt; &lt;vlan&gt; &lt;tag id = '1010' /&gt; &lt;/ vlan&gt; &lt;/ portgroup&gt; &lt;portgroup name = 'vlan-1020'&gt; &lt;vlan&gt; &lt;tag id = ' 1020 '/&gt; &lt;/ vlan&gt; &lt;/ portgroup&gt; &lt;portgroup name =' trunkPortGroup '&gt; &lt;vlan trunk =' yes '&gt; &lt;tag id = '30' /&gt; &lt;tag id = '1030' /&gt; &lt;/ vlan&gt; &lt;/ portgroup&gt; &lt;/ network&gt; </pre></blockquote></div></div>  We execute these commands: <blockquote><pre>  vi /tmp/ovs-network.xml
+ virsh net-define /tmp/ovs-network.xml
+ virsh net-start ovs-network
+ virsh net-autostart ovs-network </pre></blockquote><div class="spoiler">  <b class="spoiler_title">Explanations</b> <div class="spoiler_text"><blockquote>  <b>vi /tmp/ovs-network.xml</b> </blockquote>  copy the above XML content into this file <blockquote>  <b>virsh net-define /tmp/ovs-network.xml</b> </blockquote>  configuring new network for KVM <blockquote>  <b>virsh net-start ovs-network</b> </blockquote>  run it <blockquote>  <b>virsh net-autostart ovs-network</b> </blockquote>  make its launch automatic </div></div><div class="spoiler">  <b class="spoiler_title">to remove unwanted network</b> <div class="spoiler_text"><blockquote><pre> virsh net-destroy ovs-network
+ virsh net-autostart --disable ovs-network
+ virsh net-undefine ovs-network
+</pre></blockquote></div></div>  we represent the resulting: <br><img src="https://habrastorage.org/files/df8/18b/b42/df818bb42ca04369827e18f194a76633.png" alt="image"><blockquote>  Figure 4: Created port groups for our VMs </blockquote>  Let's create a pair of VM1 and VM2 virtual machines in virt-manager and when creating the Advanced options Virtual network 'ovs-network' option: Bridge network <br>  For now, let's leave them off. <br>  we will correct virtualok configs <blockquote>  <b>virsh edit VM1</b> </blockquote>  Find the interface section and add the portgroup parameter <blockquote><pre>     &lt;interface type = 'network'&gt;
+       &lt;mac address = '52: 54: 00: 5e: b9: b2 '/&gt;
+       &lt;source network = 'ovs-network' portgroup = 'vlan-10' /&gt;
+       &lt;model type = 'virtio' /&gt;
+       &lt;address type = 'pci' domain = '0x0000' bus = '0x00' slot = '0x03' function = '0x0' /&gt;
+     &lt;/ interface&gt;
+</pre></blockquote>  We do the same for the second VM <br>  If you look now at the state of the network interfaces of the switch and the operating system, you will see that no changes have occurred.  Ports on the switch are not added, there are no unnecessary network interfaces in the system. <br>  Now we will start both VMs: <div class="spoiler">  <b class="spoiler_title">and check the host network settings again</b> <div class="spoiler_text"><blockquote>  root @ sandbox: ~ # <b>ovs-vsctl show</b> </blockquote><blockquote><pre>  40952e4d-81ad-433b-b08b-f88ccd55f26a
+     Bridge "ovs-br0"
+         Port "vnet0"
+             tag: 10
+             Interface "vnet0"
+         Port "ovs-br0"
+             tag: 7
+             Interface "ovs-br0"
+                 type: internal
+         Port "eth0"
+             trunks: [7, 10, 20, 1010, 1020, 30, 1030]
+             Interface "eth0"
+         Port "vnet1"
+             tag: 20
+             Interface "vnet1"
+     ovs_version: "2.0.2" </pre></blockquote><blockquote>  root @ sandbox: ~ # <b>ifconfig | grep -vE 'RX | TX | coll | inet6 | MTU'</b> </blockquote><blockquote><pre>  eth0 Link encap: Ethernet HWaddr 00: 1b: 78: 9c: 2b: fc  
+
+ lo Link encap: Local Loopback  
+           inet addr: 127.0.0.1 Mask: 255.0.0.0
+
+ ovs-br0 Link encap: Ethernet HWaddr 00: 1b: 78: 9c: 2b: fc  
+           inet addr: 10.0.7.1 Bcast: 10.0.7.255 Mask: 255.255.255.0
+
+ virbr0 Link encap: Ethernet HWaddr 32: b9: dd: 38: 09: f5  
+           inet addr: 192.168.122.1 Bcast: 192.168.122.255 Mask: 255.255.255.0
+
+ vnet0 Link encap: Ethernet HWaddr fe: 54: 00: 5e: b9: b2  
+
+ vnet1 Link encap: Ethernet HWaddr fe: 54: 00: 7f: 40: d0 </pre></blockquote></div></div>  As you can see, the ports of the corresponding port-groups were added to the switch, and the system added a pair of interfaces with MAC addresses corresponding to the VMs (if you turn off the VM, the corresponding ports and interfaces will disappear again). <br><img src="https://habrastorage.org/files/117/73d/5a9/11773d5a9cda4eb1981c12a1a4bdbfd8.png" alt="image"><blockquote>  Figure 5: running a pair of VMs </blockquote>  I will also mention that 802.1q is not the only feature of <nobr>Open vSwitch</nobr> , it can be used to organize, for example, the bonding of two interfaces and <a href="http://openvswitch.org/features/">something else</a> . <br>  That's all.  I hope someone will help this article decide to use <nobr>Open vSwitch</nobr> in their projects and just sandboxes instead of the standard linux bridge. </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/242741/">https://habr.com/ru/post/242741/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../242725/index.html">Automatic connection of network multifunction devices with the ability to scan [Part 2]</a></li>
+<li><a href="../242727/index.html">Analyzing HTTP traffic with Mitmproxy</a></li>
+<li><a href="../242729/index.html">Configuring Ruby Module</a></li>
+<li><a href="../242731/index.html">Low cost, small, networked computers - a small overview</a></li>
+<li><a href="../242739/index.html">Power Raspberry Pi using Arduino</a></li>
+<li><a href="../242743/index.html">Paul Graham: An Illogical Startup</a></li>
+<li><a href="../242745/index.html">Robotics Expo 2014 Robotics Exhibition</a></li>
+<li><a href="../242747/index.html">The introduction of the software product. Features of the business consultant. Part I</a></li>
+<li><a href="../242749/index.html">The mechanics of informal communication of C # developers at the conference</a></li>
+<li><a href="../242751/index.html">Elementary OS. Impose cleanliness and order in Applications</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

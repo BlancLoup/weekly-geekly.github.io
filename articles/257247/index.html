@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>NFX - Ultra Efficient Binary Serialization in the CLR</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Requirements 
+ In this article, we will consider the tasks of transferring complex objects between processes and machines. In our systems there were m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>NFX - Ultra Efficient Binary Serialization in the CLR</h1><div class="post__text post__text-html js-mediator-article"><h1>  Requirements </h1><br>  In this article, we will consider the tasks of transferring complex objects between processes and machines.  In our systems there were many places where it was required to move a large number of business objects of various structures, for example: <br><br><ul><li>  self-looped object graphs (trees with back references) </li><li>  arrays of structures (value types) </li><li>  classes / structures with readonly fields </li><li>  existing .Net collections instances (Dictionary, List) that use custom-serialization internally </li><li>  a large number of instances of types specialized for a specific task </li></ul><br><br>  It will focus on three aspects that are very important in distributed cluster systems: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  serialization / deserialization rate </li><li>  volume of objects in the serialized form </li><li>  the ability to use existing objects without the need to “decorate” these objects and their fields with auxiliary attributes for serialization </li></ul><br><a name="habracut"></a><br>  Briefly consider the three aspects listed above. <br><br>  <b>The first is speed.</b>  This is very important to ensure the overall speed of the system in a distributed environment, when to perform a task (for example, a request from one user) you need to execute five to ten requests to other back end machines. <br><br>  <b>The second is the volume.</b>  When transferring / replicating a large amount of data, the budget of the communication channel between data centers should not “swell”. <br><br>  <b>The third is convenience.</b>  It is very inconvenient when only serialization / marshaling requires the creation of “extra” objects, ktr.  transfer data.  It is also inconvenient to force a programmer of a particular business type to write low-level code for writing an instance into an array of bytes.  Maybe this can be done when you have 5-6 classes, but what to do if your system has 30 basic generic classes (ie DeliveryStrategy), each of which is combined with dozens of other classes (this gives hundreds of specific types, ie: DeliveryStrategy, DeliveryStrategy, DeliveryStrategy etc.).  I would very much like to have a transparent system that can serialize almost all classes of the domain without the need for additional markup, code, etc.  Of course, there are things that do not need to be serialized, for example, some unmanaged resources or delegates, but everything else is usually needed, even such elements as readonly fields of structures and classes. <br><br>  This article covers the topic of binary serialization.  We will not talk about JSON and other formats, as they are not designed to effectively solve the above problems. <br><br><h1>  The problems of existing serializers </h1><br>  Immediately make a reservation, everything that is written here is relative - depending on what to compare with.  If you write / read hundreds of objects per second, then there is no problem.  Another thing is when you need to handle tens or even hundreds of thousands of objects per second. <br><br>  BinaryFormatter - veteran .Net.  It is easy to use and better suited to requirements than the DataContractSerializer.  Well supports all built-in types of collections and other BCL classes.  Supports object versioning.  Not interoperable between platforms.  It has very large performance disadvantages.  It is very slow and serialization produces very massive streams. <br><br>  DataContractSerializer is a WCF engine.  Works faster than BinaryFormatter in many cases.  Supports interoperability and versioning.  However, this serializer is not intended to solve general-purpose serialization problems per se.  It requires specialized decoration of classes and fields with attributes, there are also problems with polymorphism and support for complex types.  This is very explicable.  The fact is that DataContractSerializer is not intended, by definition, to work with arbitrary types (hence the name). <br><br>  Protobuf - super speed!  Uses Google format, allows you to change the version of objects and super-fast.  Interoperability between platforms.  It has a major drawback - it does not “understand” all types automatically and does not support complex graphs. <br><br>  Thrift is a facebook development.  Uses its IDL, interoperable between languages, allows you to change the version.  Disadvantages: it works rather slowly, consumes a lot of memory, does not support cyclic graphs. <br><br>  Based on the above characteristics, if you do not take into account the performance, the most suitable serializer for us is BinaryFormatter.  He is the most “transparent”.  The fact that it does not support interoperability between platforms is not important for us, because  we have one platform - Unistack.  But the speed of his work is just awful.  Very slow and large output. <br><br><h1>  NFX.Serialization.Slim.SlimSerializer </h1><br>  <a href="">github.com/aumcode/nfx/blob/master/Source/NFX/Serialization/Slim/SlimSerializer.cs</a> <br><br>  SlimSerializer is a hybrid serializer with dynamic generation of ser / deser code in runtime for each specific type. <br><br>  We did not try to make an absolutely universal decision, because then we would have to sacrifice something.  We did not do things that.  for us are not important, namely: <br><ul><li>  cross-platform </li><li>  object version upgrade </li></ul><br><br>  Based on the foregoing, the SlimSerializer is not suitable for such tasks, where: <br><ul><li>  data is stored in storage (for example, on disk) </li><li>  data is generated / received by processes not on the CLR platform, but Windows.NET - to - Linux.MONO and Linux.MONO - to - Windows.NET work great </li></ul><br><br>  SlimSerializer is designed for situations where: <br><ul><li>  need a high speed (hundreds of thousands of operations per second) </li><li>  required to save the amount of data transferred </li><li>  specialized markup for serialization is unrealistic for various reasons (for example, very many classes) </li></ul><br><br>  SlimSerializer supports all kinds of edge-cases, for example: <br><ul><li>  direct serialization of primitive structures and their Nullable equivalents (DateTime, Timespan, Amount, GDID, FID, GUID, MethodSpec, TypeSpec etc.) </li><li>  direct serialization of basic reference types (byte [], char [], string []) </li><li>  support for classes and structures with read-only fields </li><li>  support for custom-serialization ISerializable, OnSerializing, OnSerialized ... etc. </li><li>  cascaded nested serialization (for example, some type custom-serializes itself and must call the SlimSerializer for some field) </li><li>  allows you to serialize any supported types (except delegates) to the root </li><li>  normalizes graphs of any complexity and nesting </li><li>  Buffer-overflow detection in deserialization (this is necessary when the stream is corrupted and an inadvertent allocation of a large piece of memory is possible) </li></ul><br><br>  The development is not easy and has already undergone many optimizations.  The results that we have been able to achieve are not finite, we can still speed up, but this will cause a complication of the already non-trivial code. <br><br>  <b>How it works?</b> <br><br>  SlimSeralizer uses a streamer, which is taken from the injectable format <a href="">github.com/aumcode/nfx/blob/master/Source/NFX/IO/StreamerFormats.cs</a> .  Streammer formats are needed in order to serialize certain types directly into a stream.  For example, we by default support such types as FID, GUID, GDID, MetaHandle etc.  The fact is that certain types can be cleverly pack variable-bit encoding.  This gives a very large increase in speed and saves space.  All integer primitives are written with variable-bit encoding.  Thus, in cases when you need a super-fast support of a special type, you can inherit StreamerFormat and add WriteX / ReadX methods.  The system itself collects and turns them into lambda functors, which are needed for fast serialization / deserialization. <br><br>  For each type, TypeDescriptor <a href="">github.com/aumcode/nfx/blob/master/Source/NFX/Serialization/Slim/TypeSchema.cs</a> . <a href="">Is</a> built, which dynamically compiles a pair of functors for serialization and deserialization. <br><br>  SlimSerializer is built on the idea of ​​TypeRegistry and this is the main highlight of the entire serializer <a href="">github.com/aumcode/nfx/blob/master/Source/NFX/Serialization/Slim/TypeRegistry.cs</a> .  Types are written as a string — the full name of the type, but if such a type has already been encountered before, then a type handle of the form “$ 123” is written.  This designates the type found in the registry behind the number 123. <br><br>  When we encounter a reference, we replace it with MetaHandle <a href="">github.com/aumcode/nfx/blob/master/Source/NFX/IO/MetaHandle.cs</a> , which effectively inlines either a string, if reference is string, or integer, which is the instance number object in the object graph, i.e.  a kind of pseudo-pointer handle.  During deserialization, everything is reconstructed in the reverse order. <br><br><h1>  Performance </h1><br>  All the following tests were performed on Intel Core I7 3.2 GHz on a single stream. <br>  Performance SlimSerializer is scaled in proportion to the number of threads.  We use specialized thread-static optimization in order not to copy the buffer. <br><br>  Take the next type as an “experimental.”  Pay attention to the various attributes that are needed for DataContractSerializer: <br><br><pre><code class="cs hljs">[<span class="hljs-meta"><span class="hljs-meta">DataContract(IsReference=true)</span></span>] [Serializable] <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">class</span></span> <span class="hljs-title"><span class="hljs-title">Perzon</span></span> { [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">string</span></span> FirstName; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">string</span></span> MiddleName; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">string</span></span> LastName; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Perzon Parent; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> Age1; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> Age2; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>? Age3; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>? Age4; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">double</span></span> Salary1; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">double</span></span>? Salary2; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Guid ID1; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Guid? ID2; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Guid? ID3; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> List&lt;<span class="hljs-keyword"><span class="hljs-keyword">string</span></span>&gt; Names1; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> List&lt;<span class="hljs-keyword"><span class="hljs-keyword">string</span></span>&gt; Names2; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> O1 = <span class="hljs-number"><span class="hljs-number">1</span></span>; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> O2 = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> DateTime O3 = App.LocalizedTime; [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> TimeSpan O4 = TimeSpan.FromHours(<span class="hljs-number"><span class="hljs-number">12</span></span>); [DataMember]<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">decimal</span></span> O5 = <span class="hljs-number"><span class="hljs-number">123.23</span></span>M; }</code> </pre> <br><br>  And now we do many times 500,000 objects: <br><ul><li>  Slim serialize: <b>464 252 ops / sec;</b>  <b>size: 94 bytes</b> </li><li>  Slim deser: 331,564 <b>ops / sec</b> </li><li>  BinFormatter serialize: 34,702 ops / sec: size: 1188 bytes </li><li>  BinFormatter deser: 42 702 ops / sec </li><li>  DataContract serialize: 108 932 ops / sec: size: 773 bytes </li><li>  DataContract deser: 41 985 ops / sec </li></ul><br><br>  Slim serialization speed to BinFormatter: 13.37 times faster. <br>  Slim deserialization speed to BinFormatter: 7.76 times faster. <br>  Slim volume to BinFormatter: 12.63 times smaller. <br><br>  Slim serialization speed to DataContract: 4.26 times faster. <br>  Slim deserialization speed to DataContract: 7.89 times faster. <br>  Slim volume to DataContract: 8.22 times smaller. <br><br>  And now we try a complex object-graph from several dozen mutually referring objects, including arrays and sheets (many times 50,000 objects): <br><ul><li>  Slim serialize: <b>12,036 ops / sec;</b>  <b>size: 4 466 bytes</b> </li><li>  Slim deser: <b>11,322 ops / sec</b> </li><li>  BinFormatter serialize: 2,055 ops / sec: size: 7,393 bytes </li><li>  BinFormatter deser: 2,277 ops / sec </li><li>  DataContract serialize: 3,943 ops / sec: size: 20,246 bytes </li><li>  DataContract deser: 1,510 ops / sec </li></ul><br><br>  Slim serialization speed to BinFormatter: 5.85 times faster. <br>  Slim deserialization speed to BinFormatter: 4.97 times faster. <br>  Slim volume to BinFormatter: 1.65 times smaller. <br><br>  Slim serialization speed to DataContract: 3.05 times faster. <br>  Slim de-serialization rate to DataContract: 7.49 times faster. <br>  Slim volume to DataContract: 4.53 times smaller. <br><br>  Note the difference in the serialization of the typed class (the first case is “Perzon”) and the second (many objects).  In the second case, there is a complex graph with cyclic interconnections of objects and therefore Slim begins to approach (slow down) in speed to Microsoft.  However, it still exceeds the latter at least 4 times in speed and one and a half times in volume.  The code for this test is: <a href="">github.com/aumcode/nfx/blob/master/Source/Testing/Manual/WinFormsTest/SerializerForm2.cs#L51-104</a> <br><br>  And here is the comparison with Apache.Thrift: <a href="http://blog.aumcode.com/2015/03/apache-thrift-vs-nfxglue-benchmark.html">blog.aumcode.com/2015/03/apache-thrift-vs-nfxglue-benchmark.html</a> . <br>  Although these numbers are not based on pure serialization, but on the whole of NFX.Glue (which includes messaging, TCP networking, security etc), the speed is very dependent on the SlimSerializer, on which the native NFX.Glue builds. <br><br><pre> <code class="cs hljs">Each test <span class="hljs-keyword"><span class="hljs-keyword">is</span></span>: <span class="hljs-number"><span class="hljs-number">64</span></span>,<span class="hljs-number"><span class="hljs-number">000</span></span> calls each returning a <span class="hljs-keyword"><span class="hljs-keyword">set</span></span> of <span class="hljs-number"><span class="hljs-number">10</span></span> rows each having <span class="hljs-number"><span class="hljs-number">10</span></span> fields <span class="hljs-number"><span class="hljs-number">640</span></span>,<span class="hljs-number"><span class="hljs-number">000</span></span> total rows pumped Glue: took <span class="hljs-number"><span class="hljs-number">1982</span></span> msec @ <span class="hljs-number"><span class="hljs-number">32290</span></span> calls/sec Thrift1: took <span class="hljs-number"><span class="hljs-number">65299</span></span> msec @ <span class="hljs-number"><span class="hljs-number">980</span></span> calls/sec <span class="hljs-number"><span class="hljs-number">32</span></span>x slower than Glue Thrift2: took <span class="hljs-number"><span class="hljs-number">44925</span></span> msec @ <span class="hljs-number"><span class="hljs-number">1424</span></span> calls/sec <span class="hljs-number"><span class="hljs-number">22</span></span>x slower than Glue ================================================================= Glue <span class="hljs-keyword"><span class="hljs-keyword">is</span></span>: <span class="hljs-number"><span class="hljs-number">32</span></span> times faster than Thrift BinaryProtocol <span class="hljs-number"><span class="hljs-number">22</span></span> times faster than Thrift CompactProtocol</code> </pre><br><br><h1>  Results </h1><br>  The NFX SlimSerializer delivers exceptionally high and predictably stable performance, saving processor and memory resources.  This is what opens up opportunities for high-load technologies on the CLR platform, allowing hundreds of thousands of requests per second to be processed at each node of distributed systems. <br><br>  SlimSerializer has several limitations due to the inability to create a practical “one size fits all” system.  These restrictions: lack of versioning of data structures, delegate serialization, interoperability with other platforms except CLR.  However, it is worth noting that in the Unistack concept (unified software stack for all nodes of the system), these restrictions are generally invisible except for the lack of versioning, i.e.  SlimSerializer is not intended for long-term storage of data on the disk, if the data structure may change. <br><br>  NFX.Glue's ultra-efficient native banding allows servicing 100,000 + two-way calls per second thanks to the specialized optimizations used in the serializer, while not requiring the programmer to do extra work on creating extra data-transfer types <br><br>  <a href="https://youtu.be/m5zckEbXAaA">youtu.be/m5zckEbXAaA</a> <br><iframe width="560" height="315" src="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=https://www.youtube.com/embed/m5zckEbXAaA%3Ffeature%3Doembed&amp;xid=17259,15700021,15700186,15700190,15700248,15700253&amp;usg=ALkJrhg6Rhx2GELljn82XI52C9ZSdx6W_Q" frameborder="0" allowfullscreen=""></iframe><br>  <a href="https://youtu.be.com/KyhYwaxg2xc">youtu.be.com/KyhYwaxg2xc</a> <br><iframe width="560" height="315" src="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=https://www.youtube.com/embed/KyhYwaxg2xc%3Ffeature%3Doembed&amp;xid=17259,15700021,15700186,15700190,15700248,15700253&amp;usg=ALkJrhjfMSbTQwrcFW46SR8BJvR80KBlWg" frameborder="0" allowfullscreen=""></iframe><br><br>  SlimSerializer significantly overtakes the tools built into .NET, allowing you to efficiently handle complex graphs of interrelated objects (which neither Protobuf nor Thrift can do). </div><p>Source: <a href="https://habr.com/ru/post/257247/">https://habr.com/ru/post/257247/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../257237/index.html">What to expect when you expect a child: PHP 7, part 1</a></li>
+<li><a href="../257239/index.html">Garbage in file names or hiding our swans (wordpress)</a></li>
+<li><a href="../257241/index.html">EHR-EMR-PHR or how does an EHR differ from an EHR?</a></li>
+<li><a href="../257243/index.html">The best reports. NEXT 2014 in St. Petersburg (video inside)</a></li>
+<li><a href="../257245/index.html">Digest KolibriOS # 8: the gifts of spring</a></li>
+<li><a href="../257251/index.html">Perl Maze Solution</a></li>
+<li><a href="../257253/index.html">Build with flexbox</a></li>
+<li><a href="../257255/index.html">Backing up and restoring virtualized Microsoft SQL Server databases</a></li>
+<li><a href="../257257/index.html">Weekly assembly Vivaldi 1.0.167.2</a></li>
+<li><a href="../257259/index.html">VMware's Virtual Volumes - Can't I Deploy?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

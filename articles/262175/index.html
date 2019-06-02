@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Real-time data processing in AWS Cloud. Part 1</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! 
+
+ Today I want to talk about one of the typical tasks in the field of Cloud Computing and Big Data and the approach to its solution, which we ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Real-time data processing in AWS Cloud. Part 1</h1><div class="post__text post__text-html js-mediator-article">  Hello! <br><br>  Today I want to talk about one of the typical tasks in the field of Cloud Computing and Big Data and the approach to its solution, which we found in TeamDev. <br><br><img src="https://habrastorage.org/files/940/60a/dff/94060adff5094cbfa90d39f0e164a193.png" alt="image">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      We are faced with BigData issues in the development of a public service for one of the companies involved in the storage and analysis of biological research results.  The goal of the customer at the next stage was the real-time visualization of certain slices of such data. <br><br>  Let's try to formalize the task. <br><br><a name="habracut"></a><br><br>  <b>Initial data:</b> tens of thousands of files, each of which consists of several related matrices of the type int and float.  The size of one file varies and may be about 2-4 GB.  All data is supposed to be uploaded to the cloud storage. <br><br>  <b>Return values: a</b> set of points on which to build a high resolution image.  The processing involves the summation and finding of maximum values ​​in arrays with given boundaries, and therefore is a fairly active CPU time consumer.  The size of the results depends on the request from the user - from ~ 50 KB to ~ 20 MB.  The size of the source data to be processed to form one answer exceeds the size of the answer by 30-200 times.  That is, to send a 100 KB response, you need to read and process about 3-20 MB. <br><br>  <b>Requirements:</b> <br><br><ul><li>  The ability for end users to use a browser or desktop application to navigate through the data. </li><li>  Equal access speed for users regardless of their geographic location. </li><li>  Simultaneous work of 100+ users with the possibility of horizontal scaling. </li><li>  Rendering images at a comfortable speed for work - up to 500ms per image. </li></ul><br><br>  <b>Baseline:</b> <br><br>  As a cloud provider, the customer chose Amazon Web Services using Amazon S3 as an “endless” source data repository and Amazon EC2 as a host for work nodes. <br><br>  The front-end, which should give images to browsers and desktop client, is written in Java.  Located on Amazon EC2. <br><br>  The back-end that defines the business logic, including data access control, is written in Java and is located on another EC2 instance. <br><br>  The descriptive part of the data (where they lie, who they own, what they are) is in MySQL on Amazon RDS. <br><br><h2>  Where to begin? </h2><br><br>  With attempts to solve the problem "in the forehead"!  What if you create one application that processes in parallel a set of requests from users?  It is proposed to take data from S3 and give some structure that represents a set of points or render the finished image. <br><br>  The set of difficulties encountered is obvious: <br><br><ol><li>  The average response volume is 4 MB.  For 100 simultaneous or almost simultaneous requests, the total volume of results reaches 4 MB * 100 = 400 MB.  The size of the source data exceeds the size of the response 30 or more times.  It means that it will be necessary at the same time to read at least 30 * 400 MB of ~ 12 GB from the storage, and as much as 200 * 400 MB of ~ 80 GB of data. </li><li>  The presence of 100 simultaneous requests, the processing of each of which requires CPU time, implies a comparable number of CPUs. </li><li>  The theoretical maximum network bandwidth between Amazon S3 and the EC2 instance is 1 Gbit / s, that is, 125 MB / s.  That is, in order to read [in the lab] even 12 GB of data will take approximately 12 * 1024/125 ~ 98 seconds. </li><li>  The only instance can in no way serve users from different parts of the planet with equal speed. </li></ol><br><br>  Amazon EC2 allows you to create instances of different sizes, but the largest of them - d2.8xlarge (36 x Intel Xeon E5-2676v3, 244 GB of RAM) - solves only problems №1 and №2.  Problem number 3 - time to load data - is two orders of magnitude higher than the expected rate of return of results.  In addition, the scalability of this solution tends to zero. <br><br><h3>  Ready solution? </h3><br><br>  <b>Elastic MapReduce</b> <br><br>  AWS provides cloud-based <a href="http://aws.amazon.com/elasticmapreduce/">Elastic MapReduce</a> , which is hosted Apache Hadoop, for solving such problems.  With its help, it is possible to overcome all the difficulties encountered by distributing the load among the nodes of the cluster.  However, in this version there are new problems: <br><br><ol><li>  Hadoop task start speed is seconds.  Which is several times slower than the required response time. </li><li>  The need to pre-warm the cluster and load the selected data from S3 to HDFS.  This requires additional gestures at the choice of a cluster operating strategy (clusters) for load balancing. </li><li>  The result is delivered to S3 or HDFS, which requires additional infrastructure to deliver it to the end user. </li></ol><br><br>  In general, Elastic MapReduce is well suited for tasks that do not imply a conditionally instant result.  But to solve our problem it is impossible to use it, mainly because of non-compliance with the requirements at the time of processing the request. <br><br>  <b>Apache storm</b> <br><br>  As an alternative, preserving the advantages of the MapReduce-approach, but allowing to receive the result of processing in close to real time, the <a href="https://storm.apache.org/">Apache Storm is</a> well suited.  This framework was used for the needs of Twitter (processing of analytical events) and is adapted for task flows with millions of queues. <br><br>  The installation of Storm in AWS Cloud is well thought out: there are ready deployment scripts that automatically launch all the necessary nodes plus the Zookeeper instance to maintain the viability of the system. <br>  However, upon closer examination (a prototype was made), it turned out that this solution also has several disadvantages: <br><br><ol><li>  Changing the configuration of a Storm cluster (adding nodes, deploying new versions) is not transparent on the fly.  If to be completely accurate, in many cases, changes are guaranteed to be picked up only after the cluster is restarted. </li><li>  The concept of processing messages in Storm in RPC mode implies at least three stages for the implementation of MapReduce: division of work into parts, processing of part of work, combining results.  Each of these steps is generally performed on its own node.  In turn, this leads to additional serialization-deserialization of the binary content of messages. </li><li>  Not the easiest approach to integration testing - raising a whole test cluster requires resources and time. </li><li>  Obsessive API (from the category of tastes, but nonetheless). </li></ol><br><br>  The concept, built with the help of Storm, met the requirements, including speed.  But because of the permanently arising tasks of servicing this solution (points 1 and 3) and temporary losses due to the “extra” serialization (point 2), it was decided to abandon it. <br><br>  <b>Elastic beanstalk</b> <br><br>  Another option was to write your own application with placement in Amazon <a href="http://aws.amazon.com/elasticbeanstalk/">Elastic Beanstalk</a> .  Such an option could solve all the problems in one fell swoop: a set of EC2 instances for distributing the load on the CPU and the network, automatic scaling, metrics and maintaining the viability of all nodes.  But upon closer inspection doubts arose: <br><br><ol><li>  Vendor lock-in.  After discussion with the customer, it turned out that in addition to developing a public service, his plans also included the delivery of boxed solutions with similar functionality.  And if an alternative to Amazon EC2 and Amazon S3 with similar functionality can be found in intranet-oriented products (for example, the Pivotal product line), there is no adequate replacement for Beanstalk. </li><li>  Insufficient flexibility in scaling settings.  Statistics at the request of users spoke of obvious surges, tied to the time of the beginning of the working day.  But the system did not allow to bind the pre-heating of the servers to the time of day.  [Most recently, this opportunity has <a href="http://aws.amazon.com/about-aws/whats-new/2015/05/aws-elastic-beanstalk-supports-time-based-scaling/">appeared</a> ]. </li><li>  Not the most reliable Amazon SQS message delivery service that is part of Beanstalk.  Amazon Developer Forums are full of problems when working with the SDK of this service. </li><li>  Comprehensive deployment procedure. </li></ol><br><br>  We refused such a decision, mainly because of the first paragraph.  But it is worth noting that Beanstalk is developing rapidly, and in the next projects we will definitely turn our attention to it. <br><br><h3>  Bicycle </h3><br><br>  Two opinions are widespread in our environment: “everything is written before us - you need to be able to search” and “if you want to do something well, do it yourself”.  Based on the experience gained during the search, it was decided in favor of a samopinny system. <br><br>  (about which - in the <a href="http://habrahabr.ru/post/262431/">next part of the article</a> ). </div><p>Source: <a href="https://habr.com/ru/post/262175/">https://habr.com/ru/post/262175/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../262155/index.html">Top 10 data mining algorithms in simple language</a></li>
+<li><a href="../262163/index.html">Reliable storage and update of data in flash memory of STM32 and MSP430 microcontrollers</a></li>
+<li><a href="../262167/index.html">Android WebView: actual problems and their solutions</a></li>
+<li><a href="../262169/index.html">Consulo: Running Java code on the .NET platform using IKVM.NET</a></li>
+<li><a href="../262173/index.html">Build-Deploy-Test. Continuous integration</a></li>
+<li><a href="../262177/index.html">Web file manager with integrated chickenpox</a></li>
+<li><a href="../262179/index.html">How to beat Excluded Constraints with RubyGem</a></li>
+<li><a href="../262181/index.html">Using potential fields in real-time strategy scenarios</a></li>
+<li><a href="../262183/index.html">React on ES6 +</a></li>
+<li><a href="../262185/index.html">The history of routing in the project MAPS.ME</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

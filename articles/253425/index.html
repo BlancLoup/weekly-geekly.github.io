@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Intel® Graphics Technology. Part III: Efficient Calculations on a Graph</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the comments to the previous post , a very important question was raised - will there be any performance gains from uploading calculations to the i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Intel® Graphics Technology. Part III: Efficient Calculations on a Graph</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/files/b06/a26/be1/b06a26be1e6f41b2be386a2e32de4679.png" alt="image"></div><br>  In the comments to the previous <a href="http://habrahabr.ru/company/intel/blog/250545/">post</a> , a very important question was raised - will there be any performance gains from uploading calculations to the integrated graphics, as compared to running only on the CPU?  Of course, it will, but you need to follow certain programming rules for effective computing on the GFX + CPU. <br>  In confirmation of my words, I will immediately present the graph of acceleration obtained when performing calculations on an integrated graph, for various algorithms and with varying degrees of CPU involvement.  At KDPV, we see that the gain is more than significant. <br><a name="habracut"></a><br>  Many will say that it’s not at all clear what these algorithms are and what they did with this code to get such results. <br>  Therefore, consider how to achieve such impressive results for effective implementation on the GFX. <br>  To begin with, we will try to collect all the features and methods together, taking into account our knowledge of the specifics of the piece of hardware, and then proceed to the implementation of a specific example using Intel Graphics Technology.  So, what to do to get high performance: <br><ul><li>  We increase the iteration space by using nested cilk_for.  As a result, we have a greater resource for parallelism and more threads on the GPU may be busy. </li><li>  For vectorization of the code (yes, for the GPU it is just as important as for the CPU), which will be offloaded using the pragma simd directive or the Intel® Cilk ™ Plus array notation. </li><li>  We use the __restrict__ and __assume_aligned () keywords so that the compiler does not create different versions of code (code paths).  For example, it can generate two versions for working with aligned and non-aligned memory, which will be checked in runtime and the execution will follow the required “branch”. </li><li>  Do not forget that the pin in the pragma offload directive avoids the overhead of copying data between DRAM and card memory and allows you to use shared memory for CPU and GPU. </li><li>  We prefer to work with 4-byte elements than 1-or 2-byte elements, because gather / scatter operations with this size are much more efficient.  For the case of 1.2 bytes, they are much slower. </li><li>  Even better is to avoid gather / scatter instructions.  To do this, use the SoA data structure (Structure of Arrays) instead of AoS (Array of Structures).  Here everything is extremely simple - it is better to store data in arrays, then memory access will be consistent and efficient. </li><li>  One of the greatest strengths of GFX is its 4 KB register file for each stream.  If local variables exceed this size, you will have to work with much slower memory. </li><li>  When working with the array int buf [2048], allocated in the register file (GRF), the indexed access to the register will be performed in a loop of the form for (i = 0.2048) {... buf [i] ...}.  In order to work with direct addressing, we loop the loop (loop unrolling) with the pragma unroll directive. </li></ul><br>  Now let's see how it all works.  I did not take the simplest example of matrix multiplication, but modified it a little using <a href="http://habrahabr.ru/company/intel/blog/205552/">the Cilk Plus array notation</a> for vectorization and <a href="https://software.intel.com/ru-ru/blogs/2012/03/02/cache-blocking">cache blocking</a> optimization. <br>  I decided to honestly change the code and see how the performance changes. <br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">matmul_tiled</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">float</span></span></span></span><span class="hljs-function"><span class="hljs-params"> A[][K], </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">float</span></span></span></span><span class="hljs-function"><span class="hljs-params"> B[][N], </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">float</span></span></span></span><span class="hljs-function"><span class="hljs-params"> C[][N])</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> m = <span class="hljs-number"><span class="hljs-number">0</span></span>; m &lt; M; m += TILE_M) { <span class="hljs-comment"><span class="hljs-comment">// iterate tile rows in the result matrix for (int n = 0; n &lt; N; n += TILE_N) { // iterate tile columns in the result matrix // (c) Allocate current tiles for each matrix: float atile[TILE_M][TILE_K], btile[TILE_N], ctile[TILE_M][TILE_N]; ctile[:][:] = 0.0; // initialize result tile for (int k = 0; k &lt; K; k += TILE_K) { // calculate 'dot product' of the tiles atile[:][:] = A[m:TILE_M][k:TILE_K]; // cache atile in registers; for (int tk = 0; tk &lt; TILE_K; tk++) { // multiply the tiles btile[:] = B[k + tk][n:TILE_N]; // cache a row of matrix B tile for (int tm = 0; tm &lt; TILE_M; tm++) { // do the multiply-add ctile[tm][:] += atile[tm][tk] * btile[:]; } } } C[m:TILE_M][n:TILE_N] = ctile[:][:]; // write the calculated tile to back memory } } }</span></span></code> </pre> <br>  The advantages of this algorithm with block work with matrices are clear - we are trying to avoid problems with the cache, and for this we change the sizes of TILE_N, TILE_M and TILE_K.  Having collected this example by the Intel compiler with optimization and matrix sizes M and K equal to 2048, and N - 4096, I launch the application.  The rendering time is 5.12 seconds.  In this case, we used only vectorization by means of Cilk (and, moreover, a set of SSE instructions on default).  We need to implement parallelism on tasks.  To do this, you can use cilk_for: <br><pre> <code class="cpp hljs">cilk_for(<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> m = <span class="hljs-number"><span class="hljs-number">0</span></span>; m &lt; M; m += TILE_M) ...</code> </pre><br>  Reassemble the code and run it again.  Expected, we get almost linear acceleration.  On my system with a 2 core processor, the time was 2.689 seconds.  It's time to use offload on the schedule and see what we can win in performance.  So, using the pragma offload directive and adding the nested cilk_for loop, we get: <br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">pragma</span></span></span><span class="hljs-meta"> offload target(gfx) pin(A:length(M)) pin(B:length(K)) pin(C:length(M)) cilk_for(int m = 0; m &lt; M; m += TILE_M) { cilk_for(int n = 0; n &lt; N; n += TILE_N) { ...</span></span></code> </pre><br>  The offload application ran 0.439 seconds, which is pretty good.  In my case, additional modifications with unroll cycles did not show a serious increase in performance.  But the key role was played by the algorithm for working with matrices.  The sizes TILE_M and TILE_K were chosen equal to 16, and TILE_N - 32. Thus the sizeof (atile) was 1 KB, the sizeof (btile) - 128 B, and the sizeof (ctile) - 2 KB.  I think it is clear why I did all this.  That's right, the total size of 1 KB + 2 KB + 128 B turned out to be less than 4 KB, which means we worked with the fastest memory (register file) available to each stream on the GFX. <br>  By the way, the usual algorithm worked much longer (about 1.6 seconds). <br>  For the sake of experiment, I turned on the generation of AVX instructions and sped up a few more on the CPU only to 4.098 seconds, and the Cilk version of the tasks to 1.784.  However, it was the offload on the GFX that made it possible to significantly increase performance. <br>  I was not lazy and decided to see what the VTune Amplfier XE can do in such an application. <br>  I collected the code with debug information and launched Basic Hotspot analysis with a checkmark 'Analyze GPU usage': <br><div style="text-align:center;"><img src="http://habrastorage.org/files/067/7b6/5fb/0677b65fb3c343049ec9fdd6f2f8ec80.png" alt="image"></div><br>  It is interesting that for OpenCL there is a separate option.  Having collected the profile and climbed the tabs of Vtune, I found the following information: <br><div style="text-align:center;"><img src="//habrastorage.org/files/b28/426/1e8/b284261e885e481bbf8d42b5d0f5b3a0.png"></div><br>  To say that I learned from this much useful, I can not.  Nevertheless, I saw that the application uses the GPU, and even noticed on the timeline when the offload began.  In addition, it is possible to determine how efficiently (as a percentage) all the cores on the graph (GPU EU) were used over time, and generally evaluate the use of the GPU.  I think that if necessary it is worthwhile to dig a little longer, especially if the code was not written by you.  Colleagues assured that you can still find a lot of useful things with VTune when working with the GPU. <br><br>  As a result, it should be said that there is a gain from using offload on the graphics integrated into the processor, and it is quite substantial, subject to certain code requirements, which we talked about. </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/253425/">https://habr.com/ru/post/253425/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../253407/index.html">CNC machine with advanced functionality</a></li>
+<li><a href="../253413/index.html">Installing gitolite on a Centos server</a></li>
+<li><a href="../253419/index.html">Visualization of equipment performance statistics with R - Shiny</a></li>
+<li><a href="../253421/index.html">Making the code cleaner: Recommendations for preparing changes to the Linux kernel</a></li>
+<li><a href="../253423/index.html">We will throw the puck in iOS eight</a></li>
+<li><a href="../253427/index.html">There is no time to explain! #FailOverConf, Moscow, April 10</a></li>
+<li><a href="../253431/index.html">Overriding Primary Key in Ruby on Rails</a></li>
+<li><a href="../253435/index.html">The function of approving and signing documents in EOS for SharePoint</a></li>
+<li><a href="../253437/index.html">Modular File Manager Cloud Commander 2.0</a></li>
+<li><a href="../253439/index.html">Advanced website parsing with Mechanize</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

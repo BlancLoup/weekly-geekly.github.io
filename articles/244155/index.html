@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Multitasking in the Linux kernel: workqueue</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="We continue the topic of multithreading in the Linux kernel. Last time I talked about interrupts, their processing and tasklets, and since it was orig...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Multitasking in the Linux kernel: workqueue</h1><div class="post__text post__text-html js-mediator-article">  We continue the topic of multithreading in the Linux kernel.  Last time I talked about interrupts, their processing and tasklets, and since it was originally supposed to be one article, I will refer to tasklets in my workqueue story, assuming that the reader is already familiar with them. <br>  Like last time, I will try to make my story as detailed and detailed as possible. <br><br>  Cycle articles: <br><ol><li>  <a href="http://habrahabr.ru/post/244071/">Multitasking in the Linux kernel: interrupts and tasklets</a> </li><li>  <b>Multitasking in the Linux kernel: workqueue</b> </li><li>  <a href="http://habrahabr.ru/post/244361/">Protothread and cooperative multitasking</a> </li></ol><br><div style="text-align:center;"><img src="https://habrastorage.org/files/5b8/cd5/833/5b8cd58338b74fa7873adcc091a4f4e9.jpg"></div><br><a name="habracut"></a><br><h3>  Workqueue </h3><br>  <b>Workqueue</b> are more complex and ponderous entities than tasklets.  I will not even try to describe here all the subtleties of implementation, but the most important, I hope, I will analyze in more or less detail. <br>  Workqueue, like tasklets, are used for deferred processing of interrupts (although they can be used for other purposes), but, unlike tasklets, they are executed in the context of the kernel process, respectively, they are not required to be atomic and can be used the sleep () function, various synchronization tools, etc. <br><br>  Let's first understand how the workqueue processing process is generally organized.  <i>In the picture it is shown very approximately and simplified, as everything actually happens, described in detail below.</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <div style="text-align:center;"><img src="https://habrastorage.org/files/6c8/9f9/ea8/6c89f9ea88bf4068af89fbb57c7e1786.png"></div><br><br>  Several entities are involved in this <s>dark</s> matter. <br>  First, the <b>work item</b> (for brevity, simply work) is a structure that describes a function (for example, an interrupt handler) that we want to schedule. It can be interpreted as an analogue of the tasklet structure.  During planning, tasklets were added to the queues that were hidden from the user, but now we need to use a special queue - <b>workqueue</b> . <br>  Tasklets are cleared by the scheduler function, and workqueue is processed by special threads, which are called workers. <br>  <b>Worker</b> 's provide asynchronous execution of work'ov from workqueue.  Although they cause work'i in order of the queue, in the general case, a strict, consistent implementation of speech is not a question: after all, crowding, sleeping, waiting, etc. take place here. <br><br>  In general, workers are kernel threads, that is, they are managed by the main Linux kernel scheduler.  But workers partially intervene in planning for the additional organization of parallel execution of works.  About this in more detail below. <br><br>  To outline the main features of the workqueue mechanism, I propose to explore the API. <br><br><h4>  Pro turn and its creation </h4><br><pre><code class="cpp hljs">alloc_workqueue(fmt, flags, max_active, args...)</code> </pre> <br>  The fmt and args parameters are the printf format for the name and the arguments to it.  The max_activate parameter is responsible for the maximum number of jobs that can be executed in parallel from this queue on one CPU. <br>  You can create a queue with the following flags: <br><ul><li>  WQ_HIGHPRI </li><li>  WQ_UNBOUND </li><li>  WQ_CPU_INTENSIVE </li><li>  WQ_FREEZABLE </li><li>  WQ_MEM_RECLAIM </li></ul><br>  Particular attention should be paid to the <b>WQ_UNBOUND</b> flag.  By the presence of this flag, the queues are divided into tied and non-tied. <br>  <b>In the attached queues, the</b> work'i when added are tied to the current CPU, that is, in such queues, the work'i are executed on the kernel that plans it.  In this regard, the associated queues resemble tasklets. <br>  <b>In</b> unbound <b>queues,</b> work'i can be executed on any core. <br><br>  An important feature of the workqueue implementation in the Linux kernel is the additional organization of parallel execution, which is present in the associated queues.  About her in more detail is written below, now I will say that it is carried out in such a way as to use as little memory as possible, and so that the processor does not stand idle.  This is all implemented with the assumption that one work does not use too many processor cycles. <br>  For unbound queues this is not.  In fact, such queues simply provide context to the work and launch it as early as possible. <br>  Thus, unbound queues should be used if intensive processor load is expected, since in this case the scheduler will take care of parallel execution on multiple cores. <br><br>  By analogy with tasklets, works can be assigned priority of execution, normal or high.  Priority common to the entire queue.  By default, the queue has a normal priority, and if you set the flag <b>WQ_HIGHPRI</b> , then, respectively, high. <br><br>  The <b>WQ_CPU_INTENSIVE</b> flag <b>only</b> makes sense for bound queues.  This flag is a refusal to participate in the additional organization of parallel execution.  This flag should be used when it is expected that work'i will spend a lot of CPU time, in this case it is better to shift the responsibility to the scheduler.  This is described in more detail below. <br><br>  The <b>WQ_FREEZABLE</b> and <b>WQ_MEM_RECLAIM flags are</b> specific and beyond the scope of the topic, so we will not dwell on them in detail. <br><br>  Sometimes it makes sense not to create your own queues, but to use shared ones.  The main ones are: <br><ul><li>  system_wq - anchored queue for fast works </li><li>  system_long_wq - the associated queue for work'ov, which presumably will be executed for a long time </li><li>  system_unbound_wq - unattached queue </li></ul><br><h4>  Pro work'i and their planning </h4><br>  Now let's deal with the works.  First, take a look at the initialization, declaration, and preparation macros: <br><pre> <code class="cpp hljs">DECLARE(_DELAYED)_WORK(name, <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> (*function)(struct work_struct *work)); <span class="hljs-comment"><span class="hljs-comment">/*    */</span></span> INIT(_DELAYED)_WORK(_work, _func); <span class="hljs-comment"><span class="hljs-comment">/*    */</span></span> PREPARE(_DELAYED)_WORK(_work, _func); <span class="hljs-comment"><span class="hljs-comment">/*     */</span></span></code> </pre><br>  In the queue work'i added using functions: <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">queue_work</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct workqueue_struct *wq, struct work_struct *work)</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">queue_delayed_work</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct workqueue_struct *wq, struct delayed_work *dwork, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">unsigned</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">long</span></span></span></span><span class="hljs-function"><span class="hljs-params"> delay)</span></span></span></span>; <span class="hljs-comment"><span class="hljs-comment">/* work        delay */</span></span></code> </pre><br>  Here it is worth staying in more detail.  Although we specify the queue as a parameter, in fact, works are not put into the workqueue themselves, as it may seem, but in a completely different entity - into the list — the queue of the worker_pool structure.  The <b>worker_pool</b> structure is essentially the most important entity in the organization of the workqueue mechanism, although for the user it remains behind the scenes.  Workers work with them, and they contain all the basic information. <br><br>  Now let's see what pools are in the system. <br>  For starters, pools for pending queues (in the picture).  For each CPU, two worker pools are statically allocated: one for high-priority work'ov, the other - for work'ov with normal priority.  That is, if we have four cores, then there will be only eight associated pools, despite the fact that the workqueue can be any number of times. <br>  When we create a workqueue, it has a <b>pool_workqueue</b> (pwq) for each CPU.  Each such pool_workqueue is associated with a worker pool, which is allocated on the same CPU and corresponds in priority to the type of queue.  Through them, workqueue interacts with the worker pool. <br>  Workers perform works from the worker pool indiscriminately, not distinguishing to which workqueue they originally belonged. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/823/352/d52/823352d52924403d80818f414a49c8cb.png"></div><br><br>  For unbound queues, the worker pools are allocated dynamically.  All queues can be divided into equivalence classes by their parameters, and for each such class a worker pool is created.  They are accessed using a special hash table, where the key is the set of parameters, and the value, respectively, of the worker pool. <br>  In fact, unbound queues are a bit more complicated: if bound queues created pwq and queues for each CPU, here they are created for each <a href="https://en.wikipedia.org/wiki/Non-uniform_memory_access">NUMA</a> node, but this is an additional optimization, which we will not consider in detail. <br><br><h4>  All sorts of stuff </h4><br>  I’ll also give a few functions from the API for completeness, but I’d not talk about them in detail: <br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/*   */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">flush_work</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct work_struct *work)</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">flush_delayed_work</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct delayed_work *dwork)</span></span></span></span>; <span class="hljs-comment"><span class="hljs-comment">/*   work */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cancel_work_sync</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct work_struct *work)</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cancel_delayed_work</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct delayed_work *dwork)</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">bool</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cancel_delayed_work_sync</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct delayed_work *dwork)</span></span></span></span>; <span class="hljs-comment"><span class="hljs-comment">/*   */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">destroy_workqueue</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(struct workqueue_struct *wq)</span></span></span></span>;</code> </pre><br><h4>  How workers do their job </h4><br>  Now, as we got acquainted with the API, let's try to understand in more detail how this all works and is controlled. <br>  Each pool has a set of workers that solve tasks.  Moreover, the number of workers changes dynamically, adjusting to the current situation. <br>  As we already found out, workers are threads that work in the context of the kernel.  The Worker gets them in order one by one from the associated worker pool, and the work'i, as we already know, can belong to different source queues. <br><br>  Workers can conditionally be in three logical states: they can be idle, running, or controlling. <br>  Worker can <b>stand idle</b> and do nothing.  This, for example, when all the work'i already performed.  When a worker enters this state, he falls asleep and, accordingly, will not be executed until he is awakened; <br>  If the management of the pool is not required and the list of scheduled works is not empty, then the worker starts to execute them.  Such workers will conditionally be called <b>running</b> . <br>  If necessary, the worker takes on the role <b>of a</b> pool <b>manager</b> .  A pool can have either only one controlling worker, or not have it at all.  Its task is to maintain the optimal number of workers per pool.  How he does it?  First, workers who have been idle for a long time are deleted.  Secondly, new workers are created if three conditions are fulfilled at once: <br><ul><li>  there are still tasks to perform (work'i in the pool) </li><li>  no idle workers </li><li>  no working workers (i.e. active and not sleeping) </li></ul><br>  However, in the latter condition there are some nuances.  If pool queues are unbound, then running workers are not taken into account, for them this condition is always true.  The same is true if the worker performs the task from the <b>associated</b> queue, but with the <b>WQ_CPU_INTENSIVE</b> flag.  In this case, in the case of attached queues, since workers work with work from the common pool (which is one of two for each core in the picture above), it turns out that some of them are counted as working, and some are not.  From this it also follows that the execution of works from the <b>WQ_CPU_INTENSIVE</b> queue may not begin immediately, but they themselves do not interfere with other works being executed.  Now it should be clear why this flag is so called, and why it is used when we expect the work to be performed for a long time. <br><br>  Accounting for working workers is done directly from the main Linux kernel scheduler.  Such a control mechanism ensures an optimal level of parallelism (concurrency level), not allowing workqueue to create too many workers, but also not forcing work, and without waiting too long. <br><br>  Those who are interested can see the worker's function in the kernel, it is called worker_thread (). <br><br>  All the described functions and structures can be found in more detail in the <i>include / linux / workqueue.h</i> , <i>kernel / workqueue.c</i> and <i>kernel / workqueue_internal.h files</i> .  Also on workqueue there is documentation in <i>Documentation / workqueue.txt</i> . <br><br>  It is also worth noting that the workqueue mechanism is used in the kernel not only for delayed interrupt handling (although this is a fairly common scenario). <br><br>  Thus, we looked at the delayed interrupt handling mechanisms in the Linux kernel — the tasklet and workqueue, which are a special form of multitasking.  You can read about interrupts, tasklets and workqueue in the book " <a href="http://www.makelinux.net/ldd3/">Linux Device Drivers</a> " by Jonathan Corbet, Greg Kroah-Hartman, Alessandro Rubini, although the information there is sometimes outdated. <br>  <a href="http://habrahabr.ru/users/zyoma/" class="user_link">Zyoma’s</a> <a href="http://habrahabr.ru/post/244071/">commentary on the</a> <a href="http://habrahabr.ru/users/zyoma/" class="user_link">tasklet</a> article also advises “The Linux kernel.  Description of the development process "R. Love. <br><br><h4>  To be continued </h4><br>  In the <a href="http://habrahabr.ru/post/244361/">next part,</a> I will talk about protothread and cooperative multitasking, try to compare all the different entities considered at first glance and extract some useful ideas. </div><p>Source: <a href="https://habr.com/ru/post/244155/">https://habr.com/ru/post/244155/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../244141/index.html">Media Player for Translators - feci quod potui</a></li>
+<li><a href="../244143/index.html">Bypassing the protection of the iOS client Dropbox</a></li>
+<li><a href="../244145/index.html">Interview with Moses Uretsky, co-founder and director of Digital Ocean</a></li>
+<li><a href="../244151/index.html">OpenVZ, Quagga and LiveMigration</a></li>
+<li><a href="../244153/index.html">Facebook launches data center with new network architecture</a></li>
+<li><a href="../244159/index.html">ATM attack with Raspberry Pi</a></li>
+<li><a href="../244161/index.html">Trader trader competitor?</a></li>
+<li><a href="../244163/index.html">Recognize barcodes on images using Python and OpenCV</a></li>
+<li><a href="../244165/index.html">Beta new Opera Mini for Android with sync</a></li>
+<li><a href="../244169/index.html">Amazon will compete for the creation of a "green Internet"</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
