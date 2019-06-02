@@ -1,0 +1,303 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How to speed up the LZ4 release in ClickHouse</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="When executing queries in ClickHouse, you can note that in the profiler, LZ_decompress_fast is often visible in one of the first places. Why it happen...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How to speed up the LZ4 release in ClickHouse</h1><div class="post__text post__text-html js-mediator-article"> When executing queries in ClickHouse, you can note that in the profiler, LZ_decompress_fast is often visible in one of the first places.  Why it happens?  This question was the reason for the whole study on the choice of the best decompression algorithm.  Here I publish the entire study, and the short version can be found in my <a href="https://www.youtube.com/watch%3Fv%3DV2CqQBICt7M">report</a> on HighLoad ++ Siberia. <br><br>  The data in ClickHouse is stored in a compressed form.  And during the execution of queries, ClickHouse tries to do almost nothing - use a minimum of CPU resources.  It happens that all calculations for which time could be spent are already well optimized, and the query is well written by the user.  Then it remains to perform the release. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/057/302/aba/057302aba5041790af404c2c781c4dd3.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The question is why can the LZ4 release be a bottleneck?  It would seem that LZ4 is a <a href="https://github.com/lz4/lz4/">very easy algorithm</a> : the rate of decompression, depending on the data, is usually from 1 to 3 GB / s per processor core.  This is significantly more than the speed of the disk subsystem.  Moreover, we use all available cores, and decompression linearly scales across all physical cores. <br><a name="habracut"></a><br>  But two points should be kept in mind.  First, compressed data is read from the disk, and the rate of decompression is given in the amount of uncompressed data.  If the compression ratio is large enough, almost nothing needs to be read from the disks.  But at the same time, a lot of uncompressed data is generated, and of course, this affects the CPU consumption: the amount of work to decompress data in the case of LZ4 is almost proportional to the amount of uncompressed data. <br><br>  Secondly, reading data from disks may not be required at all if the data is in cache.  To do this, you can rely on page cache or use your own cache.  In column DBs, using the cache is more efficient due to the fact that not all columns fall into it, but only frequently used columns.  That is why LZ4 in terms of CPU load is often a bottleneck. <br><br>  Hence two more questions.  If the release of data "slows down", then maybe they should not be compressed at all?  But in practice, this assumption is meaningless.  Recently, in ClickHouse, you could configure only two options for data compression - LZ4 and <a href="https://github.com/facebook/zstd/">Zstandard</a> .  The default is LZ4.  By switching to Zstandard, you can make the compression stronger and slower.  But it wasn’t quite possible to turn off compression completely until recently - LZ4 is considered as a reasonable minimum that can always be used.  That is why I really love LZ4.  :) <br><br>  But recently, a mysterious stranger appeared in the English-speaking <a href="https://t.me/clickhouse_en">chat support for</a> ClickHouse, who said that he has a very fast disk subsystem (NVMe SSD) and everything depends on compression - it would be nice to be able to turn it off.  I replied that there was no such possibility, but it was easy to add.  A few days later we received <a href="https://github.com/yandex/ClickHouse/pull/1045">a pull request</a> , which implements the <code>none</code> compression method.  I asked for the results - how much it helped, how much the queries accelerated.  The man said that this new feature was useless in practice, because the data without compression began to take up too much space. <br><br>  The second question that arises is: if there is a cache, why not store the already decompressed data in it?  This is allowed - in many cases, it will be possible to get rid of the need for release.  And in ClickHouse there is such a cache - a <a href="https://clickhouse.yandex/docs/ru/operations/settings/settings/">cache of uncompressed blocks</a> .  But it’s a pity to spend a lot of RAM because of its low efficiency.  It justifies itself only on small, consecutive requests that use almost the same data. <br><br>  General consideration: data should be compressed, preferably always.  Always burn them to a compressed disc.  Transmit over the network, too, with compression.  In my opinion, the default compression should be considered justified even when transmitting on a 10-gigabit network without oversubscription within the data center, and transmitting data without compression between data centers is generally unacceptable. <br><br><h3>  Why LZ4 </h3><br>  Why is it used LZ4?  Is it possible to pick something even lighter?  In principle, it is possible, and this is right and useful.  But let's first consider what class of algorithms LZ4 belongs to. <br><br>  First, it does not depend on the data type.  For example, if you know in advance that you will have an array of integers, you can use one of the many variants of the VarInt algorithm - this will be more efficient for the CPU.  Secondly, LZ4 does not depend too much on the required assumptions for the data model.  Suppose you have an ordered time series of sensor readings — an array of float numbers.  Then you can calculate the deltas, and then compress further, and this will be more efficient in terms of the compression ratio. <br><br>  That is, LZ4 can be used without any problems for any byte arrays - for any files.  Of course, he has his own specialization (see below), and in some cases its use is meaningless.  But if it is called a general purpose algorithm, it will be a small mistake.  And note that, due to the internal structure, the LZ4 implements the <a href="https://en.wikipedia.org/wiki/Run-length_encoding">RLE</a> algorithm as a special case. <br><br>  Another question: is LZ4 the most optimal algorithm of this class in terms of speed and compression force?  Such algorithms are called pareto frontier - this means that there is no other algorithm that is strictly better in one indicator and not worse in others (and even on a wide variety of datasets).  There are algorithms that are faster, but give a smaller compression ratio, and there are those that compress more, but at the same time more slowly compress or decompress. <br><br>  In fact, the LZ4 is not a pareto frontier.  There are options that are slightly better.  For example, this is <a href="https://sites.google.com/site/powturbo/">LZTURBO</a> from some <a href="https://github.com/powturbo">powturbo</a> .  There is no doubt about the reliability of the results thanks to the community on encode.ru (the largest and roughly the only data compression forum).  But the developer does not distribute either the source code or the binaries, but only gives them to a limited circle of people for testing or for a lot of money (like no one has yet paid).  Also pay attention to the <a href="https://github.com/inikep/lizard/">Lizard</a> (formerly LZ5) and <a href="https://github.com/centaurean/density">Density</a> .  They may work a little better than LZ4 when choosing some level of compression.  Also pay attention to <a href="https://github.com/ConorStokes/LZSSE/">LZSSE</a> - a very interesting thing.  However, it is better to look at it after reading this article. <br><br><h3>  How does LZ4 work </h3><br>  Let's take a look at how LZ4 works.  This is one of the implementations of the LZ77 algorithm: L and Z indicate the authors' names (Lempel and Ziv), and 77 - for 1977, when the algorithm was published.  It has many other implementations: QuickLZ, FastLZ, BriefLZ, LZF, LZO, as well as gzip and zip when using low compression levels. <br><br>  Compressed using LZ4 data block contains a sequence of records (commands, instructions) of two types: <br><br><ol><li>  Literals (literals): "take the following N bytes as they are and copy them into the result." </li><li>  Match (match, match): "take N bytes, which were already in the decompressed result at offset offset from the current position." </li></ol><br>  Example.  Before compression: <br> <code>Hello world Hello</code> <br> <br>  After compression: <br> <code>literals 12 "Hello world " match 5 12</code> <br> <br>  If we take a compressed block and walk through it with the cursor, executing these commands, we will get the initial, decompressed data as a result. <br><br>  We have looked at how data is expanded.  The essence is also clear: to perform compression, the algorithm encodes repeated sequences of bytes using matches. <br><br>  Clear and some properties.  This algorithm is byte-oriented - it does not dissect individual bytes, but only copies them entirely.  Here lies the difference, for example, from entropy coding.  For example, <a href="https://github.com/facebook/zstd/">zstd</a> is a composition of LZ77 and entropy coding. <br><br>  Note that the size of the compressed block is chosen not too large, so as not to spend a lot of RAM during decompression;  not to slow down the random access in a compressed file (which consists of many compressed blocks);  and sometimes, in order for the block to fit in some CPU cache.  For example, you can choose 64 KB - so the buffers for compressed and uncompressed data will fit into the L2-cache and half still remain. <br><br>  If we need to compress a larger file, we will simply concatenate the compressed blocks.  At the same time, it is convenient to arrange additional data next to each compressed block - dimensions, check-sum. <br><br>  The maximum offset for the match is limited, in LZ4 - 64 kilobytes.  This value is called the sliding window.  Indeed, this means that as the cursor moves forward, coincidences may be in a 64 kilobyte window to the cursor that moves with the cursor. <br><br>  Now let's look at how to compress the data — in other words, how to find matching sequences in the file.  Of course, you can use suffix trie (great if you've heard of it).  There are options in which the longest matching sequence is guaranteed among the previous bytes in the compression process.  This is called optimal parsing and gives <a href="http://fastcompression.blogspot.com/2011/12/advanced-parsing-strategies.html">almost the</a> best compression ratio for a fixed format of a compressed block.  But there are more efficient options - when we find some fairly good match in the data, but not necessarily the longest.  The most effective way to find it is to use a hash table. <br><br>  To do this, we go through the source data block with the cursor and take a few bytes after the cursor.  For example, 4 bytes.  Hash them and put in the hash table the offset from the beginning of the block - where these 4 bytes met.  The value of 4 is called min-match - using such a hash table we can find a match of at least 4 bytes. <br><br>  If we looked at the hash table, and there is already a record, and if the offset does not exceed the sliding window, then we check how many more bytes match after these four bytes.  Maybe there is still a lot of things the same.  It is also possible that there is a collision in the hash table and nothing matches.  This is normal - you can simply replace the value in the hash table with a new one.  Collisions in the hash table will simply result in a lower compression ratio, since there are fewer matches.  By the way, this kind of hash tables (fixed size and without collision resolution) is called a cache table, a cache table.  This is also logical - in the event of a collision, the cache table simply forgets about the old record. <br><blockquote>  Task for the attentive reader.  Let the data be an array of UInt32 type in little endian format, which is part of the sequence of natural numbers: 0, 1, 2 ... Explain why using LZ4 does not compress this data (the amount of compressed data is no less than the amount of uncompressed data). </blockquote><h3>  How to speed things up </h3><br>  So, I want to speed up the LZ4 release.  Let's see what the decompression cycle is.  Here is the loop in pseudocode: <br><br><pre>  while (...)
+ {
+     read (input_pos, literal_length, match_length);<font></font>
+<font></font>
+     copy (output_pos, input_pos, literal_length);
+     output_pos + = literal_length;<font></font>
+<font></font>
+     read (input_pos, match_offset);<font></font>
+<font></font>
+     copy (output_pos, output_pos - match_offset,
+         match_length);
+     output_pos + = match_length;
+ } </pre><br>  The LZ4 format is designed so that literals and matches alternate in a compressed file.  And obviously, literal always goes first (because from the very beginning there is no place to take the match).  Therefore, their lengths are encoded together. <br><br>  In fact, everything is a little more complicated.  One byte is read from the file, and two halves (nibble) are taken from it, in which the numbers from 0 to 15 are encoded. If the corresponding number is not 15, then it is considered the length of the literal and the match, respectively.  And if it is 15, then the length is longer and it is encoded in the following bytes.  Then the next byte is read, and its value is added to the length.  Further, if it is equal to 255, then we continue - we read the next byte in the same way. <br><br>  Note that the maximum compression ratio for the LZ4 format does not reach 255. And the second (useless) observation: if your data is very redundant, then using LZ4 twice will increase the compression ratio. <br><br>  When we read the length of the literal (and then also the length of the match and the offset of the match), to decompress, simply copy two fragments of memory. <br><br><h3>  How to copy a piece of memory </h3><br>  It would seem that you can use the <code>memcpy</code> function, which is just meant for copying fragments of memory.  But this is not optimal and still incorrect. <br><br>  Why use the memcpy function is not optimal?  Because she: <br><br><ol><li>  usually located in the libc library (and the libc library is usually linked dynamically, and the call to memcpy will go indirectly through the PLT), </li><li>  does not inline with the size argument unknown to compile time, </li><li>  makes a lot of effort for correct processing of the “tails” of a fragment of memory that are not multiples of the size of a machine word or register </li></ol><br>  The last point is the most important.  Suppose we asked the memcpy function to copy exactly 5 bytes.  It would be very good to copy 8 bytes at once, using two movq instructions for this. <br><br> <code>Hello world <font color="#0fc000">Hello</font> <font color="#ff0000">wo</font> ... <br> ^^^^^ <font color="#ff0000">^^^</font> - src <br> ^^^^^ <font color="#ff0000">^^^</font> - dst</code> <br> <br>  But then we will copy three extra bytes - that is, we will write abroad the transferred buffer.  The <code>memcpy</code> function does not have the right to do this - indeed, because we will overwrite some data in our program, there will be a “passage” from memory.  And if we wrote to an unaligned address, then these extra bytes can be located on an unallocated page of virtual memory or on a page without write access.  Then we get a segfault (this is good). <br><br>  But in our case, we can almost always write extra bytes.  We can read extra bytes in the input-buffer as long as the extra bytes are located entirely in it.  Under the same conditions, we can write extra bytes into the output buffer - because at the next iteration we will overwrite them anyway. <br><br>  This optimization is already in the original implementation of LZ4: <br><br><pre>  inline void copy8 (UInt8 * dst, const UInt8 * src)
+ {
+     memcpy (dst, src, 8);  /// Actually, memcpy is not called here.
+ }<font></font>
+<font></font>
+ inline void wildCopy8 (UInt8 * dst, const UInt8 * src, UInt8 * dst_end)
+ {
+     do
+     {
+         copy8 (dst, src);
+         dst + = 8;
+         src + = 8;
+     } while (dst &lt;dst_end);
+ } </pre><br>  To take advantage of this optimization, you only need to check that we are far enough away from the buffer boundary.  This should be free of charge, because we are already checking for a buffer overflow.  And the processing of the last few bytes - the "tail" of the data - can be done after the main loop. <br><br>  However, there are still some subtleties.  In the cycle of two copies - literal and match.  But when using the LZ4_decompress_fast function (instead of LZ4_decompress_safe), the check is performed once - when we need to copy the literal.  When copying a match, the check is not performed, but in the <a href="">LZ4 format specification</a> itself there are conditions that allow it to be avoided: <br><br><blockquote>  The last 5 bytes are always literals <br>  By the end of the block. <br>  Consequently, a block with less than 13 bytes cannot be compressed. </blockquote><br>  Specially selected input data may cause a “trip” from memory.  If you use the LZ4_decompress_fast function, you need protection against bad data.  Compressed data should be at least check-summarized.  And if you need protection from an attacker, then use the function LZ4_decompress_safe.  Other options: take a cryptographic hash function as a check-sum, but it will almost surely kill all performance;  or allocate more memory for buffers;  or allocate memory for buffers with a separate mmap call and create a guard page. <br><br>  When I see the code that copies data by 8 bytes, I immediately ask - and why precisely 8 bytes?  You can copy 16 bytes using SSE registers: <br><br><pre>  inline void copy16 (UInt8 * dst, const UInt8 * src)
+ {
+ #if __SSE2__
+     _mm_storeu_si128 (reinterpret_cast &lt;__ m128i *&gt; (dst),
+         _mm_loadu_si128 (reinterpret_cast &lt;const __m128i *&gt; (src)));
+ #else
+     memcpy (dst, src, 16);
+ #endif
+ }<font></font>
+<font></font>
+ inline void wildCopy16 (UInt8 * dst, const UInt8 * src, UInt8 * dst_end)
+ {
+     do
+     {
+         copy16 (dst, src);
+         dst + = 16;
+         src + = 16;
+     } while (dst &lt;dst_end);
+ } </pre><br>  Copying of 32 bytes for AVX and 64 bytes for AVX-512 works in a similar way.  In addition, you can expand the cycle several times.  If you have ever looked at how <code>memcpy</code> implemented, then this is exactly the approach.  (By the way, the compiler in this case will neither expand nor vectorize the cycle: this will require the insertion of cumbersome checks.) <br><br>  Why is this not done in the original LZ4 implementation?  Firstly, it is not obvious whether it is better or worse.  The result depends on the size of the fragments that you want to copy.  Suddenly they are all short and unnecessary work will come to nothing?  And secondly, it destroys those conditions in the LZ4 format, which allow to avoid unnecessary brunch in the internal cycle. <br><br>  Nevertheless, we will keep this option in mind for now. <br><br><h3>  Sneaky copy </h3><br>  Let's return to the question - is it always possible to copy data in this way?  Suppose we need to copy a match — that is, copy a fragment of memory from the output buffer located at some offset behind the cursor to the position of this cursor. <br><br>  Imagine a simple case - you need to copy 5 bytes at an offset of 12: <br><br> <code><font color="#0fc000">Hello</font> world ........... <br> ^^^^^ - src <br> ^^^^^ - dst <br> <br> Hello world <font color="#0fc000">Hello</font> <font color="#a8a8a8">wo</font> ... <br> ^^^^^ - src <br> ^^^^^ - dst</code> <br> <br>  But there is a more complicated case - when we need to copy a fragment of memory whose length is greater than the offset.  That is, it partially indicates data that has not yet been written to the output buffer. <br><br>  Copy 10 bytes at offset 3: <br><br> <code><font color="#0fc000">abc</font> ............. <br> ^^^^^^^^^^ - src <br> ^^^^^^^^^^ - dst <br> <br> abc <font color="#0fc000">abcabcabca</font> ... <br> ^^^^^^^^^^ - src <br> ^^^^^^^^^^ - dst</code> <br> <br>  In the process of compression, we have all the data, and such a match could very well be found.  The <code>memcpy</code> function is not suitable for copying it: it does not support the case where the ranges of memory fragments intersect.  By the way, the <code>memmove</code> function <code>memmove</code> also not suitable, because the fragment of memory, where you need to get data from, is not yet fully initialized.  You need to copy as if we were copying byte-by-byte. <br><br><pre>  op [0] = match [0];
+ op [1] = match [1];
+ op [2] = match [2];
+ op [3] = match [3];
+ ... </pre><br><br>  Here's how it works: <br><br> <code><font color="#0fc000">a</font> bc <font color="#0fc000">a</font> ............ <br> ^ - src <br> ^ - dst <br> <br> a <font color="#0fc000">b</font> ca <font color="#0fc000">b</font> ........... <br> ^ - src <br> ^ - dst <br> <br> ab <font color="#0fc000">c</font> ab <font color="#0fc000">c</font> .......... <br> ^ - src <br> ^ - dst <br> <br> abc <font color="#0fc000">a</font> bc <font color="#0fc000">a</font> ......... <br> ^ - src <br> ^ - dst <br> <br> abca <font color="#0fc000">b</font> ca <font color="#0fc000">b</font> ........ <br> ^ - src <br> ^ - dst</code> <br> <br>  That is, we have to create a repeating sequence.  In the original LZ4 implementation, surprisingly incomprehensible code was written for this: <br><br><pre>  const unsigned dec32table [] = {0, 1, 2, 1, 4, 4, 4, 4};
+ const int dec64table [] = {0, 0, 0, -1, 0, 1, 2, 3};<font></font>
+<font></font>
+ const int dec64 = dec64table [offset];
+ op [0] = match [0];
+ op [1] = match [1];
+ op [2] = match [2];
+ op [3] = match [3];
+ match + = dec32table [offset];
+ memcpy (op + 4, match, 4);
+ match - = dec64; </pre><br>  We copy the first 4 bytes byte by one, shift to some magic number, copy the next 4 bytes entirely, move the pointer to match to another magic number.  For some ridiculous reason, the author of the code ( <a href="http://fastcompression.blogspot.com/">Ian Collet</a> ) forgot to leave a comment about what it means.  In addition, variable names are confusing.  Both are called dec ... table, but we add one of them and subtract the other.  In addition, one of them is unsigned, and the other is int. ,   :         . <br><br>       .   4  : <br><br> <code>abc <font color="#0fc000">abca</font> ......... <br> ^^^^ - src <br> ^^^^ - dst</code> <br> <br>    4  : <br><br> <code>abcabca <font color="#0fc000">bcab</font> ..... <br> ^^^^ - src <br> ^^^^ - dst</code> <br> <br>    ,  8  : <br><br> <code>abcabcabcab <font color="#0fc000">cabcabca</font> ..... <br> ^^^^^^^^ - src <br> ^^^^^^^^ - dst</code> <br> <br>     ,      —   .  Here's what happened: <br><br><pre> inline void copyOverlap8(UInt8 * op, const UInt8 *&amp; match, const size_t offset)
+ {<font></font>
+    /// 4 % n.<font></font>
+    /// Or if 4 % n is zero, we use n.<font></font>
+    /// It gives equivalent result, but is better CPU friendly for unknown reason.<font></font>
+    static constexpr int shift1[] = { 0, 1, 2, 1, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[] = { 0, 0, 0, 1, 0, -1, -2, -3 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+ } </pre><br> ,  ,   . ,     ,     —   16 . <br><br>    « »    ,     ( <code>offset &lt; 16</code>   ,  <code>offset &lt; 8</code> ).  ()     16-   : <br><br><pre> inline void copyOverlap16(UInt8 * op, const UInt8 *&amp; match, const size_t offset)
+ {<font></font>
+    /// 4 % n.<font></font>
+    static constexpr int shift1[]<font></font>
+        = { 0, 1, 2, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[]<font></font>
+        = { 0, 0, 0, 1, 0, -1, -2, -3, -4, 4, 4, 4, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 16 % n - 8 % n<font></font>
+    static constexpr int shift3[]<font></font>
+        = { 0, 0, 0, -1, 0, -2, 2, 1, 8, -1, -2, -3, -4, -5, -6, -7 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+    memcpy(op + 8, match, 8);<font></font>
+    match += shift3[offset];<font></font>
+ } </pre><br>       ?  ,        SIMD-,       16 ,         ( 1  15). ,   ,      . <br><br>    —   <code>pshufb</code> (  packed shuffle bytes)    SSSE3 (  S).    16- .      .   — «»:       0  15 —    ,       . ,      127 —     . <br><br>  : <br><br><pre> xmm0: abc.............<font></font>
+xmm1: 0120120120120120<font></font>
+<font></font>
+pshufb %xmm1, %xmm0<font></font>
+<font></font>
+xmm0: abcabcabcabcabca </pre><br>           —      !      : <br><br><pre> inline void copyOverlap16Shuffle(UInt8 * op, const UInt8 *&amp; match, const size_t offset)
+ {<font></font>
+#ifdef __SSSE3__<font></font>
+<font></font>
+    static constexpr UInt8 __attribute__((__aligned__(16))) masks[] =<font></font>
+     {<font></font>
+        0, 1, 2, 1, 4, 1, 4, 2, 8, 7, 6, 5, 4, 3, 2, 1, /* offset = 0, not used as mask, but for shift amount instead */<font></font>
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* offset = 1 */<font></font>
+        0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,<font></font>
+        0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0,<font></font>
+        0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0,<font></font>
+        0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0,<font></font>
+     };<font></font>
+<font></font>
+    _mm_storeu_si128(reinterpret_cast&lt;__m128i *&gt;(op),<font></font>
+        _mm_shuffle_epi8(<font></font>
+            _mm_loadu_si128(reinterpret_cast&lt;const __m128i *&gt;(match)),<font></font>
+            _mm_load_si128(reinterpret_cast&lt;const __m128i *&gt;(masks) + offset)));<font></font>
+<font></font>
+    match += masks[offset];<font></font>
+<font></font>
+ #else<font></font>
+    copyOverlap16(op, match, offset);<font></font>
+ #endif
+ } </pre><br>  <code>_mm_shuffle_epi8</code> —  <a href="https://software.intel.com/sites/landingpage/IntrinsicsGuide/">intrinsic</a> ,    <code>pshufb</code> . <br><br>          ,    ?  SSSE3 —    ,   2006 .  AVX2  ,      32 ,      16- .     packed shuffle bytes,  vector permute bytes —  ,    .  AVX-512 VBMI    ,    64 ,        .      ARM NEON —   vtbl (vector table lookup),     8 . <br><br>  ,    <code>pshufb</code>  64- MMX-,   8 .         . ,        ,   16  (  ). <br><br>   Highload++ Siberia         ,    8          (  ) —       ! <br><br><h3>    if </h3><br> ,    ,   16 .         ? <br><br>  ,       .      ,           ,  ,         .    ,     . <br><br> ,    . , ,    ,      65 536 .        65 536    .           , ,  65 551 .  ,  ,       96   128  —     .     ,           «»      mmap    (     madvice).      - page faults.         ,    . <br><br><h3>   ? </h3><br> ,    ,     : <br><br><ol><li>   16   8. </li><li>  shuffle-   <code>offset &lt; 16</code> . </li><li>    if. </li></ol><br>              . <br><br>  Example 1: <br> Xeon E2650v2,  .,  AppVersion. <br> reference: 1.67 GB/sec. <br> 16 bytes, shuffle: 2.94 GB/sec ( 76% ). <br><br>  Example 2: <br> Xeon E2650v2,  .,  ShowsSumPosition. <br> reference: 2.30 GB/sec. <br> 16 bytes, shuffle: 1.91 GB/sec ( 20% ). <br><br>   ,         .     ,    .   - ,   .   ,      .     —       16 .  :    ,     ,   . <br><br>   ,     C++      :  8-  16-  ;     shuffle-. <br><br><pre> template &lt;size_t copy_amount, bool use_shuffle&gt;<font></font>
+void NO_INLINE decompressImpl(<font></font>
+     const char * const source,<font></font>
+     char * const dest,<font></font>
+     size_t dest_size) </pre><br>        ,         shuffle  .     ,   : <br><br><pre> sudo echo 'performance' | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor<font></font>
+kill -STOP $(pidof firefox) $(pidof chromium) </pre><br>        «»  (c  Xeon E5645),           ,    . ,         ,    .    ,    shuffle-,   ,      16- . <br><br>         : <br><br><pre> sudo kill -STOP $(pidof python) $(pidof perl) $(pgrep -u skynet) $(pidof cqudp-client) </pre><br>    .    thermal throttling  power capping. <br><br><h3>     </h3><br> ,      ,        .         ,         ,    .       .       , ,     .   : ClickHouse      ,       ,         .       ,             (       —  ?).      . <br><br>      ,    ,      .  <a href="https://learnforeverlearn.com/bandits/">« »</a> .   ,      ,           ,    . <br><br>      ,   .        .       -        .             —   ClickHouse      64 . ( <a href="http://btorpey.github.io/blog/2014/02/18/clock-sources-in-linux/"></a>   .) <br><br>  ,     « », ,    .      ,     ,   ,   -   .           .            ,          ,    .      . <br><br>         ,          ,       .    «»     ,    .     ,        .    Thompson Sampling. <br><br> ,   ,    .  —      :  ,  .          .     ,     .       ,           C++.     — ,     -   ,   ;     . <br><br>     ?      ,       .    . -,      ,         . -,  ,   ,   «» . <br><br> ,  ,           Thompson Sampling —   (   ,        ).   ,         ,         - ,     ,      .           ,     . <br><br>   ,   «» .   ,     ,        «»,     .      — <a href="https://en.wikipedia.org/wiki/Robust_statistics"> </a> .    ,     ,       . <br><br>       ,   ,    ,    ,   «»: <br><br><pre> /// For better convergence, we don't use proper estimate of stddev.<font></font>
+/// We want to eventually separate between two algorithms even in case<font></font>
+/// when there is no statistical significant difference between them.<font></font>
+double sigma() const<font></font>
+ {<font></font>
+    return mean() / sqrt(adjustedCount());<font></font>
+ }<font></font>
+<font></font>
+double sample(pcg64 &amp; rng) const<font></font>
+ {
+     ...<font></font>
+    return std::normal_distribution&lt;&gt;(mean(), sigma())(rng);<font></font>
+ } </pre><br>    ,       —    memory latencies. <br><br>   ,         ,       —    LZ4    . <br><br>  ,    : <br> — reference (baseline):  LZ4   ; <br> — variant 0:   8 ,   shuffle; <br> — variant 1:   8 ,  shuffle; <br> — variant 2:   16 ,   shuffle; <br> — variant 3:   16 ,  shuffle; <br> — «» ,            . <br><br><h3>    CPU </h3><br>       CPU,    ,  .  ,   CPU   ? <br><br>         ClickHouse   ,  256    100    ( 256  ).  ,  CPU  ,      .      CPU: <br> — Intel® Xeon® CPU E5-2650 v2 @ 2.60GHz <br> — Intel® Xeon® CPU E5-2660 v4 @ 2.00GHz <br> — Intel® Xeon® CPU E5-2660 0 @ 2.20GHz <br> — Intel® Xeon® CPU E5645 @ 2.40GHz <br> — Intel Xeon E312xx (Sandy Bridge) <br> — AMD Opteron(TM) Processor 6274 <br> — AMD Opteron(tm) Processor 6380 <br> — Intel® Xeon® CPU E5-2683 v4 @ 2.10GHz <br> — Intel® Xeon® CPU E5530 @ 2.40GHz <br> — Intel® Xeon® CPU E5440 @ 2.83GHz <br> — Intel® Xeon® CPU E5-2667 v2 @ 3.30GHz <br><br>    — ,   R&amp;D: <br> — AMD EPYC 7351 16-Core Processor —    AMD. <br> — Cavium ThunderX2 —     x86,  AArch64.    SIMD-    .    224   56  . <br><br>  13 ,        256   6  (reference, 0, 1, 2, 3, adaptive),    10 ,   .  199 680 ,    . <br><br> ,    CPU  .         :      LZ4    (   —  ).  ,  Cavium   .       ClickHouse,   «» Xeon E5-2650 v2         ,      ,   ClickHouse    x86. <br><br><pre> ┌─cpu───────────────────┬──ref─┬─adapt─┬──max─┬─best─┬─adapt_boost─┬─max_boost─┬─adapt_over_max─┐<font></font>
+│ E5-2667 v2 @ 3.30GHz │ 2.81 │ 3.19 │ 3.15 │ 3 │ 1.14 │ 1.12 │ 1.01 │<font></font>
+│ E5-2650 v2 @ 2.60GHz │ 2.5 │ 2.84 │ 2.81 │ 3 │ 1.14 │ 1.12 │ 1.01 │<font></font>
+│ E5-2683 v4 @ 2.10GHz │ 2.26 │ 2.63 │ 2.59 │ 3 │ 1.16 │ 1.15 │ 1.02 │<font></font>
+│ E5-2660 v4 @ 2.00GHz │ 2.15 │ 2.49 │ 2.46 │ 3 │ 1.16 │ 1.14 │ 1.01 │<font></font>
+│ AMD EPYC 7351 │ 2.03 │ 2.44 │ 2.35 │ 3 │ 1.20 │ 1.16 │ 1.04 │<font></font>
+│ E5-2660 0 @ 2.20GHz │ 2.13 │ 2.39 │ 2.37 │ 3 │ 1.12 │ 1.11 │ 1.01 │<font></font>
+│ E312xx (Sandy Bridge) │ 1.97 │ 2.2 │ 2.18 │ 3 │ 1.12 │ 1.11 │ 1.01 │<font></font>
+│ E5530 @ 2.40GHz │ 1.65 │ 1.93 │ 1.94 │ 3 │ 1.17 │ 1.18 │ 0.99 │<font></font>
+│ E5645 @ 2.40GHz │ 1.65 │ 1.92 │ 1.94 │ 3 │ 1.16 │ 1.18 │ 0.99 │<font></font>
+│ AMD Opteron 6380 │ 1.47 │ 1.58 │ 1.56 │ 1 │ 1.07 │ 1.06 │ 1.01 │<font></font>
+│ AMD Opteron 6274 │ 1.15 │ 1.35 │ 1.35 │ 1 │ 1.17 │ 1.17 │ 1 │<font></font>
+│ E5440 @ 2.83GHz │ 1.35 │ 1.33 │ 1.42 │ 1 │ 0.99 │ 1.05 │ 0.94 │<font></font>
+│ Cavium ThunderX2 │ 0.84 │ 0.87 │ 0.87 │ 0 │ 1.04 │ 1.04 │ 1 │<font></font>
+└───────────────────────┴──────┴───────┴──────┴──────┴─────────────┴───────────┴────────────────┘ </pre><br> ref, adapt, max —       (,            ). best —      ,  0  3. adapt_boost —        baseline. max_boost —          baseline. adapt_over_max —         . <br><br>  ,    x86      12–20%.   ARM    4%,   ,         .  ,        «»              Intel. <br><br><h3>  findings </h3><br>       . ,   LZ4     12–20%,            .           .      ,         . <br><br>    ,     ,    «» ,    ZStandard level 1  LZ4:      IO    . <br><br>           — ,      .          ,       . <br><br>    :         . LZ4    ,   Lizard, Density  LZSSE  ,    . ,    LZ4      LZSSE  ClickHouse. <br><br>       LZ4 :         .          :      ,   .             . ,   inc-  dec-   <a href=""></a> .  ,           12–15%     32 ,    16,   .       32  —     ,     <a href=""> </a> . <br><br>       ,  ,          page cache  userspace (   mmap,    O_DIRECT  userspace page cache —     ),      - (  CityHash128  CRC32-C,    HighwayHash, FARSH  XXH3).         ,       . <br><br>   ,     master,            .  <a href="https://www.youtube.com/watch%3Fv%3DV2CqQBICt7M"></a>  HighLoad++ Siberia,   <a href="https://yandex.github.io/clickhouse-presentations/highload_siberia_2018/"></a> . </div><p>Source: <a href="https://habr.com/ru/post/452778/">https://habr.com/ru/post/452778/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../452760/index.html">Vitamin D. To drink or not to drink, that is the question. (Or a story about how I took an analysis that I was not prescribed)</a></li>
+<li><a href="../452764/index.html">[Peter] JUG.ru meeting with Sergey Melnikov - Profiling with superlight speed: theory and practice</a></li>
+<li><a href="../452768/index.html">How to design a product if you decide to enter the overseas market</a></li>
+<li><a href="../452772/index.html">5 advanced testing techniques on Go</a></li>
+<li><a href="../452776/index.html">N.M.D. (It's not my business)</a></li>
+<li><a href="../452780/index.html">Mobius 2019 Piter: free online broadcast and everything else</a></li>
+<li><a href="../45279/index.html">Redirect from habr.ru to habrahabr.ru</a></li>
+<li><a href="../452792/index.html">Review SSD for corporate users Kingston DC500R</a></li>
+<li><a href="../452794/index.html">On the localization of products. Part one: where to start?</a></li>
+<li><a href="../452796/index.html">We invite you to the meeting of the faculty of game development GeekUniversity</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

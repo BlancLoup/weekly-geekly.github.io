@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Optimization of programs under the Garbage Collector</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Not so long ago, a great article appeared on Habré Optimizing garbage collection in a high-loaded .NET service . This article is very interesting beca...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Optimization of programs under the Garbage Collector</h1><div class="post__text post__text-html js-mediator-article"><p>  Not so long ago, a great article appeared on Habré <a href="https://habr.com/ru/post/452298/">Optimizing garbage collection in a high-loaded .NET service</a> .  This article is very interesting because the authors, having armed themselves with the theory, have made the previously impossible: they optimized their application using the knowledge of the work of GC.  And if earlier we had no idea how this GC works, now it is presented to us on a platter through the efforts of Konrad Kokos in his book <a href="https://prodotnetmemory.com/">Pro .NET Memory Management</a> .  What conclusions did I draw for myself?  Let's make a list of problem areas and think about how to solve them. </p><br><p>  At a recent CLRium # 5: Garbage Collector workshop, we talked about GC all day.  However, I decided to publish one report with a text transcript.  This is a report about the conclusions regarding application optimization. </p><br><iframe width="560" height="315" src="https://www.youtube.com/embed/EduXgLWAhm8" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><a name="habracut"></a><br><h1 id="snizhayte-krosspokolencheskuyu-svyaznost">  Reduce cross-generational connectivity </h1><br><h3 id="problema">  Problem </h3><br><p>  To optimize garbage collection speed, the GC collects the younger generation whenever possible.  But to do this, he also needs information about links from older generations (in this case, they are an additional root): the card table. </p><br><p>  At the same time, one link from the older to the younger generation forces us to cover the area with a card table: </p><br><ul><li>  4 bytes overlaps 4 kb or max.  320 objects - for x86 architecture </li><li>  8 bytes overlaps 8 kb or max.  320 objects - for x64 architecture </li></ul><br><p>  Those.  GC, checking the card table, meeting in it a non-zero value, is forced to check a maximum of 320 objects for the presence of outgoing links in our generation. </p><br><p>  Therefore, sparse links to the younger generation will make GC more time consuming. </p><br><h3 id="reshenie">  Decision </h3><br><ul><li>  To have objects with connections to the younger generation - close by; </li><li>  If the traffic of objects of zero generation is supposed, use pulling.  Those.  make a pool of objects (there will be no new ones: there will be no zero generation objects).  And further, the “warming up” of the pool with two consecutive GCs so that its contents are guaranteed to fail into the second generation, thereby avoiding references to the younger generation and having zeros in the card table; </li><li>  Avoid references to the younger generation; </li></ul><br><h1 id="ne-dopuskayte-silnoy-svyaznosti">  Do not allow strong connectivity </h1><br><h3 id="problema-1">  Problem </h3><br><p>  As follows from the phase compression algorithms for objects in SOH: </p><br><ul><li>  To compress a heap, it is necessary to bypass the tree and check all the links correcting them for new values. </li><li>  At the same time, links from the card table affect entire groups of objects. </li></ul><br><p>  Therefore, the general strong connectivity of objects can lead to subsidence at GC. </p><br><h3 id="reshenie-1">  Decision </h3><br><ul><li>  Positioning strongly connected objects side by side, in the same generation </li><li>  Avoid unnecessary links in general (for example, instead of duplicating this-&gt; handle links, you should use an existing this-&gt; Service-&gt; handle) </li><li>  Avoid code with hidden connectivity.  For example, closures </li></ul><br><h1 id="monitorte-ispolzovanie-segmentov">  Monitor segment usage </h1><br><h3 id="problema-2">  Problem </h3><br><p>  With intensive work, a situation may arise when the allocation of new objects leads to delays: the allocation of new segments under the heap and their further decommissioning when cleaning garbage </p><br><h3 id="reshenie-2">  Decision </h3><br><ul><li>  Using PerfMon / Sysinternal Utilities, check the points of selection of new segments and their decommitting and release </li><li>  If we are talking about LOH, in which there is a dense traffic of buffers, use ArrayPool </li><li>  When it comes to SOH, make sure that objects of the same lifetime stand out side by side, providing a Sweep trigger instead of Collect </li><li>  SOH: use object pools </li></ul><br><h1 id="ne-vydelyayte-pamyat-v-nagruzhennyh-uchastkah-koda">  Do not allocate memory in loaded sections of code. </h1><br><h3 id="problema-3">  Problem </h3><br><p>  Loaded part of the code allocates memory: </p><br><ul><li>  As a result, the GC selects the allocation window not 1K, but 8K. </li><li>  If the window does not have enough space, this leads to a GC and expansion of the zoned area. </li><li>  A dense stream of new objects will make short-lived objects from other streams quickly go to the older generation with worse garbage collection conditions. </li><li>  Which will increase garbage collection time </li><li>  That will lead to longer Stop the World even in Concurrent mode </li></ul><br><h3 id="reshenie-3">  Decision </h3><br><ul><li>  A complete ban on the use of closures in critical parts of the code </li><li>  Complete prohibition of boxing on critical parts of the code (you can use emulation through pulling if necessary) </li><li>  Where you need to create a temporary object for data storage, use the structure.  Better - ref struct.  When the number of fields is more than 2, transfer by ref </li></ul><br><h1 id="izbegayte-izlishnih-vydeleniy-pamyati-v-loh">  Avoid unnecessary memory allocations in the LOH </h1><br><h3 id="problema-4">  Problem </h3><br><p>  Placing arrays in LOH leads either to its fragmentation or to the weighting of the GC procedure. </p><br><h3 id="reshenie-4">  Decision </h3><br><ul><li>  Use partitioning of arrays into sub-arrays and a class that encapsulates the logic of working with such arrays (i.e. instead of List &lt;T&gt;, where the mega-array is stored, your MyList with array [] [], dividing the array into several shorter) <br><ul><li>  Arrays go to SOH </li><li>  After a couple of garbage collections will lay down near the ever-living objects and will no longer affect the garbage collection </li></ul></li><li>  Control the use of double arrays, longer than 1000 elements. </li></ul><br><h1 id="gde-opravdano-i-vozmozhno-ispolzovat-thread-stack">  Where justified and possible, use thread stack </h1><br><h3 id="problema-5">  Problem </h3><br><p>  There are a number of ultra short-lived objects or objects living within the framework of a method call (including internal calls).  They create traffic objects </p><br><h3 id="reshenie-5">  Decision </h3><br><ul><li>  Using memory allocation on the stack, where possible: <br><ul><li>  It does not load a bunch </li><li>  Does not load GC </li><li>  Memory free - instant </li></ul></li><li> Use <code>Span T x = stackalloc T[];</code>  instead of <code>new T[]</code> where possible </li><li>  Use <code>Span/Memory</code> where possible </li><li>  Translate algorithms to <code>ref stack</code> types (StackList: struct, <a href="">ValueStringBuilder</a> ) </li></ul><br><h1 id="osvobozhdayte-obekty-kak-mozhno-ranshe">  Release objects as early as possible. </h1><br><h3 id="problema-6">  Problem </h3><br><p>  Conceived as short-lived, objects fall into gen1, and sometimes into gen2. <br>  This results in a heavier GC that lasts longer. </p><br><h3 id="reshenie-6">  Decision </h3><br><ul><li>  You must release the object link as soon as possible. </li><li>  If a lengthy algorithm contains code that works with any objects, separated by code.  But which can be grouped in one place, it is necessary to group it, allowing thereby to collect them earlier. <br><ul><li>  For example, on line 10 they took out a collection, and on line 120 they filtered it out. </li></ul></li></ul><br><h1 id="vyzyvat-gccollect-ne-nuzhno">  Calling GC.Collect () is not necessary </h1><br><h3 id="problema-7">  Problem </h3><br><p>  It often seems that calling GC.Collect () will fix the situation. </p><br><h3 id="reshenie-7">  Decision </h3><br><ul><li>  Much more correct to learn the algorithms of the GC, look at the application for ETW and other diagnostic tools (JetBrains dotMemory, ...) </li><li>  Optimize the most problematic areas </li></ul><br><h1 id="izbegayte-pinning">  Avoid Pinning </h1><br><h3 id="problema-8">  Problem </h3><br><p>  Pinning creates a number of problems: </p><br><ul><li>  Complicates garbage collection </li><li>  Creates free memory spaces (nodes free-list items, bricks table, buckets) </li><li>  May leave some objects in a younger generation, thus forming links from the card table </li></ul><br><h3 id="reshenie-8">  Decision </h3><br><p>  If there is no other way, use fixed () {}.  This method of fixing does not make a real fix: it only happens when the GC has worked inside the curly braces. </p><br><h1 id="izbegayte-finalizacii">  Avoid finalizing </h1><br><h3 id="problema-9">  Problem </h3><br><p>  The finalization is not undetermined: </p><br><ul><li>  Undisclosed Dispose () causes finalization with all outgoing links from the object. </li><li>  Dependent objects are delayed longer than scheduled </li><li>  Grow older by moving to older generations. </li><li>  If they contain links to younger ones, generate links from the card table. </li><li>  Complicating the assembly of older generations, fragmenting them and leading to Compacting instead of Sweep </li></ul><br><h3 id="reshenie-9">  Decision </h3><br><p>  Carefully call Dispose () </p><br><h1 id="izbegayte-bolshogo-kolichestva-potokov">  Avoid lots of threads </h1><br><h3 id="problema-10">  Problem </h3><br><p>  With a large number of threads, the number of allocation context grows, since  they are allocated to each thread: </p><br><ul><li>  As a result, GC.Collect comes faster. </li><li>  Due to the lack of space in the ephemeral segment, Sweep will follow Collect </li></ul><br><h3 id="reshenie-10">  Decision </h3><br><ul><li>  Monitor the number of threads by the number of cores </li></ul><br><h1 id="izbegayte-traffika-obektov-raznogo-razmera">  Avoid traffic to objects of different sizes. </h1><br><h3 id="problema-11">  Problem </h3><br><p>  When traffic objects of different size and lifetime of fragmentation occurs: </p><br><ul><li>  Increase Fragmentation ratio </li><li>  Triggering Collection with address change phase in all referencing objects </li></ul><br><h3 id="reshenie-11">  Decision </h3><br><p>  If you intend to traffic objects: </p><br><ul><li>  Check for extra margins, approximate dimensions </li><li>  To control the absence of manipulations with strings: where possible, replace with ReadOnlySpan / ReadOnlyMemory </li><li>  Release link as soon as possible. </li><li>  Use pulling </li><li>  Caches and pools "warm up" double GC to compact objects.  Thereby you avoid problems with the card table. </li></ul></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/453082/">https://habr.com/ru/post/453082/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../453074/index.html">Wolfram Engine is now open to developers (translation)</a></li>
+<li><a href="../453076/index.html">Business on their own: a book with the tactics of the passage of this game</a></li>
+<li><a href="../453078/index.html">Reviews Their role in the life of a freelancer and not only</a></li>
+<li><a href="../45308/index.html">A letter to the President of Russia - 2. Waiting.</a></li>
+<li><a href="../453080/index.html">Smart home with Alice. Yandex opens platform for all developers</a></li>
+<li><a href="../453084/index.html">Background: US Conflict and Huawei Conflict - Chronology and Causes</a></li>
+<li><a href="../453088/index.html">"Open Organization": How not to get lost in the chaos and rally millions</a></li>
+<li><a href="../453090/index.html">MERLION has become the official distributor of Zextras, the world's leading developer of extensions for the Zimbra mail server.</a></li>
+<li><a href="../453092/index.html">We collect Flutter application for a desktop</a></li>
+<li><a href="../453094/index.html">Analysis of the frequency of occurrence of numbers in the MD5 hash</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>The story of one MySQL optimization</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="It's about optimization in the MySQL database. 
+
+ This happened when we made a system for email newsletters. Our system was supposed to send tens of m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>The story of one MySQL optimization</h1><div class="post__text post__text-html js-mediator-article">  It's about optimization in the MySQL database. <br><br>  This happened when we made a system for email newsletters.  Our system was supposed to send tens of millions of emails per day.  Sending a letter is not an easy task, although everything looks rather primitive: <br><br><ol><li>  Collect a letter from html creative, substitute personalized data. </li><li>  Add a pixel view of the letter, replace all the links in the letter with your own - to track clicks. </li><li>  Check before sending that the email is not in the black list. </li><li>  Send an email to a specific pool. </li></ol><br>  I'll tell you more about the second paragraph: <a name="habracut"></a><br>  Mail-builder microservice prepares a letter for dispatch: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  finds all references in the letter; </li><li>  a unique 32-character uuid is generated for each link; </li><li>  replaces the original link to a new one and saves the data to the database. </li></ul><br>  Thus, all the original links will be replaced by uuid-s, and the domain will be changed to ours.  When a GET request for this link, we will proxy the original image or redirect to the original link.  Saving occurs in the MySQL database, we save the generated uuid along with the original link and with some meta information (user email, email id and other data).  Denormalization helps us in 1 request to get all the necessary data to save statistics, or start some kind of trigger chain. <br><br><h4>  Problem number 1 </h4><br>  The uuid-a generation depended on the timestamp. <br><br>  Since mailings usually occur in a certain period of time and many instances of microservice are running on assembling a letter, it turned out that some of the uuids were very similar.  <s>This gave a low selectivity.</s>  UPD: because the data were similar, working with a bi-tree was not very effective. <br><br>  We solved this problem by using the uuid module in python, where there is no time dependence. <br>  Such an implicit thing reduced the speed of the indexes. <br><br>  How is the storage? <br><br>  The table structure was as follows: <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXISTS</span></span> <span class="hljs-string"><span class="hljs-string">`Messages`</span></span> ( <span class="hljs-string"><span class="hljs-string">`UUID`</span></span> <span class="hljs-built_in"><span class="hljs-built_in">varchar</span></span>(<span class="hljs-number"><span class="hljs-number">32</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-string"><span class="hljs-string">`Message`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">json</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-string"><span class="hljs-string">`Inserted`</span></span> <span class="hljs-built_in"><span class="hljs-built_in">DATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> (<span class="hljs-string"><span class="hljs-string">`UUID`</span></span>) ) <span class="hljs-keyword"><span class="hljs-keyword">ENGINE</span></span>=<span class="hljs-keyword"><span class="hljs-keyword">InnoDB</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DEFAULT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">CHARSET</span></span>=utf8;</code> </pre> <br>  At the time of creation, everything looked logical: <br>  UUID is the primary key, and is also a clustered index.  When we make a selection of this field, we simply select the record, because all values ​​are stored right there.  It was a deliberate decision.  <a href="https://habr.com/ru/post/141767/">Learn more about clustered index.</a> <br><br>  Everything was great until the table expanded. <br><br><h4>  Problem number 2 </h4><br>  If you read more about the cluster index, you can find out about this nuance: <br><blockquote>  When a new row is added to the table, it is added not to the end of the file, not to the end of the flat list, but to the desired branch of the tree structure corresponding to it in sorting. </blockquote>  Thus, with an increase in load, the insertion time grew. <br><br>  The solution was to use a different table structure. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXISTS</span></span> <span class="hljs-string"><span class="hljs-string">`Messages`</span></span> ( <span class="hljs-string"><span class="hljs-string">`ID`</span></span> <span class="hljs-built_in"><span class="hljs-built_in">int</span></span>(<span class="hljs-number"><span class="hljs-number">11</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span> AUTO_INCREMENT, <span class="hljs-string"><span class="hljs-string">`UUID`</span></span> <span class="hljs-built_in"><span class="hljs-built_in">varchar</span></span>(<span class="hljs-number"><span class="hljs-number">32</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-string"><span class="hljs-string">`Message`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">json</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-string"><span class="hljs-string">`Inserted`</span></span> <span class="hljs-built_in"><span class="hljs-built_in">DATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> (<span class="hljs-string"><span class="hljs-string">`ID`</span></span>), <span class="hljs-keyword"><span class="hljs-keyword">UNIQUE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> <span class="hljs-string"><span class="hljs-string">`UUID`</span></span> (<span class="hljs-string"><span class="hljs-string">`UUID`</span></span>, <span class="hljs-string"><span class="hljs-string">`Inserted`</span></span>) ) <span class="hljs-keyword"><span class="hljs-keyword">ENGINE</span></span>=<span class="hljs-keyword"><span class="hljs-keyword">InnoDB</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DEFAULT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">CHARSET</span></span>=utf8;</code> </pre> <br>  Since the primary key is now auto-increment, and the cache of the last insertion point is stored in mysql, now the insertion always occurs at the end, i.e. Innodb is optimized for writing sequentially-increasing values. <br><br>  I found the details of this optimization in the <a href="">source code of postgres.</a>  In mysql, a very similar optimization is implemented. <br>  It was necessary, of course, to add a unique key so that there were no collisions, but we increased the speed of insertion. <br><br>  With an even larger base, we thought about deleting old data.  Using DELETE over the Inserted field is absolutely not optimal - it is very long and the place will not be freed until we execute the <i>optimize table</i> command.  By the way, this operation completely locks the table - this did not suit us at all. <br><br>  Therefore, we decided to split our table into partitions. <br>  1 day - 1 partition, the old ones drop off automatically when the time comes. <br><br><h4>  Problem number 3 </h4><br>  We were able to delete old data, but we did not get the opportunity to choose from the desired partition, because when select ʻe, we specify only uuid, mysql does not know which partition we look for and seeks in all. <br><br>  The solution was born from Problem # 1 - add the timestamp to the generated uuid.  Only this time we acted a little differently: we inserted the timestamp in a random place of the line, not at the beginning and not at the end;  before it and after added <i>a dash character</i> so that it can be obtained with a regular expression. <br><br>  With this optimization, we were able to get the date when the uuid was generated and already make a select with an indication of the specific value of the Inserted field.  Now we read the data immediately from the partition we need. <br><br>  Also, thanks to such things as <i>ROW_FORMAT = COMPRESSED</i> and changing the encoding to <i>latin1</i> , we saved even more hard disk space. </div><p>Source: <a href="https://habr.com/ru/post/451020/">https://habr.com/ru/post/451020/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../451008/index.html">End2End-approach to speaking</a></li>
+<li><a href="../451010/index.html">About the caustic and not very</a></li>
+<li><a href="../451012/index.html">Random permutations and random partitions</a></li>
+<li><a href="../451014/index.html">Rush, urge or breakthrough? We tell the whole truth about the country's largest hackathon</a></li>
+<li><a href="../45102/index.html">One billion downloads addons</a></li>
+<li><a href="../451028/index.html">Guide: types of essays in English and tips on writing them</a></li>
+<li><a href="../45103/index.html">Photosynty and panorama of Yekaterinburg</a></li>
+<li><a href="../451032/index.html">We write HTTP / 1.1 & HTTP / 2 client and server on Golang</a></li>
+<li><a href="../451034/index.html">Ghostly SQL queries</a></li>
+<li><a href="../45104/index.html">my.opera.com loves Habrahabr</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

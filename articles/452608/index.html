@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Part 1. QInst: it is better to lose a day, then fly five minutes later (we write the instrumentation is trivial)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the previous section, I described approximately how you can load eBPF functions from an ELF file. Now it's time to move from fantasy to Soviet cart...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Part 1. QInst: it is better to lose a day, then fly five minutes later (we write the instrumentation is trivial)</h1><div class="post__text post__text-html js-mediator-article"><p>  In the <a href="https://habr.com/ru/post/452592/">previous section,</a> I described approximately how you can load eBPF functions from an ELF file.  Now it's time to move from fantasy to Soviet cartoons, and following wise advice, having spent once a certain amount of effort, make a universal instrument of instrumentation <del>  <em>(or, in abbreviation, UII !!!)</em> </del>  .  In doing so, I will use the Golden Hammer's anti-pattern design and construct a tool from <a href="https://github.com/qemu/qemu">QEMU, which is</a> relatively familiar to me.  Bonus for this, we get cross-architectural instrumentation, as well as instrumentation at the level of the whole virtual computer.  The instrumentation will be “small native so-shnichek + small .o-file with eBPF”.  In this case, the eBPF functions will be substituted before the corresponding instructions of the internal representation of QEMU before optimization and code generation. </p><br><p>  As a result, the instrumentation itself, which is <strong>added during code generation</strong> (that is, not counting a couple of kilobytes of a regular sish runtime), looks like this, and this is <strong>not</strong> pseudo-code: </p><br><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdint.h&gt; extern uint8_t *__afl_area_ptr; extern uint64_t prev; void inst_qemu_brcond_i64(uint64_t tag, uint64_t x, uint64_t y, uint64_t z, uint64_t u) { __afl_area_ptr[((prev &gt;&gt; 1) ^ tag) &amp; 0xFFFF] += 1; prev = tag; } void inst_qemu_brcond_i32(uint64_t tag, uint64_t x, uint64_t y, uint64_t z, uint64_t u) { __afl_area_ptr[((prev &gt;&gt; 1) ^ tag) &amp; 0xFFFF] += 1; prev = tag; }</span></span></span></span></code> </pre> <br><p>  Well, it's time to load our elf into the Matrix.  Well, how to download, rather <del>  brush in </del>  spray it. </p><a name="habracut"></a><br><p>  As mentioned in the <a href="https://habr.com/ru/post/451306/">article about QEMU.js</a> , one of the modes of QEMU operation is JIT-generation of host machine code from the guest (potentially, for a completely different architecture).  If last time I implemented my code generation backend, then this time I am going to process the internal representation, wedged directly in front of the optimizer.  Is this arbitrary solution?  Not.  It is hoped that the optimizer will cut off extra corners, throw out unnecessary variables, etc.  As far as I understand, he, in fact, is engaged in simple and quickly doable things: pushing constants, throwing out expressions like “x: = x + 0” and removing the unreachable code.  And we can get a decent amount of it. </p><br><h1 id="konfiguraciya-sborochnyh-skriptov">  Build Script Configuration </h1><br><p>  First, let's add our source files: <code>tcg/bpf-loader.c</code> and <code>tcg/instrument.c</code> to the Makefiles.  Generally speaking, there is a desire to shove it into the upstream someday, so you will need to do it in the end, according to your mind, but for now I’ll just unconditionally add these files to the assembly.  And the parameters will be taken in the best traditions of AFL - through variable environments.  By the way, I will test it again on the instrumentation for AFL. </p><br><p>  Just look for the mention of the “neighbor” - the file <code>optimize.c</code> using <code>grep -R</code> and find nothing.  Because it was necessary to search for <code>optimize.o</code> : </p><br><pre> <code class="diff hljs"><span class="hljs-comment"><span class="hljs-comment">--- a/Makefile.target +++ b/Makefile.target @@ -110,7 +110,7 @@ obj-y += trace/ obj-y += exec.o obj-y += accel/ obj-$(CONFIG_TCG) += tcg/tcg.o tcg/tcg-op.o tcg/tcg-op-vec.o tcg/tcg-op-gvec.o -obj-$(CONFIG_TCG) += tcg/tcg-common.o tcg/optimize.o +obj-$(CONFIG_TCG) += tcg/tcg-common.o tcg/optimize.o tcg/instrument.o tcg/bpf-loader.o obj-$(CONFIG_TCG_INTERPRETER) += tcg/tci.o obj-$(CONFIG_TCG_INTERPRETER) += disas/tci.o obj-$(CONFIG_TCG) += fpu/softfloat.o</span></span></code> </pre> <br><h1 id="tak-vot-ty-kakoe-metaprogrammirovanie-na-c">  So here you are, metaprogramming on C ... </h1><br><p>  First, let's add <code>bpf-loader.c</code> from the last series with the code pulling out the entry points corresponding to the QEMU operations.  And the mysterious <code>tcg-opc.h</code> file will help us in this.  It looks like this: </p><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * DEF(name, oargs, iargs, cargs, flags) */</span></span> <span class="hljs-comment"><span class="hljs-comment">/* predefined ops */</span></span> DEF(discard, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, TCG_OPF_NOT_PRESENT) DEF(set_label, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, TCG_OPF_BB_END | TCG_OPF_NOT_PRESENT) <span class="hljs-comment"><span class="hljs-comment">/* variable number of parameters */</span></span> DEF(call, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">3</span></span>, TCG_OPF_CALL_CLOBBER | TCG_OPF_NOT_PRESENT) DEF(br, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, TCG_OPF_BB_END) <span class="hljs-comment"><span class="hljs-comment">// ...</span></span></code> </pre> <br><p>  What nonsense?  But the point is simply that it is not connected in the source header — you need to define the <code>DEF</code> macro, enable this file, and immediately delete the macro.  See, he doesn't even have a guard. </p><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> *inst_function_names[] = { #define DEF(name, a, b, c, d) stringify(inst_qemu_##name), #include <span class="hljs-string"><span class="hljs-string">"tcg-opc.h"</span></span> #undef DEF <span class="hljs-literal"><span class="hljs-literal">NULL</span></span> };</code> </pre> <br><p>  As a result, we get a neat array of target function names, indexed by opcodes and ending with NULL, which we can run for each character in the file.  I understand that it is not effective.  But just that is important, given the one-time nature of this operation.  Then we just skip all the characters for which </p><br><pre> <code class="cpp hljs">ELF64_ST_BIND(sym-&gt;st_info) == STB_LOCAL || ELF64_ST_TYPE(sym-&gt;st_info) != STT_FUNC</code> </pre> <br><p>  We check the rest with the list. </p><br><h1 id="privyazyvaemsya-k-potoku-vypolneniya">  Bind to the execution thread </h1><br><p>  Now we need to get up somewhere on the thread of the execution of the code generation mechanism, and wait until the interesting instruction passes by.  But first you need to define your <code>instrumentation_init</code> , <code>tcg_instrument</code> and <code>instrumentation_shutdown</code> functions in the <code>tcg/tcg.h</code> and register their calls: initialization — after the backend initialization, instrumentation — just before <code>tcg_optimize</code> .  It would seem that <code>instrumentation_shutdown</code> can be hung up in <code>instrumentation_init</code> on <code>atexit</code> and not soared.  I also thought so, and it most likely will work in the full system emulation mode, but in the usermode-emulation mode, QEMU translates the <code>exit_group</code> and sometimes <code>exit</code> system calls to the <code>_exit</code> function call, which ignores all these atexit-handlers, Therefore, we will find it in <code>linux-user/syscall.c</code> and enter in front of it a call to our code. </p><br><h1 id="interpretiruem-baytkod">  Interpreting bytecode </h1><br><p>  So it's time to read what the compiler generated for us.  This is conveniently done using <code>llvm-objdump</code> with the <code>-x</code> option, or better immediately <code>-d -t -r</code> . </p><br><div class="spoiler">  <b class="spoiler_title">Sample output</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">$ ./compile-bpf.sh test-bpf.o: file format ELF64-BPF Disassembly of section .text: 0000000000000000 inst_brcond_i64: 0: 18 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 r2 = 0 ll 0000000000000000: R_BPF_64_64 prev 2: 79 23 00 00 00 00 00 00 r3 = *(u64 *)(r2 + 0) 3: 77 03 00 00 01 00 00 00 r3 &gt;&gt;= 1 4: 7b 32 00 00 00 00 00 00 *(u64 *)(r2 + 0) = r3 5: af 13 00 00 00 00 00 00 r3 ^= r1 6: 57 03 00 00 ff ff 00 00 r3 &amp;= 65535 7: 18 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 r4 = 0 ll 0000000000000038: R_BPF_64_64 __afl_area_ptr 9: 79 44 00 00 00 00 00 00 r4 = *(u64 *)(r4 + 0) 10: 0f 34 00 00 00 00 00 00 r4 += r3 11: 71 43 00 00 00 00 00 00 r3 = *(u8 *)(r4 + 0) 12: 07 03 00 00 01 00 00 00 r3 += 1 13: 73 34 00 00 00 00 00 00 *(u8 *)(r4 + 0) = r3 14: 7b 12 00 00 00 00 00 00 *(u64 *)(r2 + 0) = r1 15: 95 00 00 00 00 00 00 00 exit 0000000000000080 inst_brcond_i32: 16: 18 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 r2 = 0 ll 0000000000000080: R_BPF_64_64 prev 18: 79 23 00 00 00 00 00 00 r3 = *(u64 *)(r2 + 0) 19: 77 03 00 00 01 00 00 00 r3 &gt;&gt;= 1 20: 7b 32 00 00 00 00 00 00 *(u64 *)(r2 + 0) = r3 21: af 13 00 00 00 00 00 00 r3 ^= r1 22: 57 03 00 00 ff ff 00 00 r3 &amp;= 65535 23: 18 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 r4 = 0 ll 00000000000000b8: R_BPF_64_64 __afl_area_ptr 25: 79 44 00 00 00 00 00 00 r4 = *(u64 *)(r4 + 0) 26: 0f 34 00 00 00 00 00 00 r4 += r3 27: 71 43 00 00 00 00 00 00 r3 = *(u8 *)(r4 + 0) 28: 07 03 00 00 01 00 00 00 r3 += 1 29: 73 34 00 00 00 00 00 00 *(u8 *)(r4 + 0) = r3 30: 7b 12 00 00 00 00 00 00 *(u64 *)(r2 + 0) = r1 31: 95 00 00 00 00 00 00 00 exit SYMBOL TABLE: 0000000000000000 l df *ABS* 00000000 test-bpf.c 0000000000000000 ld .text 00000000 .text 0000000000000000 *UND* 00000000 __afl_area_ptr 0000000000000080 g F .text 00000080 inst_brcond_i32 0000000000000000 g F .text 00000080 inst_brcond_i64 0000000000000008 g O *COM* 00000008 prev</code> </pre> </div></div><br><p>  If you try to look up the description of the eBPF opcodes, you will find that there are descriptions in obvious places (source codes and man pages of the Linux kernel), how to use it, how to compile, etc.  Then you come across the iovisor tool team <a href="">page</a> with a convenient unofficial eBPF guide. </p><br><p>  The instruction takes one 64-bit word (some are two) and looks like </p><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint8_t</span></span> opcode; <span class="hljs-keyword"><span class="hljs-keyword">uint8_t</span></span> dst:<span class="hljs-number"><span class="hljs-number">4</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">uint8_t</span></span> src:<span class="hljs-number"><span class="hljs-number">4</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">uint16_t</span></span> offset; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> imm; };</code> </pre> <br><p>  Those that occupy two words, simply consist of the first instruction with all the logic and a “trailer” with another 32 bits of immediate-value and are very clearly visible in the objdump disassembler. </p><br><p>  Opcodes themselves also have a regular structure: the lower three bits are the operation class: 32-bit ALU, 64-bit ALU, load / store, conditional transitions.  Therefore, they are very convenient in the best traditions of QEMU to implement on macros.  I will not carry out detailed instructions on the code base <del>  we are not on code review </del>  better tell about the pitfalls. </p><br><p>  My first problem was that I made a lazy allocator of eBPF registers in the form of QEMU-vskih <code>local_temp</code> , and thoughtlessly passed a call to this function in a macro.  It turned out like in a famous meme: “We have inserted an abstraction into your abstraction so that you can generate an instruction while you generate an instruction.”  Post factum, I already do not understand well what broke then, but with the order of the generated instructions, it seems that something strange was going on.  After that, I made analogs to the <code>tcg_gen_...</code> functions for stuffing new instructions in the middle of the list that take operands as function arguments, and the order automatically became as it should (since the arguments are completely calculated exactly once before the call). </p><br><p>  The second problem was trying to stuff the TCG const as an operand of an arbitrary instruction when seen as an immediate operand in eBPF.  Sul by the previously mentioned <code>tcg-opc.h</code> , the list of arguments of the operation is strictly fixed: <code>n</code> input arguments, <code>m</code> output and <code>k</code> constant.  By the way, when debugging such code, it is very helpful to pass the QEMU command line argument to <code>-d op,op_opt</code> or even <code>-d op,op_opt,out_asm</code> . </p><br><div class="spoiler">  <b class="spoiler_title">Possible arguments</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">$ ./x86_64-linux-user/qemu-x86_64 -d help Log items (comma separated): out_asm show generated host assembly code for each compiled TB in_asm show target assembly code for each compiled TB op show micro ops for each compiled TB op_opt show micro ops after optimization op_ind show micro ops before indirect lowering int show interrupts/exceptions in short format exec show trace before each executed TB (lots of logs) cpu show CPU registers before entering a TB (lots of logs) fpu include FPU registers in the 'cpu' logging mmu log MMU-related activities pcall x86 only: show protected mode far calls/returns/exceptions cpu_reset show CPU state before CPU resets unimp log unimplemented functionality guest_errors log when the guest OS does something invalid (eg accessing a non-existent register) page dump pages at beginning of user mode emulation nochain do not chain compiled TBs so that "exec" and "cpu" show complete traces trace:PATTERN enable trace events Use "-d trace:help" to get a list of trace events.</code> </pre> </div></div><br><p>  Well, do not repeat my mistakes: the internal instructions disassembler is quite advanced, and if you see in it something like <code>add_i64 loc15,loc15,$554412123213</code> , then this thing after the dollar sign - this is not a pointer.  More precisely, it is, of course, a pointer, but perhaps hung with flags in the role of the literal value of the operand, and not the pointer.  All this is applicable, naturally, if you know that there should be some specific number, like <code>$0</code> or <code>$ff</code> , you should not be afraid of pointers at all.  :) How to <code>movi</code> with this - you just need to create a function that returns a fresh <code>temp</code> , into which <code>movi</code> will put the desired constant through the <code>movi</code> . </p><br><p>  By the way, if you comment out <code>#define USE_TCG_OPTIMIZATIONS</code> in the <code>tcg/tcg.c</code> <code>#define USE_TCG_OPTIMIZATIONS</code> , then, all of a sudden, the optimization will turn off, and it will be easier to analyze the code conversions. </p><br><p>  For this, I will send a reader who is interested in picking QEMU into the <a href="https://wiki.qemu.org/Documentation/TCG/frontend-ops">documentation</a> , even the official one!  And the rest I will demonstrate the promised instrumentation for AFL. </p><br><h1 id="te-zhe-i-krolik">  The same rabbit </h1><br><p>  For the full runtime text, I will, again, send the reader to the repository, since it (the text) does not represent artistic value and is honestly styled from <code>qemu_mode</code> from the AFL delivery, and in general is a common piece of C code. But what the instrumentation itself looks like : </p><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdint.h&gt; extern uint8_t *__afl_area_ptr; extern uint64_t prev; void inst_qemu_brcond_i64(uint64_t tag, uint64_t x, uint64_t y, uint64_t z, uint64_t u) { __afl_area_ptr[((prev &gt;&gt; 1) ^ tag) &amp; 0xFFFF] += 1; prev = tag; } void inst_qemu_brcond_i32(uint64_t tag, uint64_t x, uint64_t y, uint64_t z, uint64_t u) { __afl_area_ptr[((prev &gt;&gt; 1) ^ tag) &amp; 0xFFFF] += 1; prev = tag; }</span></span></span></span></code> </pre> <br><p>  It is important that the hook functions have as many arguments as the <code>iargs</code> the corresponding QEMU operation.  Two <code>extern</code> in the cap will be linked to the runtime during the relocation process.  In principle, the <code>prev</code> could be defined right here, but then it must be defined as <code>static</code> , otherwise it will fall into the COMMON section that I do not support.  Actually, we, in fact, simply rewrote the pseudocode from the documentation, but here it is machine readable! </p><br><p>  For verification, create the file <code>bug.c</code> : </p><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdio.h&gt; #include &lt;unistd.h&gt; #include &lt;stdlib.h&gt; int main(int argc, char *argv[]) { char buf[16]; int res = read(0, buf, 4); if (buf[0] == 'T' &amp;&amp; buf[1] == 'E' &amp;&amp; buf[2] == 'S' &amp;&amp; buf[3] == 'T') abort(); return res * 0; }</span></span></span></span></code> </pre> <br><p>  And also the <code>forksrv</code> file, which is convenient to feed the AFL: </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash export NATIVE_INST=./instrumentation-examples/afl/afl-native.so export BPF_INST=./instrumentation-examples/afl/afl-bpf.co exec ./x86_64-linux-user/qemu-x86_64 ./instrumentation-examples/afl/bug</span></span></code> </pre> <br><p>  And run fuzzing: </p><br><pre> <code class="bash hljs">AFL_SKIP_BIN_CHECK=1 afl-fuzz -i ../input -o ../output -m none -- ./forksrv</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">American Fuzzy Lop (Proceed)</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">1234 T234 TE34 TES4 TEST &lt;-     crashes,    2200  </code> </pre> </div></div><br><p>  So far, the speed is not so hot, but in justification I will say that here (for the time being) an important feature of the original <code>qemu_mode</code> not used: sending the addresses of the executable code to the fork server.  But there is nothing AFL in the QEMU codebase, and there is hope that this generalized instrumentation will ever be pushed into the upstream. </p><br><p>  <a href="https://github.com/atrosinenko/qinst">GitHub project</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/452608/">https://habr.com/ru/post/452608/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../452592/index.html">Part 0. Requires an elf to work in the Matrix. Relocation possible</a></li>
+<li><a href="../452596/index.html">735,000 IPv4 addresses were taken from the scammer and returned to the registry</a></li>
+<li><a href="../452598/index.html">Managing a team of programmers: how and what motivates them correctly? Part one</a></li>
+<li><a href="../4526/index.html">Should corporations be allowed to edit Wikipedia?</a></li>
+<li><a href="../452602/index.html">Cisco Hyperflex for high-load DBMS</a></li>
+<li><a href="../45261/index.html">Venture Dating Service</a></li>
+<li><a href="../452610/index.html">Help and request for it. Article about information security for ordinary users</a></li>
+<li><a href="../452612/index.html">Machine learning of a deep neural network with reinforcement at tensorflow.js: stunts</a></li>
+<li><a href="../452614/index.html">How to start programming in Adobe Illustrator. Part two</a></li>
+<li><a href="../452618/index.html">What did Google I / O 2019 talk about: Android 10, AR apps and more</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
