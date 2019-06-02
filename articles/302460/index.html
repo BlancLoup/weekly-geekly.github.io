@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Migrating HipChat Server data from self-hosted VM to Amazon EC2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The company I work for now has been using the HipChat Server for internal communications for a team of developers and admins for about a year now. Mor...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Migrating HipChat Server data from self-hosted VM to Amazon EC2</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/files/53e/37a/ede/53e37aede2d143b9afeaecd99e4ecb56.jpeg" alt="image"></div><br><br>  The company I work for now has been using the HipChat Server for internal communications for a team of developers and admins for about a year now.  Moreover, this is a self-hosted KVM virtual machine with a qcow2 disk image.  And so, recently there was a need to transport internal services on AWS, I began to look for ways.  There were actually a few options: <br>  - Convert qcow2&gt; raw&gt; ami. <br>  - <a href="https://confluence.atlassian.com/display/HC/Exporting%2Band%2BImporting%2Byour%2BHipChat%2BData">The official approach</a> is to export chats, users, rooms and files (without passwords, integrations and api keys). <br>  - the third option, which I will describe below. <br><a name="habracut"></a><br>  I decided to postpone the first two options for later.  I did not want to consider the official method, because I really did not want to have problems with recovering passwords and keys, although it would not take a lot of time in my case.  And the option of converting to an AMI image is simply less interesting. <br><br>  The source data is the HipChat 1.4.1 server at the source and at the receiver.  The source is the kvm / qcow2 virtual machine.  The receiver is clean (without users, not counting me) EC2-instance HipChat Server but with the initial setup and trial license.  The configuration is the same, the size of the disks is the same (1 CPU, 2Gb RAM, 50Gb HDD). 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># VARS SOURCE=hipchat.example.com DEST=new_hipchat.example.com</span></span></code> </pre> <br><br>  So, I decided to dig a little in the guts of the server and figure out which files and settings of which services need to be transferred.  A quick review revealed that the following technology stack is being used: <br>  - nginx, <br>  - php5-fpm, <br>  - mysql, <br>  - elasticsearch, <br>  - redis, <br>  - gearman-job-server, <br>  - memcached, <br>  - and several related services. <br>  Plus a number of python, ruby, chef-solo scripts. <br>  Familiar? <br>  I did not dig far, I just needed to figure out what needs to be transferred and how. <br><br>  It was possible to dump the database (mysql, elasticsearch, redis), but I decided that in any case I would completely stop all services on the source and on the receiver, so I’ll just copy the files from the source to the receiver. <br>  Before you begin, you need (yes, you would need) to warn the command that n-hours will be unavailable for the hippat (it is more logical to do this during off-hours), then stop all services (both on the source and on the receiver) from the list below: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># ON $DEST AND $SOURCE /etc/init.d/cron stop /etc/init.d/monit stop /etc/init.d/nginx stop /etc/init.d/php5-fpm stop /etc/init.d/hipchat stop /etc/init.d/integrations-0 stop /etc/init.d/tetra-proxy stop /etc/init.d/tetra-proxy-0 stop /etc/init.d/tetra-app-0 stop /etc/init.d/barb-0 stop /etc/init.d/coral-0 stop /etc/init.d/crowd stop /etc/init.d/cumulus stop /etc/init.d/curler stop /etc/init.d/elasticsearch stop /etc/init.d/gearman-job-server stop /etc/init.d/memcached stop /etc/init.d/redisserver stop /etc/init.d/mysql stop</span></span></code> </pre><br>  About crones, I did not immediately guess, it turned out to be a task that periodically checks the monit, and that in turn checks the other services (in general, everything is logical, well done).  In fact, not all services from this list work - tetra-proxy, for example, and some other one, did not remember. <br><br>  Scrolling through the contents of the directories, I collected a list of the necessary (not the first time, something empirically): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># Copy all files from $SOURCE to $DEST rsync -avz /etc/nginx/ $DEST:/etc/nginx/ rsync -avz /etc/mariadb_grants $DEST:/etc/mariadb_grants rsync -avz /etc/chef/ $DEST:/etc/chef/ rsync -avz /etc/crowd/ $DEST:/etc/crowd/ rsync -avz /etc/mysql/debian.cnf $DEST:/etc/mysql/debian.cnf rsync -avz --del /chat_history/ $DEST:/chat_history/ rsync -avz --del /data_bags/ $DEST:/data_bags/ rsync -avz --exclude='file_store/archive/pool' /file_store/ $DEST:/file_store/ rsync -avz --del /hipchat/ $DEST:/hipchat/ rsync -avz --del /hipchat-scm/ $DEST:/hipchat-scm/ rsync -avz --del --exclude='home/admin/.ssh' /home/ $DEST:/home/ rsync -avz --del /ops/ $DEST:/ops/ rsync -avz --del /opt/ $DEST:/opt/ rsync -avz --del /var/lib/mysql/ $DEST:/var/lib/mysql/ rsync -avz --del /var/lib/redis/ $DEST:/var/lib/redis/ rsync -avz --del /var/lib/cloud/ $DEST:/var/lib/cloud/</span></span></code> </pre><br>  <b>It is important not to overwrite .ssh / authorized_keys, so that you do not have to suffer with the restoration of access to the instance!</b> <br><br>  To start copying files from the source to the receiver, you must first configure the access by keys and ssh-server.  The default config has whitelist and prohibits root user authorization, so I had to temporarily make the following changes: <br><br><pre> <code class="bash hljs">editor /etc/ssh/sshd_config ... PermitRootLogin without-password ... <span class="hljs-comment"><span class="hljs-comment"># Whitelist to HipChat admin DenyUsers ubuntu hipchat AllowUsers root admin nessus</span></span></code> </pre><br>  and restart ssh: <br><pre> <code class="bash hljs">/etc/init.d/ssh restart</code> </pre><br>  <i>After copying is completed and hipchat starts, these changes will be automatically rolled back.</i> <br><br>  When everything is successfully copied, you can try to start all services back to the receiver (the source is better not to touch until you make sure that everything is fine), but it is better to reboot, or rather I had to do it to make it work. <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># ON DEST /etc/init.d/memcached start /etc/init.d/redisserver start /etc/init.d/mysql start /etc/init.d/cron start /etc/init.d/monit start /etc/init.d/nginx start /etc/init.d/php5-fpm start /etc/init.d/hipchat start /etc/init.d/integrations-0 start /etc/init.d/tetra-proxy start /etc/init.d/tetra-proxy-0 start /etc/init.d/tetra-app-0 start /etc/init.d/barb-0 start /etc/init.d/coral-0 start /etc/init.d/crowd start /etc/init.d/cumulus start /etc/init.d/curler start /etc/init.d/elasticsearch start /etc/init.d/gearman-job-server start</span></span></code> </pre><br>  Another important note is that the hipchat is tied to dns records and records in the hosts file, and the latter will not work (it is overwritten at the start) so that “everything took off” the server should rezolvit itself by the hostname which is registered in dns and which you specified during the initial configuration (such as hipchat.example.com). <br><br><pre> <code class="bash hljs">cat /etc/hosts 127.0.0.1 localhost localhost.localdom <span class="hljs-comment"><span class="hljs-comment"># Network nodes 192.168.0.10 hipchat.example.com #     ,    chef      # Services 192.168.0.10 graphite.hipchat.com 192.168.0.10 mysql.hipchat.com 192.168.0.10 redis-master.hipchat.com 192.168.0.10 redis-slave.hipchat.com # IPv6 ::1 ip6-localhost ip6-loopback fe00::0 ip6-localnet ff00::0 ip6-mcastprefix ff02::1 ip6-allnodes ff02::2 ip6-allrouters ff02::3 ip6-allhosts</span></span></code> </pre><br>  To check the performance of the receiver will have to change the dns-record for your hipchat server.  Or in the case of AWS, you can use the internal DNS server by placing a private-zone with your domain in Route 53 and specifying the private-ip of the instance in it. <br>  And only after that do service hipchat restart (or better reboot, to be sure that when the system is restarted, everything will be ok), and everything will work. <br><br>  I deliberately tried not to interfere with the logic that exists in the server, because all my changes would disappear with the next update and could possibly lead to a loss of serviceability. <br><br>  As a result, my experiment was a success, this morning the guys did not even notice what happened, all without any problems continued to use the command chat. <br><br>  <b>I do not recommend using this article as a guide to action if you have started such a transfer.</b>  <b>The article may be errors and inaccuracies.</b>  <b>Therefore, do everything at your own peril and risk.</b>  <b>Everything must be done carefully and clearly understand what you are doing and how it can turn around.</b> <br><br>  Make backups and check them. <br><br>  All long uptime and good mood. </div><p>Source: <a href="https://habr.com/ru/post/302460/">https://habr.com/ru/post/302460/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../302438/index.html">Creating a blog on symfony 2.8 lts [Part 3]</a></li>
+<li><a href="../302442/index.html">Deployer - convenient and flexible application deployment</a></li>
+<li><a href="../302448/index.html">“No longer means better”: counterintuitive case from Google</a></li>
+<li><a href="../302456/index.html">Haordic Organization Visa (Part 3)</a></li>
+<li><a href="../302458/index.html">We write our malware. Part 1: Learn to write a completely “undetectable” keylogger</a></li>
+<li><a href="../302462/index.html">Year with Runkeeper: Analysis and visualization of geodata about your travels</a></li>
+<li><a href="../302464/index.html">Cooperative network virtualization in industrial server applications on Linux - a report by Vasily Tolstoy at SECR 2015</a></li>
+<li><a href="../302466/index.html">Conference OS DAY 2016. Own system - its processor</a></li>
+<li><a href="../302472/index.html">How to move the development center from Russia to the Czech Republic</a></li>
+<li><a href="../302474/index.html">We invite to the meeting of Moscow Software Testing Club on June 4</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Monitoring agent: simple thing or not?</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Now there are quite a few systems for storing and processing metrics (timeseries db), but the situation with agents (software that collects metrics) i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Monitoring agent: simple thing or not?</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/files/ca8/c4d/6df/ca8c4d6df3324fa8a2fd41749dc059bf.jpg" align="left">  Now there are quite a few systems for storing and processing metrics (timeseries db), but the situation with agents (software that collects metrics) is more complicated.  Not so long ago, <a href="https://github.com/influxdata/telegraf">telegraf</a> appeared, but still the choice is not great. </p><br><p>  At the same time, almost all cloud monitoring services are developing their agents, and <a href="https://okmeter.io/">we are</a> no exception.  The motivation is quite simple - there are many specific requirements that do not fit well with the architecture of existing solutions. </p><br><p>  Our main specific requirements: </p><br><ul><li>  reliable delivery of metrics to the cloud </li><li>  plugins' complicated logic: they interact with each other </li><li>  diagnostics: we must be able to understand why an agent cannot collect certain metrics </li><li>  the agent should consume as few resources of the client server as possible </li></ul><br><p>  Under the cut I will tell several aspects of the development of an agent for collecting metrics. </p><a name="habracut"></a><br><h2 id="dostavka-metrik-v-oblako-lyuboy-cenoy">  Delivery of metrics to the cloud at any cost </h2><br><p>  The monitoring system should always work, and especially in case of problems in the client’s infrastructure.  We began by saying that all metrics are first written to the server disk on which they were collected (we call this spool).  After that, the agent immediately tries to send a pack of metrics to the collector and, if successful, removes this pack from the disk.  Spool is limited in size (500 megabytes by default), if it overflows we begin to delete the “oldest” metrics. </p><br><p>  In this approach, an error was immediately found, we will not be able to work if the disk on the server is full.  For this situation, we are trying to immediately send the metrics if it was not possible to write to the disk.  Entirely, the logic of sending was decided not to change, since we want to minimize the time that the metrics are found only in the agent’s memory. </p><br><p>  If the pack of metrics could not be sent, the agent retries.  The problem is that the packs of metrics can be quite large and unequivocally choosing a timeout is quite difficult.  If we make it big, we can get a delay in the delivery of metrics due to one "stuck" request.  In the case of a small timeout, the big metric packs will stop climbing.  We can not crush large packs into small ones for several reasons. </p><br><p>  We decided not to use the general timeout for the request to the collector.  We set the timeout for setting up the tcp connection and tls handshake, and the connection "liveliness" is checked by <a href="https://en.wikipedia.org/wiki/Keepalive">TCP keepalive</a> .  This mechanism is available on almost all modern OSs, and where there is none (we have clients with FreeBSD 8.x for example :) we have to set a large timeout for the entire request. </p><br><p>  This mechanism has 3 settings (all time intervals are set in seconds, for services that are sensitive to delays, this is not very suitable): </p><br><ul><li>  <strong>Keepalive time</strong> - after what time after receiving the last packet with data in the connection, start sending samples </li><li>  <strong>Keepalive probes</strong> - the number of failed samples, after which the compound is considered dead </li><li>  <strong>Keepalive interval</strong> - interval between samples </li></ul><br><p>  The default values ​​are not very practical: </p><br><pre><code class="hljs dos">$ sysctl -a |grep tcp_keepalive <span class="hljs-built_in"><span class="hljs-built_in">net</span></span>.ipv4.tcp_keepalive_time = <span class="hljs-number"><span class="hljs-number">7200</span></span> <span class="hljs-built_in"><span class="hljs-built_in">net</span></span>.ipv4.tcp_keepalive_probes = <span class="hljs-number"><span class="hljs-number">9</span></span> <span class="hljs-built_in"><span class="hljs-built_in">net</span></span>.ipv4.tcp_keepalive_intvl = <span class="hljs-number"><span class="hljs-number">75</span></span></code> </pre> <br><p>  These parameters can be redefined for any connection, our goal is to identify the problem connection as early as possible and close it.  For example, such settings time = 1, probes = 3, interval = 1 allow you to catch a problem connection in 4 seconds. </p><br><p>  When the connection of the agent with the collector disappears completely, we cannot do anything else.  But quite often we encountered a situation where there is a connection, but the DNS server used by the server does not work.  We decided in the case of a DNS error to try to otrezolvit domain collector through <a href="https://developers.google.com/speed/public-dns/">google public DNS</a> . </p><br><h2 id="plaginy">  Plugins </h2><br><p>  We pay a lot of attention to autodetecting services on client servers, it allows clients to quickly implement our monitoring and helps to not forget to configure anything.  To do this, most plug-ins need a list of processes, and it is needed more than once at the start of the agent, but constantly to pick up new services.  We get a list of processes once per interval, use it to get the metrics for the processes and send it to the plugins that need it for other tasks. </p><br><p>  The plugin can also run other plugins or additional instances of itself.  For example, we have the nginx plugin, it once a minute produces a list of processes, for each running nginx it: </p><br><ul><li>  locates its config </li><li>  reads the config and all nested configs </li><li>  find all log_format and access_log directives </li><li>  based on log_format generates a regular expression for log parsing </li><li>  for each access_log runs an instance of the logparser plugin, which starts to parse the log </li></ul><br><p>  If some log is added / removed or the format is changed, the logparser settings are changed, the missing instances are started, and the extra ones are stopped. </p><br><p>  Logparser can take as input a single file, and glob.  But since we want to parse the logs in parallel, glob periodically opens and runs the required number of instances of the same plugin. </p><br><p>  Recently, another rather confused place has appeared - traffic sniffer, while only mongodb plugin interacts with it, but we plan to expand it: </p><br><ul><li>  according to the process list, the mongodb plugin finds the running Mongu on the server </li><li>  informs the sniffer that he wants to receive packets on a specific TCP port </li><li>  receives packets from the sniffer, additionally parses tcp payload and reads various metrics </li></ul><br><p>  As a result, we did not get quite plug-ins in the usual sense, but simply some of the modules that can interact with each other.  Such scenarios would be very difficult to integrate into some kind of ready-made solution. </p><br><h2 id="diagnostika-agenta">  Agent diagnosis </h2><br><p>  The support of the first clients turned out to be hell for us, we had to correspond for a long time, ask the client to run different commands on the server and send us the output.  In order not to blush in front of clients and speed up the time of searching for problems, we put an agent log in order and began to deliver it to us in the cloud in real time. </p><br><p>  The log helps to quickly catch most of the problems, but communication with customers does not completely replace.  The most common problems are related to the fact that the services are not automatically located.  Most clients use fairly standard configs, log formats, etc., everything works like a clock for them.  But as a rule, in companies where experienced administrators work - the possibilities of the software are used to the full and cases appear that we didn’t even suspect. </p><br><p>  For example, recently we learned about the possibility of configuring a postgre via <a href="https://www.postgresql.org/docs/9.4/static/sql-altersystem.html">ALTER SYSTEM SET</a> , which generates a separate config postgresql.auto.conf, which redefines different values ​​of the main config. </p><br><p>  We have the feeling that over time our agent turns into a piggy bank of knowledge about how various projects are arranged :) </p><br><h2 id="optimizaciya-proizvoditelnosti">  Performance optimization </h2><br><p>  We constantly monitor the consumption of resources by our agent.  We have several plugins that can significantly load the server: logparser, statsd, sniffer.  For such cases we try to do various <a href="https://habrahabr.ru/company/okmeter/blog/308328/">benchmarks</a> , often we profile the code on our stands. </p><br><p>  We write the agent on golang, and it has a profiler that can be included under load.  We decided to use this and taught the agent to periodically spit out the cpu profile in the log in a minute, this allows us to understand how the agent behaves under the client load. </p><br><p>  Since the agent reduces the consumption of resources by absolutely all processes on the server, customers can always see how much our agent consumes.  For example, on one of the client front-end servers, the agent parses the log with approximately 3.5k rps: </p><br><p><img src="https://habrastorage.org/files/d8a/920/0ae/d8a9200aecc246b09a382e4b3cb0b912.png"><br></p><br><p>  By chance, nginx-amlify is tested next to our agent, which parses the same log :) </p><br><h2 id="itogo">  Total </h2><br><ul><li>  monitoring agent is not as simple as it seems (it takes us about half the time to develop and support the agent) </li><li>  for us, everything is complicated by the fact that all clients are different and differently configure their infrastructure </li><li>  looking back, it is clear to us that we would not be able to implement our Wishlist on something ready </li><li>  continue to build your bike :) </li></ul></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/312560/">https://habr.com/ru/post/312560/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../312550/index.html">It's time to teach your designer to buy illustrations in photobanks</a></li>
+<li><a href="../312552/index.html">Statistics for mathematics</a></li>
+<li><a href="../312554/index.html">How I did the Brick Game on Unity3D for Android and got a lock from Google</a></li>
+<li><a href="../312556/index.html">Methods for remote access to the Linux GUI</a></li>
+<li><a href="../312558/index.html">node-direct - one NodeJS server for several sites</a></li>
+<li><a href="../312562/index.html">"Any technical change should answer the question" why? "- Classmates about Java and not only</a></li>
+<li><a href="../312564/index.html">readRss - local rss reader as browser extension</a></li>
+<li><a href="../312568/index.html">A site containing a database of numbers and addresses of subscribers appeared</a></li>
+<li><a href="../312570/index.html">Elimination of perspective distortions and extension of curved lines in photos of book spreads</a></li>
+<li><a href="../312572/index.html">Quality content is not so bad as it is painted.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL slave + btrfs and systemd = hot test database</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="With the active development of software often need a test database with relevant data from the combat base. Well, if the base is small and deploy a co...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL slave + btrfs and systemd = hot test database</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/32d/c3d/06d/32dc3d06da404a22888ad2f99ca008b9.png"><br><p>  With the active development of software often need a test database with relevant data from the combat base.  Well, if the base is small and deploy a copy is not long.  But if there are dozens of gigabytes of data in the database and everything is needed for complete testing, and even fresher, then difficulties arise.  In this article I will describe the option to overcome such troubles with the help of btrfs snapshots.  And systemd, a convenient and functional tool, will manage the work of the resulting complex. </p><br><a name="habracut"></a><br><h4 id="postgres-1">  Training </h4><br><div class="spoiler">  <b class="spoiler_title">On the servers I used:</b> <div class="spoiler_text"><pre><code class="bash hljs">Debian jessie 4.7.0-0.bpo.1-amd64 <span class="hljs-comment"><span class="hljs-comment">#1 SMP Debian 4.7.8-1~bpo8+1 btrfs-progs v4.7.3 systemd 230 postgresql 9.6.1</span></span></code> </pre> </div></div><br><p>  But it does not matter. <br>  In the btrfs section, which will be given under the base, create two volumes: </p><br><pre> <code class="bash hljs">btrfs subvolume create /var/lib/postgresql/slave btrfs subvolume create /var/lib/postgresql/snapshot</code> </pre> <br><p>  The first will store the database data, and the second will contain the shapshot data. </p><br><p>  First of all, you need to raise the PostgreSQL slave database, which normally will contain a full copy of the wizard data.  The deployment algorithms are not once described, therefore, briefly and essentially: </p><br><div class="spoiler">  <b class="spoiler_title">Master postgresql.conf</b> <div class="spoiler_text"><pre> <code class="bash hljs">max_wal_senders = 3 <span class="hljs-comment"><span class="hljs-comment"># max number of walsender processes # (change requires restart) wal_keep_segments = 64 # in logfile segments, 16MB each; 0 disables archive_mode = on # allows archiving to be done # (change requires restart) archive_command = 'test ! -f /var/lib/postgresql/9.6/main/archive/%f.7z &amp;&amp; 7za a /var/lib/postgresql/9.6/main/archive/%f.7z -p______ -mx7 -mhe=on %p'</span></span></code> </pre> </div></div><br><p>  Thus, by filling in the next WAL segment, the process of archiving it into a special <b>archive</b> directory in the base folder is launched.  In my case, further these archive logs are transmitted by open channels and for some time are stored in different places, therefore they are encrypted and protected with a password.  The term that we will keep the archive logs will determine the time period by which we can restore the state of the base-slave.  With active database changes, the number of WAL logs can grow very quickly, devouring free space, and then archiving is very useful. </p><br><p>  You need to clean the archive logs yourself, for example: </p><br><pre> <code class="bash hljs">find /var/lib/postgresql/9.6/main/archive/ -<span class="hljs-built_in"><span class="hljs-built_in">type</span></span> f -mtime +10 -print0 | xargs -0 -n 13 /bin/rm</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Slave postgresql.conf</b> <div class="spoiler_text"><pre> <code class="bash hljs">data_directory = <span class="hljs-string"><span class="hljs-string">'/var/lib/postgresql/slave/9.6/main'</span></span> <span class="hljs-comment"><span class="hljs-comment"># use data in another directory hot_standby = on # "on" allows queries during recovery</span></span></code> </pre> </div></div><br><p>  The base directory is placed one level below the standard in the " <code>slave</code> " directory, since <b>/ var / lib / postgresql</b> is the mount point of the btrfs partition. </p><br><div class="spoiler">  <b class="spoiler_title">Slave recovery.conf</b> <div class="spoiler_text"><pre> <code class="bash hljs">standby_mode = <span class="hljs-string"><span class="hljs-string">'on'</span></span> primary_conninfo = <span class="hljs-string"><span class="hljs-string">'host=master.host port=5432 user=replicator password='</span></span> trigger_file = <span class="hljs-string"><span class="hljs-string">'/var/lib/postgresql/slave/9.6/main/trigger'</span></span> restore_command = <span class="hljs-string"><span class="hljs-string">'7za e /mnt/backup/postgresql/archive/%f.7z -p______ -so &gt; %p'</span></span></code> </pre> </div></div><br><p>  With this setting, the database is launched in slave mode and receives the changed data directly from the wizard.  And if suddenly there will be no data on the master, then it will raise the required data segment from the <b>/ mnt / backup / postgresql / archive /</b> directory.  Archive logs get there using rsync, which periodically takes updates from the wizard.  I take it in synchronization mode with deletion, but you can store them for an arbitrary period of time. </p><br><p>  The database also monitors the emergence of the trigger file and if it appears, it switches to the master mode and is ready to process all requests itself.  From this point on, master and slave bases are out of sync.  A brilliant idea is to take a snapshot of the slave base before switching over and, after the necessary experiments, put it back in place, as if nothing had happened.  Having risen, the base will find that it has lagged behind the master, using the archive-logs, will catch up and enter the regular slave-mode.  This operation takes significantly less time than a full recovery from backup. </p><br><p>  We implement the idea using systemd, which will not only automate the process, but also take into account the necessary dependencies and unwanted conflicts.  I assume that you are already familiar with how systemd works and is configured, but I will try to describe in detail the parameters used. </p><br><h4 id="postgres-2">  Systemd setup </h4><br><p>  First of all, we will mount the partition where the database data is stored.  I have everything assembled in the LXC container, in which the partition with btrfs gets a block device on the path <code>/dev/pg-slave-test-db</code> .  Create a systemd (unit) element of the <code>.mount</code> type: </p><br><div class="spoiler">  <b class="spoiler_title">/etc/systemd/system/var-lib-postgresql.mount</b> <div class="spoiler_text"><pre> <code class="bash hljs">[Unit] Description=PostgreSQL DB dir on BTRFS Conflicts=umount.target [Mount] What=/dev/pg-slave-test-db Where=/var/lib/postgresql Type=btrfs Options=defaults TimeoutSec=30 [Install] WantedBy=multi-user.target</code> </pre> </div></div><br><p>  The name of the element is determined by the mount point.  <b><code>Conflicts=umount.target</code></b> will provide unmounted partition on shutdown.  There is a moment: you can specify not only absolute paths, but also use a unique UUID device identifier.  But, when running in the LXC container, I stumbled upon a strange one - the UUID in the system is not visible until it is explicitly requested by the <code>blkid</code> command.  Therefore I use the absolute path. </p><br><p>  This unit can be launched both independently and used in dependencies, which we will do. </p><br><p>  Create a systemd element describing the launch of PostgreSQL in slave mode.  The base is pre-configured to start in manual mode, in debian this is done in the <code>/etc/postgresql/9.6/main/start.conf</code> file.  Also, if you have the <code>postgresql@9.6-main.service</code> service, you need to turn it off. </p><br><div class="spoiler">  <b class="spoiler_title">/etc/systemd/system/postgres-slave.service</b> <div class="spoiler_text"><pre> <code class="bash hljs">[Unit] Description=Restore PostgreSQL base snapshot and Switch the PostgreSQL base <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> slave mode. After=network.target var-lib-postgresql.mount postgresql.service Requires=var-lib-postgresql.mount Conflicts=postgres-master.service [Service] Type=oneshot RemainAfterExit=yes User=root TimeoutSec=300 ExecStartPre=-/usr/bin/pg_ctlcluster -m fast 9.6 main stop ExecStartPre=/bin/bash -c <span class="hljs-string"><span class="hljs-string">'if [[ -d "/var/lib/postgresql/snapshot/auto" ]]; then /bin/btrfs subvolume delete /var/lib/postgresql/slave; fi'</span></span> ExecStartPre=/bin/bash -c <span class="hljs-string"><span class="hljs-string">'if [[ -d "/var/lib/postgresql/snapshot/auto" ]]; then /bin/mv -v /var/lib/postgresql/snapshot/auto /var/lib/postgresql/slave; fi'</span></span> ExecStart=/usr/bin/pg_ctlcluster 9.6 main start ExecStop=/usr/bin/pg_ctlcluster -m fast 9.6 main stop [Install] WantedBy=multi-user.target</code> </pre> </div></div><br><p>  We will analyze in detail. </p><br><p>  The <b><code>After</code></b> parameter sets the desired sequence for starting the service, but does not oblige to anything, unlike the <b><code>Requires</code></b> .  The latter requires that the specified service be active and will try to activate it.  If this fails, the entire service will transition to the " <code>fail</code> " state.  The <b><code>Conflicts</code></b> parameter says that our service cannot coexist with the specified one and one of them needs to be turned off.  In this case, when you start the service " <b><code>postgres-slave.service</code></b> " will be automatically turned off " <b><code>"postgres-master.service</code></b> "(which we describe below), which is very convenient. </p><br><p>  <b><code>Type=oneshot</code></b> says that the service will work quickly and you need to wait until the end.  And <b><code>RemainAfterExit=yes</code></b> will leave the service in the " <b><code>active</code></b> " state after successfully completing the required actions.  Since we will create snapshots and manage the database, it is advisable to increase the timeout, which by default is 30 seconds. </p><br><p>  Further, in essence, a script is executed that brings the system to the desired state.  The <b><code>ExecStartPre</code></b> commands <b><code>ExecStartPre</code></b> executed before the main <b><code>ExecStart</code></b> command in order and each waits for the successful completion of the previous one.  But the first command has a modifier " <b>-</b> ", which allows you to continue execution, despite the return code.  After all, the base may already be stopped at the time of launch. </p><br><div class="spoiler">  <b class="spoiler_title">startup script:</b> <div class="spoiler_text"><pre> <code class="bash hljs">/usr/bin/pg_ctlcluster -m fast 9.6 main stop /bin/bash -c <span class="hljs-string"><span class="hljs-string">'if [[ -d "/var/lib/postgresql/snapshot/auto" ]]; then /bin/btrfs subvolume delete /var/lib/postgresql/slave; fi'</span></span> /bin/bash -c <span class="hljs-string"><span class="hljs-string">'if [[ -d "/var/lib/postgresql/snapshot/auto" ]]; then /bin/mv -v /var/lib/postgresql/snapshot/auto /var/lib/postgresql/slave; fi'</span></span> /usr/bin/pg_ctlcluster 9.6 main start</code> </pre> </div></div><br><p>  Absolute paths to programs are required.  Where it is necessary to check the current state of the system during execution, bash is called and a small script is executed.  So: </p><br><ol><li><p>  In the first step, turn off the working database with the " <b><code>-m fast</code></b> " parameter, so as not to wait for all clients to disconnect. </p><br></li><li><p>  Check whether there is a directory " <code>/var/lib/postgresql/snapshot/auto</code> ", which stores the last snapshot of the database in the slave mode, and which appears as a result of the service " <b><code>postgres-master.service</code></b> ".  If there is a snapshot, then the current state of the database is master.  Delete the test database data ( <code>/var/lib/postgresql/slave</code> ). </p><br></li><li><p>  And restore the picture to this place. </p><br></li><li>  After successful execution of preparatory commands, we launch the base. </li></ol><br><p>  The last command " <b><code>ExecStop</code></b> " determines how the service will shut down.  The service is self-sufficient and can be added to autorun at system startup. </p><br><p>  Create a systemd element describing the launch of PostgreSQL in master mode. </p><br><div class="spoiler">  <b class="spoiler_title">/etc/systemd/system/postgres-master.service</b> <div class="spoiler_text"><pre> <code class="bash hljs">[Unit] Description=Create PostgreSQL base Snapshot and Switch the PostgreSQL base <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> master mode. After=network.target var-lib-postgresql.mount postgresql.service Requires=var-lib-postgresql.mount Conflicts=postgres-slave.service [Service] Type=oneshot RemainAfterExit=yes User=root TimeoutSec=300 ExecStartPre=-/usr/bin/pg_ctlcluster -m fast 9.6 main stop ExecStartPre=/bin/bash -c <span class="hljs-string"><span class="hljs-string">'if [[ -d "/var/lib/postgresql/snapshot/auto" ]]; then /sbin/btrfs subvolume delete /var/lib/postgresql/snapshot/auto; fi'</span></span> ExecStartPre=/bin/btrfs subvolume snapshot /var/lib/postgresql/slave /var/lib/postgresql/snapshot/auto ExecStartPre=/usr/bin/touch /var/lib/postgresql/slave/9.6/main/trigger ExecStart=/usr/bin/pg_ctlcluster 9.6 main start ExecStop=/usr/bin/pg_ctlcluster -m fast 9.6 main stop [Install] WantedBy=multi-user.target</code> </pre> </div></div><br><p>  In conflicts with the service, of course " <b><code>postgres-slave.service</code></b> ". </p><br><div class="spoiler">  <b class="spoiler_title">The executable script is as follows:</b> <div class="spoiler_text"><pre> <code class="bash hljs">/usr/bin/pg_ctlcluster -m fast 9.6 main stop /bin/bash -c <span class="hljs-string"><span class="hljs-string">'if [[ -d "/var/lib/postgresql/snapshot/auto" ]]; then /sbin/btrfs subvolume delete /var/lib/postgresql/snapshot/auto; fi'</span></span> /bin/btrfs subvolume snapshot /var/lib/postgresql/slave /var/lib/postgresql/snapshot/auto /usr/bin/touch /var/lib/postgresql/slave/9.6/main/trigger /usr/bin/pg_ctlcluster 9.6 main start</code> </pre> </div></div><br><ol><li>  We stop working base. </li><li>  Check if there is an old snapshot of the database along the path " <code>/var/lib/postgresql/snapshot/auto</code> ", if there is, delete it. </li><li>  Create a new snapshot of the latest database data. </li><li>  Create a trigger file, which will transfer the database to master mode. </li><li>  Raise the base. </li></ol><br><p>  From this point on, you can perform the most daring experiments on the data.  And when you get tired, launching the " <b><code>postgres-slave.service</code></b> " service will put everything back. </p><br><p>  Switching the base to different modes can be configured by cron, by any criteria, through dependent services, or even get a systemd element of the " <code>.socket</code> " type and raise the test base on the first request to the application.  Fortunately, systemd allows. </p><br><p>  To monitor the current lag from the master database, you can use the query: </p><br><pre> <code class="bash hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># select now() - pg_last_xact_replay_timestamp() AS replication_delay;</span></span></code> </pre> <br><p>  Which is not difficult to hang on the same zabbix. </p><br><h4 id="postgres-3">  UPD pg_rewind </h4><br><p>  The comments voiced numerous concerns about the stability of btrfs as such and doubts about the suitability of using it for storing the database in particular.  Therefore, I suggest adapting the above concept to the capabilities of the <a href="https://www.postgresql.org/docs/current/static/app-pgrewind.html">pg_rewind</a> utility.  This utility finds the master and slave out of sync point and brings the target base to the last state before it is out of sync.  But this is only a condition, in order to recover the data, all the accumulated WAL logs will be needed.  Also pg_rewind downloads quite a large amount of data from the master, even if the databases have just dispersed (in my case, ~ 10G).  And the target database should correctly shut down before the synchronization operation. </p><br><p>  So: </p><br><ol><li><p>  In the test database configuration, you must enable the <code>wal_log_hints = on</code> option, which is necessary for <code>pg_rewind</code> , and may also affect performance.  On master, it is necessary to allow access from a test server to a user with super user rights. </p><br></li><li><p>  From systemd scripts, we remove all occurrences of btrfs and work with snapshot.  " <b><code>postgres-master.service</code></b> " will become quite simple and will be reduced to creating a trigger file. </p><br></li><li>  The script " <b><code>postgres-slave.service</code></b> " will be approximately like this: </li></ol><br><div class="spoiler">  <b class="spoiler_title">/etc/systemd/system/postgres-slave.service</b> <div class="spoiler_text"><pre> <code class="bash hljs">[Unit] Description=Restore PostgreSQL base snapshot and Switch the PostgreSQL base <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> slave mode. After=network.target var-lib-postgresql.mount postgresql.service Requires=var-lib-postgresql.mount Conflicts=postgres-master.service [Service] Type=oneshot RemainAfterExit=yes User=root <span class="hljs-comment"><span class="hljs-comment">#     . TimeoutSec=300 ExecStartPre=-/usr/bin/pg_ctlcluster -m fast 9.6 main stop ExecStartPre=/bin/bash -c 'if [[ -e "/var/lib/postgresql/slave/9.6/main/recovery.done" ]]; then /usr/lib/postgresql/9.6/bin/pg_rewind -D /var/lib/postgresql/slave/9.6/main/ --source-server="host=master.host port=5432 user=postgres password=___" --progress ; /bin/cp /var/lib/postgresql/recovery.conf /var/lib/postgresql/slave/9.6/main/recovery.conf; fi' ExecStart=/usr/bin/pg_ctlcluster 9.6 main start ExecStop=/usr/bin/pg_ctlcluster -m fast 9.6 main stop [Install] WantedBy=multi-user.target</span></span></code> </pre> </div></div><br><p>  Before you start <code>pg_rewind</code> you must correctly shut down the database. <br>  If the base is in master state, then we start its synchronization with the main base: </p><br><ol><li>  We run <code>pg_rewind</code> with an indication of the target directory of the base ( <code>-D</code> ), the connection parameters to the master and the key for the detailed output. </li><li>  Copy the previously saved <code>recovery.conf</code> file, which is deleted as a result of <code>pg_rewind</code> . </li><li>  Raise the base, which will begin to catch the runaway master using WAL-logs. </li></ol><br><p>  In this embodiment, the recovery of the slave database takes significantly longer, but there are no dangers of using btrfs. </p><br><p>  Thanks for attention. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/317660/">https://habr.com/ru/post/317660/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317648/index.html">How we solved the problem of parental committees and earned a million rubles.</a></li>
+<li><a href="../317650/index.html">Overclocking Swift build project in Xcode</a></li>
+<li><a href="../317652/index.html">We supplement Scrum with architectural processes. Part 1. Requirements</a></li>
+<li><a href="../317654/index.html">Another story about migration to the EU</a></li>
+<li><a href="../317656/index.html">Frogger game development for Vectrex computer</a></li>
+<li><a href="../317662/index.html">Using Github as a user data store</a></li>
+<li><a href="../317664/index.html">Briefly about the optimistic UI. Optimistic interface in pictures</a></li>
+<li><a href="../317666/index.html">Limits Telegram bot API and work with them on Go</a></li>
+<li><a href="../317668/index.html">Virtual keys to the real world</a></li>
+<li><a href="../317670/index.html">Own traffic exchange point in the data center. Part 2. Tools for DataLine-IX participants</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

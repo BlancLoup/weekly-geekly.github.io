@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How are the channels in Go</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A translation of the cognitive "Golang: channels implementation" article on how the channels are organized in Go. 
+
+
+ Go is becoming more and more pop...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How are the channels in Go</h1><div class="post__text post__text-html js-mediator-article"><p>  <i>A translation of the cognitive <a href="http://dmitryvorobev.blogspot.com.es/2016/08/golang-channels-implementation.html">"Golang: channels implementation"</a> article on how the channels are organized in Go.</i> </p><br><p>  Go is becoming more and more popular, and one of the reasons for this is great support for competitive programming.  Channels and gorutiny greatly simplify the development of competitive programs.  There are some good articles on how various data structures are implemented in Go — for example, <a href="https://blog.golang.org/go-slices-usage-and-internals">slices</a> , <a href="https://www.goinggo.net/2013/12/macro-view-of-map-internals-in-go.html">maps</a> , <a href="http://research.swtch.com/interfaces">interfaces</a> — but quite a bit about the internal implementation of channels is written.  In this article we will explore how the channels work and how they are implemented from the inside.  (If you have never used feeds in Go, I recommend reading <a href="https://golang.org/doc/effective_go.html">this article first</a> .) </p><br><h2 id="ustroystvo-kanala">  Channel device </h2><br><p>  Let's start by analyzing the channel structure: </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/483/025/741/48302574178048caac81c816f9e37238.png"></div><a name="habracut"></a><br><ul><li>  qcount - the number of elements in the buffer </li><li>  dataqsiz - buffer dimension </li><li>  buf - pointer to the buffer for channel elements </li><li>  closed - a flag indicating whether the channel is closed or not </li><li>  recvq - a pointer to a linked list of peers waiting to be read from the channel. </li><li>  sendq - pointer to the associated list of gorutin, waiting to write to the channel </li><li>  lock - mutex for secure channel access </li></ul><br><p>  In general, a gorutina captures a mutex when it performs an action with a channel, except for cases of lock-free checks for non-blocking calls (I will explain this in more detail below).  Closed is a flag that is set to 1 if the channel is closed, and to 0 if not closed.  These fields will be further excluded from the overall picture, for clarity. </p><br><p>  The channel can be synchronous (unbuffered) or asynchronous (buffered).  Let's first look at how synchronous channels work. </p><br><h1 id="sinhronnye-kanaly">  Synchronous channels </h1><br><p>  Suppose we have the following code: </p><br><pre><code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> main <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { ch := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">chan</span></span> <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">go</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { ch &lt;- <span class="hljs-literal"><span class="hljs-literal">true</span></span> }() &lt;-ch }</code> </pre> <br><p>  First, a new channel is created and it looks like this: </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/725/298/c69/725298c69c2b4319b3cb5cf606712124.png"></div><br><p>  Go does not allocate a buffer for synchronous channels, so the pointer to the buffer is nil and <code>dataqsiz</code> is zero.  In the above code, there is no guarantee that the first thing will happen - reading from the channel or writing, so let's assume that the first action will be reading from the channel (the opposite example, when recording is first, will be discussed below in the example with buffered channels).  Initially, the current gorutina will perform some checks, such as: whether the channel is closed, whether it is buffered or not, whether the gourtas are in the send queue.  In our example, the channel does not have a buffer or waiting for sending a gorutin, so the gorutin will add itself to <code>recvq</code> and block.  In this step, our channel will look like this: </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/2af/b2c/796/2afb2c79621847e0a28f118f92ed5c10.png"></div><br><p>  Now we have only one working gorutin, which is trying to write data to the channel.  All checks are repeated again, and when Gorutin checks the <code>recvq</code> queue, she finds the Gorutin waiting for reading, removes it from the queue, writes data to its stack, and removes the lock.  This is the only place in all Go rantayme when one gorutina writes directly to the stack of another gorutina.  After this step, the channel looks exactly the same as immediately after initialization.  Both gorutiny completed and the program goes. </p><br><p>  This is how synchronous channels are arranged.  Now, let's look at buffered channels. </p><br><h1 id="buferezirovannye-kanaly">  Buffered channels </h1><br><p>  Consider the following example: </p><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> main <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { ch := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">chan</span></span> <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>) ch &lt;- <span class="hljs-literal"><span class="hljs-literal">true</span></span> <span class="hljs-keyword"><span class="hljs-keyword">go</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { &lt;-ch }() ch &lt;- <span class="hljs-literal"><span class="hljs-literal">true</span></span> }</code> </pre> <br><p>  Again, the order of execution is unknown, the example of the first reading gorutina we disassembled above, so now let us assume that two values ​​were written to the channel, and after that one of the elements was read.  And the first step is to create a channel that will look like this: </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/6f4/e78/6af/6f4e786af89b47f49e0b52d1869a2180.png"></div><br><p>  The difference in comparison with the synchronous channel is that here Go allocates a buffer and sets the <code>dataqsiz</code> value to one. </p><br><p>  The next step is to send the first value to the channel.  To do this, gorutina first performs several checks: is the <code>recvq</code> queue empty, is the buffer empty, is there enough space in the buffer. </p><br><p>  In our case, there is enough space in the buffer and there are no gorutins in the queue waiting for reading, so Gorutin simply writes the element to the buffer, increases the value of <code>qcount</code> and continues execution further.  The channel at this moment looks like this: </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/40c/f56/e00/40cf56e008e44b21ab2bbf7a5afe8a5e.png"></div><br><p>  In the next step, the main gorutin sends the next value to the channel.  When the buffer is full, the buffered channel will behave in the same way as a synchronous (unbuffered) channel, that is, a Gorutin will add itself to the waiting queue and will be blocked, as a result, the channel will look like this: </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/279/503/8c4/2795038c432c4ff38041e67086cb4e56.png"></div><br><p>  Now the main gorutin is blocked and Go has launched one anonymous gorutin that is trying to read the value from the channel.  And here begins the tricky part.  Go guarantees that the channel works on the principle of FIFO queue ( <a href="https://golang.org/ref/spec">specification</a> ), but Gorutin cannot just take a value from the buffer and continue execution.  In this case, the main gorutin is blocked forever.  To solve this situation, the current gorutina reads data from the buffer, then adds the value from the locked gorutina to the buffer, unlocks the pending gorutina, and removes it from the wait queue.  (In the case, if there are no pending Gorutin, it simply reads the first value from the buffer) </p><br><h1 id="select">  Select </h1><br><p>  But wait, Go still supports select with default behavior, and if the channel is blocked, how can a gorutina be able to handle default?  Good question, let's quickly look at the channel APIs private.  When you run the following piece of code: </p><br><pre> <code class="go hljs"> <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> &lt;-ch: foo() <span class="hljs-keyword"><span class="hljs-keyword">default</span></span>: bar() }</code> </pre> <br><p>  Go runs the function with the following signature: </p><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">chanrecv</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(t *chantype, c *hchan, ep unsafe.Pointer, block </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">bool</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span></code> </pre> <br><p>  <code>chantype</code> is the type of the channel (for example, bool in the case of make (chan bool)), <code>hchan</code> is a pointer to the channel structure, <code>ep</code> is a pointer to the memory segment where the data from the channel should be written, and last, but the most interesting for us is the argument <code>block</code> .  If it is set to <code>false</code> , then the function will work in non-blocking mode.  In this mode, the gorutin checks the buffer and the queue, returns <code>true</code> and writes data to <code>ep</code> or returns <code>false</code> if there is no data in the buffer or there are no senders in the queue.  Buffer and queue checks are implemented as atomic operations, and do not require mutex locking. </p><br><p>  There is also a function for writing data to a queue with a similar signature. </p><br><p>  We figured out how to write and read from the channel, let's now look at what happens when you close the channel. </p><br><h1 id="zakrytie-kanala">  Channel closure </h1><br><p>  Closing a channel is a simple operation.  Go goes through all the gorutines waiting to read or write and unlocks them.  All recipients receive default values ​​for variables of that type of channel data, and all senders panic. </p><br><h1 id="zaklyuchenie">  Conclusion </h1><br><p>  In this article, we looked at how channels are implemented and how they work.  I tried to describe them as simply as possible, so I missed some details.  The purpose of the article is to provide a basic understanding of the internal structure of the channels and push you to read the Go source codes if you want to gain a deeper understanding.  Just read <a href="">the channel implementation code</a> .  It seems to me very simple, well documented and rather short, only about 700 lines of code. </p><br><h2 id="ssylki">  Links </h2><br><p>  <a href="">Source</a> <br>  <a href="https://golang.org/ref/spec">Channels in the Go specification</a> <br>  <a href="https://docs.google.com/document/d/1yIAYmbvL3JxOKOjuCyon7JhW4cSv1wy5hC0ApeGMV9s/pub">Go channels on steroids</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/308070/">https://habr.com/ru/post/308070/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../308060/index.html">"In one basket": A little about the storage code</a></li>
+<li><a href="../308062/index.html">About the risks of using clouds</a></li>
+<li><a href="../308064/index.html">Cisco and Fortinet confirmed the presence of vulnerabilities published by The Shadow Brokers hackers</a></li>
+<li><a href="../308066/index.html">What do experts and users think about the new design of VKontakte?</a></li>
+<li><a href="../308068/index.html">WebSockets in Scorocode or chat with your own hands in 15 minutes</a></li>
+<li><a href="../308074/index.html">Cisco and Fortinet Release Safety Notices after Data Leakage by Equation Group</a></li>
+<li><a href="../308076/index.html">Microsoft opened the source code of PowerShell</a></li>
+<li><a href="../308080/index.html">Website development based on ASP.NET Core and Platformus CMS</a></li>
+<li><a href="../308082/index.html">Analysis of the Quran with AI</a></li>
+<li><a href="../308084/index.html">SObjectizer: from simple to complex. Part III</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

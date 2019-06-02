@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL 9.6: Parallelizing Sequential Reads</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="For a long time, one of the most well-known imperfections of PostgreSQL was the ability to parallelize queries. With the release of version 9.6 this w...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL 9.6: Parallelizing Sequential Reads</h1><div class="post__text post__text-html js-mediator-article">  For a long time, one of the most well-known imperfections of PostgreSQL was the ability to parallelize queries.  With the release of version 9.6 this will cease to be a problem.  Much work has been done on this issue, and already starting from commit <a href="https://github.com/postgres/postgres/commit/80558c1f5aa109d08db0fbd76a6d370f900628a8">80558c1</a> , a parallelization of sequential reading appears, which we will become acquainted with in the course of this article. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/def/c8e/9ce/defc8e9ce0aa07702c0735f57d309d77.jpg" alt="image"></div><br><a name="habracut"></a><br>  First, it should be noted: the development of this functionality was carried out continuously and some parameters changed their names between commits.  This article was written after the checkout on June 17, and some features described in this article will be present only in version 9.6 of beta2. <br><br>  Comparing with release 9.5, new parameters were added to the configuration file.  Here they are: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  <b>max_parallel_workers_per_gather</b> : the number of workers who can participate in the sequential scanning of the table; </li><li>  <b>min_parallel_relation_size</b> : the minimum size of the relation, after which the scheduler will begin to use additional workers; </li><li>  <b>parallel_setup_cost</b> : scheduler parameter, which estimates the cost of creating a new worker; </li><li>  <b>parallel_tuple_cost</b> : scheduler parameter that estimates the cost of transferring a tuple from one worker to another; </li><li>  <b>force_parallel_mode</b> : a parameter useful for testing, strong concurrency, as well as queries in which the scheduler will behave differently. </li></ul><br>  Let's look at how additional workers can be used to speed up the execution of our requests.  Create a test table with an INT field and one hundred million records: <br><br><pre><code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># CREATE TABLE test (i int); CREATE TABLE postgres=# INSERT INTO test SELECT generate_series(1,100000000); INSERT 0 100000000 postgres=# ANALYSE test; ANALYZE</span></span></code> </pre> <br>  PostgreSQL has a <b><i>max_parallel_workers_per_gather</i></b> parameter of 2 by default, in which case two workers will be activated during a sequential scan. <br><br>  Normal sequential scanning does not carry anything new: <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># EXPLAIN ANALYSE SELECT * FROM test; QUERY PLAN ------------------------------------------------------------------------------------------------------------------------ Seq Scan on test (cost=0.00..1442478.32 rows=100000032 width=4) (actual time=0.081..21051.918 rows=100000000 loops=1) Planning time: 0.077 ms Execution time: 28055.993 ms (3 rows)</span></span></code> </pre><br>  In fact, the presence of the <b><i>WHERE clause is</i></b> necessary for parallelization: <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># EXPLAIN ANALYZE SELECT * FROM test WHERE i=1; QUERY PLAN ------------------------------------------------------------------------------------------------------------------------ Gather (cost=1000.00..964311.60 rows=1 width=4) (actual time=3.381..9799.942 rows=1 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Parallel Seq Scan on test (cost=0.00..963311.50 rows=0 width=4) (actual time=6525.595..9791.066 rows=0 loops=3) Filter: (i = 1) Rows Removed by Filter: 33333333 Planning time: 0.130 ms Execution time: 9804.484 ms (8 rows)</span></span></code> </pre><br>  We can go back to the past action and look at the difference in execution, with <b><i>max_parallel_workers_per_gather</i></b> set to 0: <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># SET max_parallel_workers_per_gather TO 0; SET postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE i=1; QUERY PLAN -------------------------------------------------------------------------------------------------------- Seq Scan on test (cost=0.00..1692478.40 rows=1 width=4) (actual time=0.123..25003.221 rows=1 loops=1) Filter: (i = 1) Rows Removed by Filter: 99999999 Planning time: 0.105 ms Execution time: 25003.263 ms (5 rows)</span></span></code> </pre><br>  2.5 times longer. <br><br>  The scheduler does not always consider the parallelization of sequential reading to be the best option.  If the request is not selective enough and there are many tuples that need to be transferred from the worker to the worker, he may prefer the “classic” sequential scan: <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># SET max_parallel_workers_per_gather TO 2; SET postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE i&lt;90000000; QUERY PLAN ---------------------------------------------------------------------------------------------------------------------- Seq Scan on test (cost=0.00..1692478.40 rows=90116088 width=4) (actual time=0.073..31410.276 rows=89999999 loops=1) Filter: (i &lt; 90000000) Rows Removed by Filter: 10000001 Planning time: 0.133 ms Execution time: 37939.401 ms (5 rows)</span></span></code> </pre><br>  In fact, if we try to force the scheduler to use sequential read parallelization, we will get the worst result: <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># SET parallel_tuple_cost TO 0; SET postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE i&lt;90000000; QUERY PLAN ------------------------------------------------------------------------------------------------------------------------------------- Gather (cost=1000.00..964311.50 rows=90116088 width=4) (actual time=0.454..75546.078 rows=89999999 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Parallel Seq Scan on test (cost=0.00..1338795.20 rows=37548370 width=4) (actual time=0.088..20294.670 rows=30000000 loops=3) Filter: (i &lt; 90000000) Rows Removed by Filter: 3333334 Planning time: 0.128 ms Execution time: 83423.577 ms (8 rows)</span></span></code> </pre><br>  The number of workers can be increased to <b><i>max_worker_processes</i></b> (default: 8).  We will restore the value of <b><i>parallel_tuple_cost</i></b> and see what happens if we increase <b><i>max_parallel_workers_per_gather</i></b> to 8: <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># SET parallel_tuple_cost TO DEFAULT ; SET postgres=# SET max_parallel_workers_per_gather TO 8; SET postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE i=1; QUERY PLAN ------------------------------------------------------------------------------------------------------------------------ Gather (cost=1000.00..651811.50 rows=1 width=4) (actual time=3.684..8248.307 rows=1 loops=1) Workers Planned: 6 Workers Launched: 6 -&gt; Parallel Seq Scan on test (cost=0.00..650811.40 rows=0 width=4) (actual time=7053.761..8231.174 rows=0 loops=7) Filter: (i = 1) Rows Removed by Filter: 14285714 Planning time: 0.124 ms Execution time: 8250.461 ms (8 rows)</span></span></code> </pre><br>  Even considering that PostgreSQL can use up to 8 workers, he used only six.  This is due to the fact that Postgres also optimizes the number of workers depending on the size of the table and the <b><i>min_parallel_relation_size</i></b> parameter.  The number of workers available to postgres is based on a geometric progression with a denominator of 3 and a <b><i>min_parallel_relation_size</i></b> as a scaling factor.  Here is an example.  Considering that 8MB is the default parameter: <br><table><tbody><tr><td>  <b>Size</b> </td><td>  <b>Worker</b> </td></tr><tr><td>  &lt;8Mb </td><td>  0 </td></tr><tr><td>  &lt;24Mb </td><td>  one </td></tr><tr><td>  &lt;72MB </td><td>  2 </td></tr><tr><td>  &lt;216Mb </td><td>  3 </td></tr><tr><td>  &lt;648Mb </td><td>  four </td></tr><tr><td>  &lt;1944Mb </td><td>  five </td></tr><tr><td>  &lt;5822Mb </td><td>  6 </td></tr><tr><td>  ... </td><td>  ... </td></tr></tbody></table><br>  The size of our table is 3548MB, respectively, 6 is the maximum number of available workers. <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># \dt+ test List of relations Schema | Name | Type | Owner | Size | Description --------+------+-------+----------+---------+------------- public | test | table | postgres | 3458 MB | (1 row)</span></span></code> </pre><br>  Finally, I will give a brief demonstration of the improvements made with this patch.  By launching our query with a growing number of workers, we get the following results: <br><table><tbody><tr><td>  <b>Size</b> </td><td>  <b>Worker</b> </td></tr><tr><td>  &lt;0 </td><td>  24767.848 ms </td></tr><tr><td>  &lt;1 </td><td>  14855.961 ms </td></tr><tr><td>  &lt;2 </td><td>  10415.661 ms </td></tr><tr><td>  &lt;3 </td><td>  8041.187 ms </td></tr><tr><td>  &lt;4 </td><td>  8090.855 ms </td></tr><tr><td>  &lt;5 </td><td>  8082.937 ms </td></tr><tr><td>  &lt;6 </td><td>  8061.939 ms </td></tr></tbody></table><br>  You can see that the runtime is significantly improved until it reaches one third of the original value.  It is also easy to explain the fact that we see no improvement when using 6 workers instead of 3: the machine on which the tests were performed has 4 processors, so the results are stable after adding 3 additional workers to the original process. <br><br>  Finally, PostgreSQL 9.6 has entered a new stage of query parallelization, in which parallelization of sequential reads is only the first excellent result.  In addition, in version 9.6, aggregation was parallelized, but this is already a topic for another article that will be released in the coming weeks! </div><p>Source: <a href="https://habr.com/ru/post/305662/">https://habr.com/ru/post/305662/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../305650/index.html">Financial technologies used by children</a></li>
+<li><a href="../305654/index.html">URL history, part 2: path, fragment, query and authorization</a></li>
+<li><a href="../305656/index.html">Smartphones are gamers' favorite devices. Facebook research</a></li>
+<li><a href="../305658/index.html">Switching the input language in Windows using CapsLock</a></li>
+<li><a href="../305660/index.html">Projecting Google Material Design onto the desktop system ... (part four and final)</a></li>
+<li><a href="../305664/index.html">“Shoemaker in our boots”: as we wrote the module of financial resources management for internal EDS</a></li>
+<li><a href="../305666/index.html">Improving the energy efficiency of data centers: the experience of Apple, Google, Microsoft, Active Power and Burland Energy</a></li>
+<li><a href="../305668/index.html">Scientists again "puzzled": Is it possible to upgrade the brain and what to expect from it</a></li>
+<li><a href="../305672/index.html">How to connect to the server via RDP from Windows, Mac OS, iPhone, iPad, Android, Ubuntu or Debian (Linux OS)</a></li>
+<li><a href="../305676/index.html">The language of inter-professional communication. Poll results</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Using gpio-generic and irq_chip_generic for gpio driver</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article is a logical continuation of the previous one and its reading is recommended after reading the previous material . The current note is ne...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Using gpio-generic and irq_chip_generic for gpio driver</h1><div class="post__text post__text-html js-mediator-article"><p>  This article is a logical continuation of the previous one and its reading is recommended after reading the <a href="https://habrahabr.ru/post/303060/">previous material</a> .  The current note is necessary to understand the subsequent material, an additional understanding of the gpio subsystem as a whole and contributes to the development of its own gpio drivers.  The provisions of this article are already applicable not only to our virtual gpio driver, but also to any mmio gpio driver as a whole.  We will talk about the “optimization” mentioned in the previous part. </p><a name="habracut"></a><br><h1>  purpose </h1><br><p>  Before proceeding to more interesting and useful things, you need to restore order.  As mentioned earlier, the amount of code can be reduced.  To do this, we use two subsystems (drivers) gpio-generic (gpio-mmio starting from 4.7) and irq_chip_generic. </p><br><p>  According to the principles of the linux kernel, it is better to sacrifice performance for the sake of clarity and the absence of a repetitive sample code.  And the use of existing implementations in the linux kernel undoubtedly serves this purpose. </p><br><h1>  Implementation </h1><br><h2>  pci_ids </h2><br><blockquote>  A small digression. </blockquote><p>  Initially, when switching to bgpio, a small successful experiment was conducted for a virtual driver with support for devices with 8, 16 and 32 inputs.  The final code can be viewed <a href="https://github.com/maquefel/virtual_gpio_basic/tree/pci_ids">here</a> .  This result was achieved thanks to a small, only 7 lines, ivshmem modification, to add the sub-vendor-id and sub-device-id parameters for the pci device (the patch included in the branch is for qemu 2.5.1.1). </p><br><h2>  Using gpio-mmio </h2><br><blockquote>  In the kernel, this driver depends on <strong>CONFIG_GPIO_GENERIC</strong> . </blockquote><p>  Let's start with a simple driver that was created for various MMIO gpio, and later parts of which were actively used by some drivers.  He was introduced by Anton Vorontsov in 2010 ( <a href="https://lkml.org/lkml/2010/8/25/303">https://lkml.org/lkml/2010/8/25/303</a> ).  In his patch, he announced the following features for the driver: </p><br><ul><li>  Support 8/16/32/64 bit registers </li><li>  Support for gpio controllers with job / cleaning registers </li><li>  Support gpio controllers with data register only </li><li>  Support big-endian </li></ul><br><p>  In principle, this driver saves us from the need to implement such functions as, setting the state and choosing the direction of the contact. </p><br><p>  To use, all you need to do is just transfer the size and data register, everything else is optional and depends on the specific implementation of the gpio controller, the initialization function takes as parameters: </p><br><ul><li>  Status Register </li><li>  Status Register </li><li>  Register clear state </li><li>  Contact switching register to exit state </li><li>  Register switching contact in the input state </li></ul><br><p>  That is, the following situations are possible: </p><br><ul><li>  The dat register is read-only state, the set register for the job and the register clr to clear the state </li><li>  The dat register is read-only, the set register for setting and clearing </li><li>  Dat register for everything </li></ul><br><p>  The same is true for directions.  Either the job register as an output, or as an input.  Or the lack of the ability to switch the contact to the output or input state. </p><br><p>  You can simulate any of the above activities.  For our purposes, behavior number 3 is sufficient and setting the state as an output, with the state for the default contact as input. </p><br><p>  <a href="">bgpio_init</a> </p><br><pre><code class="hljs cpp"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">if</span></span></span><span class="hljs-meta"> IS_ENABLED(CONFIG_GPIO_GENERIC) int bgpio_init(struct gpio_chip *gc, struct device *dev, unsigned long sz, void __iomem *dat, void __iomem *set, void __iomem *clr, void __iomem *dirout, void __iomem *dirin, unsigned long flags); #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BGPIOF_BIG_ENDIAN BIT(0) #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BGPIOF_UNREADABLE_REG_SET BIT(1) </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* reg_set is unreadable */</span></span></span><span class="hljs-meta"> #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BGPIOF_UNREADABLE_REG_DIR BIT(2) </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* reg_dir is unreadable */</span></span></span><span class="hljs-meta"> #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BGPIOF_BIG_ENDIAN_BYTE_ORDER BIT(3) #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BGPIOF_READ_OUTPUT_REG_SET BIT(4) </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* reg_set stores output value */</span></span></span><span class="hljs-meta"> #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> BGPIOF_NO_OUTPUT BIT(5) </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* only input */</span></span></span><span class="hljs-meta"> #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">endif</span></span></span></span></code> </pre> <br><p>  It should be noted that as a size bgpio_init does not accept the number of inputs, but the parameter is a multiple of 8, that is, ngpio / 8. </p><br><pre> <code class="hljs lisp"> err = bgpio_init(<span class="hljs-name"><span class="hljs-name">&amp;vg-&gt;chip</span></span>, dev, BITS_TO_BYTES(<span class="hljs-name"><span class="hljs-name">VIRTUAL_GPIO_NR_GPIOS</span></span>), data, NULL, NULL, dir, NULL, <span class="hljs-number"><span class="hljs-number">0</span></span>)<span class="hljs-comment"><span class="hljs-comment">;</span></span></code> </pre> <br><h2>  Using irq_chip_generic </h2><br><blockquote>  In the kernel, this driver depends on <strong>GENERIC_IRQ_CHIP</strong> , which is a disadvantage, since it is not possible to enable this parameter via menuconfig or oldconfig. </blockquote><p>  Now consider the slightly more complicated part.  irq_chip_generic was introduced in the kernel version <a href="https://github.com/torvalds/linux/commit/7d8280624797bbe2f5170bd3c85c75a8c9c74242">v3.0-rc1</a> and performs functions similar to gpio-mmio, that is, it provides the standard implementation for many cases of irq_chip. </p><br><p>  The standard register read / write functions are 32 bit, this was one of the reasons why I decided to abandon the 8/16 bit driver version, however it <a href="https://lkml.org/lkml/2014/11/7/68">is possible to provide the irq_chip_generic subsystem with read / write functions or specify standard ones</a> (for example, ioread8, iowrite8 ). </p><br><h3>  Combining irq_chip_generic and gpiochip_irqchip_add, gpiochip_set_chained_irqchip functions </h3><br><p>  The memory for irq_chip_generic and initialization is done with irq_alloc_generic_chip.  The function, in addition to the trivial parameters, also requires irq_base, which, generally speaking, is unknown to us before calling gpiochip_irqchip_add, which in turn requires struct irq_chip.  But irq_alloc_generic_chip is only responsible for allocating memory and initializing some parameters, so we can pass 0 as the irq_base parameter and assign the real value after calling the gpiochip_irqchip_add function. </p><br><pre> <code class="hljs lisp"> gc = irq_alloc_generic_chip(<span class="hljs-name"><span class="hljs-name">VIRTUAL_GPIO_DEV_NAME</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, vg-&gt;data_base_addr, handle_edge_irq)<span class="hljs-comment"><span class="hljs-comment">;</span></span></code> </pre> <br><p>  To use, it is enough to specify the standard functions of masking / demasking, interrupt acknowledgments and registers.  The function of setting the interrupt type remains unchanged with us, just like our interrupt handler. </p><br><pre> <code class="hljs erlang-repl"> ct-&gt;chip.irq_ack = irq_gc_ack_set_bit; ct-&gt;chip.irq_mask = irq_gc_mask_clr_bit; ct-&gt;chip.irq_unmask = irq_gc_mask_set_bit; ct-&gt;chip.irq_set_type = virtual_gpio_irq_type;</code> </pre> <br><p>  Register offset for confirmation and masking / demasking: </p><br><pre> <code class="hljs erlang-repl"> ct-&gt;regs.ack = VIRTUAL_GPIO_INT_EOI; ct-&gt;regs.mask = VIRTUAL_GPIO_INT_EN;</code> </pre> <br><p>  We still manage the interrupt type registers ourselves, in the function virtual_gpio_irq_type. </p><br><p>  Accordingly, in the initialization of gpiochip_irqchip_add and gpiochip_set_chained_irqchip, we transfer the irq_chip instance selected to irq_chip_generer-&gt; chip_types [0] (irq_chip_generic can have several irq_chip types associated with the same subset set of the same set in the same subset set of the same figure. </p><br><p>  After that we use the received irq_base and complete the irq_chip_generic setting. </p><br><pre> <code class="hljs rust"> irq_setup_generic_chip(gc, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>); gc-&gt;irq_cnt = VIRTUAL_GPIO_NR_GPIOS; gc-&gt;irq_base = vg-&gt;chip.irq_base; <span class="hljs-built_in"><span class="hljs-built_in">u32</span></span> msk = IRQ_MSK(<span class="hljs-number"><span class="hljs-number">32</span></span>); <span class="hljs-built_in"><span class="hljs-built_in">u32</span></span> i; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (i = gc-&gt;irq_base; msk; msk &gt;&gt;= <span class="hljs-number"><span class="hljs-number">1</span></span>, i++) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!(msk &amp; <span class="hljs-number"><span class="hljs-number">0x01</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">continue</span></span>; <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">irq_data</span></span></span></span> *d = irq_get_irq_data(i); d-&gt;mask = <span class="hljs-number"><span class="hljs-number">1</span></span> &lt;&lt; (i - gc-&gt;irq_base); irq_set_chip_data(i, gc); }</code> </pre> <br><p>  We intentionally pass 0 as the msk parameter to avoid reinitializing the irq numbers. </p><br><p>  irq_chip_generic is used for quite serious serious irq controllers mostly platform, so the mask for the irq registers is calculated in advance to speed up the interrupt processing and not to waste time on the mask calculation in the process.  Since we are passing 0 as a parameter to the irq_setup_generic_chip function, we initialize the masks ourselves. </p><br><p>  There remains another problem with irq_set_chip_data (which is nothing more than <code>irq_data.chip_data = (void*)struct irq_chip_generic;</code> ).  The fact is that gpiolib also relies on void * chip_data and assumes that there should be a pointer to a struct gpio_chip ( <a href="">http://lxr.free-electrons.com/source/drivers/gpio/gpiolib.c#L1138</a> ).  The problem is solved by providing our own implementations of the functions irq_request_resources and irq_release_resources instead of the standard gpiochip_irq_reqres and gpiochip_irq_relres. </p><br><p>  <a href="">Source code for this example.</a> </p><br><h3>  Alternative approach </h3><br><p>  Strictly speaking, the above manipulations are not obvious, and there may be some difficulty with their understanding.  Let's try to abandon gpiochip_irqchip_add. </p><br><p>  First of all, we will request irq_base ourselves: </p><br><pre> <code class="hljs lisp"> irq_base = irq_alloc_descs(<span class="hljs-name"><span class="hljs-name">-1</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, vg-&gt;chip.ngpio, <span class="hljs-number"><span class="hljs-number">0</span></span>)<span class="hljs-comment"><span class="hljs-comment">;</span></span></code> </pre> <br><p>  As we remember from the previous article, our linear case (the irq_domain_add_simple function does almost the same thing, but is obsolete). </p><br><pre> <code class="hljs erlang-repl"> vg-&gt;irq_domain = irq_domain_add_linear(<span class="hljs-number"><span class="hljs-number">0</span></span>, vg-&gt;chip.ngpio, &amp;irq_domain_simple_ops, vg); irq_domain_associate_many(vg-&gt;irq_domain, irq_base, <span class="hljs-number"><span class="hljs-number">0</span></span>, vg-&gt;chip.ngpio);</code> </pre> <br><p>  The next step remains almost unchanged and consists in associating gpio_chip with irq_chip: </p><br><pre> <code class="hljs php"> vg-&gt;chip.irqdomain = vg-&gt;irq_domain; gpiochip_set_chained_irqchip(&amp;vg-&gt;chip, &amp;ct-&gt;chip, pdev-&gt;irq, <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span>);</code> </pre> <br><p>  The only time is that in order for the file "edge" to be available in the corresponding contact management directory ( <a href="">gpiolib-sysfs</a> ), you must specify the translation function to_irq: </p><br><pre> <code class="hljs erlang-repl"> vg-&gt;chip.to_irq = virtual_gpio_to_irq;</code> </pre> <br><h1>  Conclusion </h1><br><p>  Thanks to the use of existing subsystems, the code is slightly reduced.  In understanding, the driver has also become easier, since the use of these subsystems is quite common, and it is immediately obvious that this is a standard driver without pitfalls.  Moreover, with such a structure it will be much easier to use the mechanisms of the Device Tree. </p><br><p>  A conditional disadvantage is the dependence on <strong>CONFIG_GPIO_GENERIC</strong> and <strong>GENERIC_IRQ_CHIP</strong> , but the first parameter is easily included in the linux yard configuration, and the second one, quite possibly, is already included. </p><br><p>  Materials recommended for additional reading: </p><br><ol><li>  <a href="https://www.kernel.org/doc/htmldocs/genericirq/Highlevel_IRQ_flow_handlers.html">High-level IRQ flow handlers</a> </li><li>  <a href="http://invo-tronics.com/linux-kernel-irq-domain/">Linux Kernel IRQ Domain</a> </li><li>  <a href="https://venkateshabbarapu.blogspot.ru/2013/03/edge-triggered-vs-level-triggered.html">Edge triggered vs level triggered interrupts</a> </li></ol><br><p>  » <a href="">Source Codes, Makefile and README</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/307840/">https://habr.com/ru/post/307840/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../307830/index.html">Tales of Ransomwhere: how often spam campaigns are used</a></li>
+<li><a href="../307832/index.html">Nagios - monitoring system and some homemade plugins</a></li>
+<li><a href="../307834/index.html">About Sailfish OS Summer School 2016</a></li>
+<li><a href="../307836/index.html">Work with radio modules SI4432</a></li>
+<li><a href="../307838/index.html">The book "Simple Python. Modern programming style "</a></li>
+<li><a href="../307842/index.html">The art of forecasting in the SAP F & R system for inventory management</a></li>
+<li><a href="../307844/index.html">Requirements collection methods or “How to understand what the customer wants?”</a></li>
+<li><a href="../307848/index.html">Python dependency management: it looks like you can already use it</a></li>
+<li><a href="../307850/index.html">Corporate laboratories - an actual training program for information security specialists</a></li>
+<li><a href="../307852/index.html">Why does Sberbank have an incorrect SPF record for a domain?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

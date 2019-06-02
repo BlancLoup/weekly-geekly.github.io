@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Fighting HPE Vertica loads</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A typical “just in time” scenario of the data warehouse looks like this: dozens of (ETL) sessions almost continuously capture data from sources and in...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Fighting HPE Vertica loads</h1><div class="post__text post__text-html js-mediator-article">  A typical “just in time” scenario of the data warehouse looks like this: dozens of (ETL) sessions almost continuously capture data from sources and insert them into the storage.  In parallel, many other (ELT) sessions track data flow, fill in a consolidated layer, and calculate units and storefronts.  At the same time, users, BI and other systems perform queries on incoming primary and calculated data.  All this porridge should be finely brewed within the data warehouse server, without brakes and gags, whatever the peak loads. <br><br>  HPE Vertica has developed a special mechanism for scheduling server work under loads, called resource pools.  The idea is that each server user works within the allocated resource pool, which regulates the priority of access to cluster resources, limits the competitiveness of query execution, and describes the rules for backing up and working with server memory. <br><br>  By default, after installing the Vertica server on the created database, it looks like this: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <div style="text-align:center;"><img src="https://habrastorage.org/files/d11/84c/f6c/d1184cf6ce944de1b88778b455a5857e.jpg"></div><br><a name="habracut"></a><br>  On each server (node) of the cluster, the memory available to Vertica is designated as the General resource pool.  For various needs of the server, service pools are automatically created, which cut off pieces of memory for themselves from General: <br><br><ul><li>  WOS - for storing portioned data in the memory area </li><li>  TM - for background service process Tuple Mover, performing moveoute and mergeout operations </li><li>  Other service - Vertica has additional resource pools for performing cluster node recovery operations, building projections, performing service requests, etc. </li></ul><br>  By default, server users are running under the control of the General pool itself.  You can see its current settings: <br><br><pre><code class="sql hljs">dbadmin=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> resource_pools <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">name</span></span> = <span class="hljs-string"><span class="hljs-string">'general'</span></span>; -[ RECORD 1 ]<span class="hljs-comment"><span class="hljs-comment">------------+------------------ pool_id | 45035996273721212 name | general is_internal | t memorysize | maxmemorysize | 30G executionparallelism | AUTO priority | 0 runtimepriority | MEDIUM runtimeprioritythreshold | 2 queuetimeout | 00:05 plannedconcurrency | 10 maxconcurrency | 20 runtimecap | singleinitiator | f cpuaffinityset | cpuaffinitymode | ANY cascadeto |</span></span></code> </pre> <br>  Decipher some options: <br><br><ul><li>  memorysize - the size of the reserved pool memory, this size is cut off from the General pool, reducing its size of available memory, for General, respectively, is not specified. </li><li>  maxmemorysize is the maximum allowed size of the pool.  In the case of using a pool of memory, more than the specified memorysize, the missing memory is temporarily taken from the General pool, if there is of course something to take. </li><li>  plannedconcurrency - a divider to set the size of the memory allocated for the session when the request is started in the pool, in this case for the pool General maxmemorysize: 30 GB to divide 10 plannedconcurrency = 3 GB of pool memory is allocated for each session at start, which is mildly fat. </li><li>  maxconcurrency - the maximum number of competitive sessions executed on a pool. </li></ul><br>  Such “default” settings actually provide a 100% guarantee of Vertica operation brakes: <br><br><ul><li>  10 sessions starts the execution of requests </li><li>  3 GB of pool memory is allocated for each session, even if you don’t need that much </li><li>  If the sessions have not yet had time to work and the new sessions have launched more requests, then instead of the memory of 30 GB, they get a job in the swap. </li><li>  If a session has eaten all the memory of the pool in the course of work, then other sessions also end up in a swap. </li></ul><br>  Let's help the "grief": <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RESOURCE</span></span> POOL <span class="hljs-keyword"><span class="hljs-keyword">general</span></span> PLANNEDCONCURRENCY <span class="hljs-number"><span class="hljs-number">60</span></span> MAXCONCURRENCY <span class="hljs-number"><span class="hljs-number">10</span></span>;</code> </pre> <br>  Now each session at the start of the request in the pool is allocated 0.5 GB, and only 10 sessions can be executed at the same time.  At the start of 10 sessions, 5 GB of pool memory will be consumed, another 25 GB will remain as a reserve for memory transfer to heavy requests and other resource pools. <br><br>  I want to draw attention to the parameter MAXCONCURRENCY - the lower it is, the faster your requests will work.  Each hardware has a limit of loads, above which everything “stands up”.  The higher the competitiveness, the greater the load on the processors and disk arrays, the lower their speed.  It is more efficient to execute 10 requests and then execute the following 10 requests from the queue than to try to simultaneously execute 20 requests.  Naturally, MAXCONCURRENCY will primarily depend on the pool tasks set for solving problems and on the characteristics of the cluster's iron. Your task is to identify the limits and set it slightly below the limits, so that in case of peak loads the simultaneous execution of many heavy queries, the cluster suddenly does not slow down for all its users. . <br><br>  So what about the pools?  So far we have only set up General, however, keeping users in it is actually a bad practice.  Let's make typical pools by user task groups: <br><br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--    CREATE RESOURCE POOL writers MEMORYSIZE '2G' MAXMEMORYSIZE '10G' PLANNEDCONCURRENCY 10 MAXCONCURRENCY 10 PRIORITY -50 RUNTIMECAP '3 MINUTE' RUNTIMEPRIORITYTHRESHOLD 0; --      CREATE RESOURCE POOL slowly MEMORYSIZE '0%' MAXMEMORYSIZE '20G' MAXCONCURRENCY 7 RUNTIMEPRIORITY LOW QUEUETIMEOUT '15 MINUTE' RUNTIMEPRIORITYTHRESHOLD 0; --    CREATE RESOURCE POOL readers MEMORYSIZE '4G' MAXMEMORYSIZE '10G' PLANNEDCONCURRENCY 20 MAXCONCURRENCY 10 RUNTIMECAP '5 MINUTE' PRIORITY 50 RUNTIMEPRIORITYTHRESHOLD 3 CASCADE TO slowly;</span></span></code> </pre> <br>  General now we have "lost": <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/999/a80/f89/999a80f890bf42169e09217da91085b8.jpg"></div><br>  What we did: <br><br><ol><li>  Squatting, reading and performing long, heavy queries were scattered in session groups. </li><li>  The initial memory was allocated to pools of readers and writers so that for the majority of short requests, the memory was taken immediately from the pool reserved for the pool without swapping with General. </li><li>  They did not allocate memory to the pool of heavy requests, all the same, their sessions will want a lot of memory and reserve for them, cutting off precious memory from General, it makes no sense, but this pool was allowed to take up to 20 GB of memory from General if necessary. </li><li>  We set a low request for the pool of heavy requests to perform LOW. </li><li>  For the pool of writers and readers, the priority of access to resources was set so that, by the priority of MEDIUM, the pool of writers was an outsider (-50 priority), the General pool was in the middle (zero priority) and the pool for readers was higher than these pools (50 priority). </li><li>  Rationally set the values ​​of competition pools, where 10 queries of writers, 10 readers requests and 7 heavy queries can be executed simultaneously. </li><li>  For situations where the user has launched a heavy query in the reader pool that lasts more than 5 minutes, they have indicated a cascade of such queries to a pool of heavy queries.  This ensures that the readers pool does not ask for long queries on it that will clog competitor execution slots and slow down the execution queue of quick queries.  For the pool of writers, we placed restrictions on the execution of queries for no more than 3 minutes, so that non-optimized insertion or update queries should get stuck. </li><li>  For a pool of heavy requests, we set a waiting time in the queue for 15 minutes.  If all competing slots in the pool are occupied, then after 15 minutes of waiting, queuing requests will be terminated with an error.  This will make it clear to users that the server is not hanging, but simply everything is taken up within their pool. </li><li>  For a pool of readers set the time to 3 seconds, during which the request after the launch has the highest priority on resources.  This allows you to quickly perform short queries, freeing up space in the pool for other queries. </li></ol><br>  Now we assign the necessary pools to users and the job is done: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">USER</span></span> user_writer <span class="hljs-keyword"><span class="hljs-keyword">RESOURCE</span></span> POOL writers; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">USER</span></span> user_reader <span class="hljs-keyword"><span class="hljs-keyword">RESOURCE</span></span> POOL readers; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">USER</span></span> user_analytical <span class="hljs-keyword"><span class="hljs-keyword">RESOURCE</span></span> POOL slowly RUNTIMECAP <span class="hljs-string"><span class="hljs-string">'1 HOUR'</span></span> TEMPSPACECAP <span class="hljs-string"><span class="hljs-string">'10G'</span></span>;</code> </pre> <br>  Here, in addition to the pool, we have restricted the user_analytical for requests for the execution time to one hour and allowed to use no more than 10 GB of space in the TEMP. <br><br>  I want to note that all of the above in the article is an action “where to dig”, and not an example of “what to configure”.  How many and what will be the resource pools, with what characteristics - all you have to decide.  You can start small - create for example such 3 pools and continue to look at the cluster loads, gradually balancing the parameters of the pools and highlighting groups of users in different pools.  The main thing to remember is that: <br><br><ol><li>  The General pool is a common source of memory for all pools and it is better not to use it directly for user sessions. </li><li>  The fewer competitors, the lower the rate of iron subsidence in peak loads </li><li>  The sum of the maximum allowed memory of all pools should not overlap the memory. General </li></ol></div><p>Source: <a href="https://habr.com/ru/post/317784/">https://habr.com/ru/post/317784/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317772/index.html">Academy of Geniuses</a></li>
+<li><a href="../317774/index.html">Oracle In-Memory Option Performance Testing with TPC-H Benchmark</a></li>
+<li><a href="../317776/index.html">CSS styles for printing that I forgot</a></li>
+<li><a href="../317778/index.html">How to motivate yourself to perform pending tasks</a></li>
+<li><a href="../317780/index.html">Hacking without hacking or seven ways to find resource leaks</a></li>
+<li><a href="../317786/index.html">Recursion formulas for calculating iterative summation errors of binary numbers of limited length</a></li>
+<li><a href="../317788/index.html">Unit testing in modern teams</a></li>
+<li><a href="../317792/index.html">Story about the first RDSFront & Meetup</a></li>
+<li><a href="../317794/index.html">Security Week 50: crypto-socialization socialization, OpenVPN audit, Linux kernel vulnerability</a></li>
+<li><a href="../317796/index.html">Creating tools for researching NES games</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

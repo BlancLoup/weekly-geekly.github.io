@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL: Case in Vacuum</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="One of our customers, who exploited PostgreSQL under heavy load, encountered a problem with the overflow of the transaction counter (xid wraparound), ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL: Case in Vacuum</h1><div class="post__text post__text-html js-mediator-article"><p>  One of our customers, who exploited PostgreSQL under heavy load, encountered a problem with the overflow of the transaction counter (xid wraparound), and there was no way out of it by regular means.  We solved the problem with the help of a surgical intervention and released a patch to prevent such situations from occurring in the future. </p><br><p>  In this post we will explain how and why a problem can occur and how to prevent it. </p><a name="habracut"></a><br><h1>  PostgreSQL Transaction Counter Device </h1><br><p>  One of the most attractive features of PostgreSQL is the ability to work in conditions of high competition for data: reading transactions do not block writing and vice versa.  All this is due to the multi-versioning mechanism (MVCC).  The implementation is based on the fact that each transaction in PostgreSQL has its own number (identifier), called xid.  The numbers are increasing all the time, so that a transaction with a smaller number is considered to have begun earlier, and a transaction with a larger number — later.  Each line in the table has, among other things, two additional system fields that are not shown in user requests: they are called xmin and xmax.  The xmin field stores the number of the transaction that created this line, and xmax - the number of the transaction that deleted it (if, of course, this happened).  Thus, each line can have several versions with a different scope.  This approach to organizing data storage is called versioned. </p><br><p>  PostgreSQL never changes user contents of a string, only system fields change.  Updating data (UPDATE) marks the row as deleted, that is, sets xmax = xid_current, and creates a new copy of the row with updated content, which has xmin = xid_current. </p><br><p>  When PostgreSQL reads data from tables, it always happens in the context of some snapshot.  When you take a snapshot of the data, it stores the current transaction number, according to which, from several versions of the row, you can choose the one that will be visible in the context of the current snapshot.  In addition, the snapshot includes a list of all transactions that are not completed at the moment, since changes made by such transactions should not fall into the snapshot. </p><br><p>  String versions that are out of scope for all active transactions are no longer needed.  To keep the database from overgrowth, a special background process, called autovacuum, removes old versions of rows — those in which xmax are the least active of all current transactions. </p><br><p>  The transaction counter has a size of 32 bits, that is, it can store approximately four billion values.  This, of course, not so much.  There were proposals to make it 64-bit, but you should not forget that in this case, the amount of the database would increase noticeably at the expense of overheads - after all, xmin and xmax are stored in each row.  Imagine that the limit of 2 ^ 32-1 is reached.  We add one and the counter overflows and is reset to zero.  This would be catastrophic, as PostgreSQL expects transaction numbers to always increase. </p><br><p>  Of course, there is a mechanism to prevent such a situation.  First of all, the transaction number space is looped around: underneath, it’s actually not a transaction that has a lower number, but one that is less than half a circle from the other.  Secondly, during the cleaning (VACUUM) of the tables, so-called freezing is performed.  The vacuum / autovacuum process, in addition to deleting dead lines with the old xmax, also processes live lines with the old xmin value.  Lines, whose xmin is much smaller than the oldest of the running transactions and the “age” exceeds the vacuum_freeze_min_age, are “frozen” (marked with special service bits).  They cease to obey the usual rules of visibility and are always considered older than any ordinary transaction.  Thus, cleaning constantly freezes old lines, following in a circle behind the transaction counter. </p><br><p><img src="https://habrastorage.org/files/b3f/0c2/4c0/b3f0c24c0b8144fb801422aea46971ec.png" alt="transaction counter in postgreSQL"></p><br><p>  The age of the oldest transaction in the database is stored in the system catalog: </p><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> datname, age(datfrozenxid) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_database;</code> </pre> <br><p>  Also, statistics for each table is kept: </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> relname, age(relfrozenxid) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class;</code> </pre> <br><p>  Background processes monitor transactions automatically, but when using PostgreSQL, the administrator must ensure that the age of the oldest transaction in the database does not approach 2 ^ 31 (half a circle, half of all acceptable values).  Then PostgreSQL can guarantee the accuracy of determining the age of the transaction (taking into account the cyclical nature of the counter).  If the age of datfrozenxid is close to this point, then PostgreSQL will not be able to issue transaction numbers anymore and will stop working for reasons of data integrity, requiring manual intervention and cleaning (VACUUM). <br>  That is why super-long transactions should be avoided, during which the counter has time to increase by 2 billion. </p><br><h1>  Problem and treatment </h1><br><p>  It is overflow datfrozenxid occurred at one of our clients.  The administrator manually launched the VACUUM FREEZE command, which worked for 8 days.  During this time, about 2 ^ 31 new transaction numbers were issued under load.  It is worth noting that, although VACUUM works outside the transaction, but at startup it creates a snapshot of the data with which it distinguishes outdated versions of rows from the actual ones.  The system stopped and required manual intervention, but, despite the fact that the maintenance was carried out, was no longer able to start up in operation. </p><br><p>  The problem was that before updating the variables located in the shared memory, the VACUUM team tried to get a new transaction number to make sure that the freezing was correct and there are no “future” transactions in the system.  As the available numbers ended, the command ended with an error, due to which the variables responsible for the range of available numbers were not updated.  To correct the problem, two solutions were developed: operational and permanent. </p><br><p>  An operational solution was required in order to resume the work of the customer's database as quickly as possible.  To do this, we had to manually edit the variables in shared memory. </p><br><ul><li>  Select the number (xid) of the oldest transaction recorded in the database: <code>SELECT datfrozenxid FROM pg_database ORDER BY age(datfrozenxid) DESC LIMIT 1;</code> </li><li>  Connect using gdb to any PostgreSQL process and execute the command: <code>set ShmemVariableCache-&gt;oldestXid = &lt;_xid&gt;</code> </li><li>  Restart PostgreSQL </li></ul><br><p>  As a result of these actions, the values ​​responsible for the range of available transactions were updated both in the shared memory and on the disk, and the customer's DBMS was again able to continue normal operation. </p><br><p>  A permanent solution to the problem is that the VACUUM team does not receive a separate transaction number at all.  The patch and instructions for reproducing the situation were sent to the <a href="">hackers</a> mailing list.  This fix will be included <a href="http://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dcommit%3Bh%3D996d273978c6f21b8b66f7f3bdd979cc37736c7a">in all versions of PostgreSQL</a> . </p><br><h1>  Changes in 9.6 </h1><br><p>  The unpleasant property of freezing is that for this you need to scan the entire table.  Normal cleaning (vacuum) works smarter: if during the work it turns out that all versions of lines on the page are relevant (that is, xmax = 0), such a page is marked in a special file called visibility map.  These vacuum pages are no longer returned until any changes occur (at which the visibility map is automatically unchecked). </p><br><p>  Unfortunately, freezing does not use a visibility card: after all, even on pages with only current versions of rows, the not yet frozen transaction numbers in the xmin field may refuse.  A periodic full scan can cause problems with a very large table size. </p><br><p>  In PostgreSQL 9.6, the beta version of which has already been released, this difficulty has been overcome.  The visibility map is now expanded to contain a “freeze map”: it will mark pages on which all transactions have already been frozen. </p><br><h1>  Transaction Counter Overflow Monitoring </h1><br><p>  To control overflow, you need to view the datfrozenxid transaction age from the pg_database system directory.  If you are using the Zabbix system, try the mamonsu monitoring client, which already has the desired metric.  The client is available at: <a href="https://github.com/postgrespro/mamonsu">mamonsu</a> . </p><br><h1>  findings </h1><br><p>  Complex products such as relational databases are never completely free of errors.  Despite the reliability of PostgreSQL, you may run into unpleasant problems when operating.  The community provides support, but, firstly, you will have to do a lot of work on the design of the error message (so that the developers can reproduce your situation) and secondly, no one guarantees the period of correction. </p><br><p>  That is why, working with business-critical systems, it is useful to have technical support from a <a href="https://postgrespro.ru/">vendor company</a> whose developers understand the source code, can make the necessary corrections and do it in the shortest possible time. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/301238/">https://habr.com/ru/post/301238/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../301224/index.html">Preparing mine infrastructure for the implementation of the RealTrac local positioning and voice communication system</a></li>
+<li><a href="../301226/index.html">The creators of the TeslaCrypt Trojan encoder closed the project and published the master key for unlocking</a></li>
+<li><a href="../301230/index.html">Six Myths of Product Development</a></li>
+<li><a href="../301234/index.html">How are the backups of customers in our TierIII data center</a></li>
+<li><a href="../301236/index.html">Technosphere Mail.Ru: student projects, laboratory and championships in Data Science</a></li>
+<li><a href="../301240/index.html">Papaya CMS licensing FAQ</a></li>
+<li><a href="../301242/index.html">Automate system administration, review problems and solution. Ed wilson</a></li>
+<li><a href="../301244/index.html">Pitertsy world champions! Not hockey, so programming</a></li>
+<li><a href="../301246/index.html">Double deception. How the FBI used the Ukrainian hacker Maxim Popov</a></li>
+<li><a href="../301248/index.html">Don't you have a minute to talk about C ++?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

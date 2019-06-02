@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Monitoring Postgresql: Requests</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In 2008, the pgsql-hackers mailing list began discussing an extension to collect statistics on requests. Starting from version 8.4, the pg_stat_statem...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Monitoring Postgresql: Requests</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/files/1c9/482/6b2/1c94826b2e72462cb534409d53f13ee9.png" align="left" width="250">  In 2008, the pgsql-hackers mailing list began <a href="">discussing an</a> extension to collect statistics on requests.  Starting from version 8.4, the <a href="https://www.postgresql.org/docs/9.4/static/pgstatstatements.html">pg_stat_statements</a> extension is included in the postgres and allows you to receive various statistics about the requests that the server processes. </p><br><p>  Typically, this extension is used by database administrators as a data source for reports (this data is actually the sum of indicators since the moment the counters were reset).  But on the basis of this statistics, you can make monitoring requests - look at the statistics in time.  This is extremely useful for finding the causes of various problems and, in general, for understanding what is happening on the database server. </p><br><p>  I will tell you which metrics on requests are collected by our agent, how we group them, visualize them, and also tell you about some of the rakes we went through. </p><a name="habracut"></a><br><h2 id="pg_stat_statements">  pg_stat_statements </h2><br><p>  So, what we have in view pg_stat_statements (my example is from 9.4): </p><br><pre><code class="hljs smalltalk">postgres=# \d pg_stat_statements; <span class="hljs-type"><span class="hljs-type">View</span></span> <span class="hljs-comment"><span class="hljs-comment">"public.pg_stat_statements"</span></span> <span class="hljs-type"><span class="hljs-type">Column</span></span> | <span class="hljs-type"><span class="hljs-type">Type</span></span> | <span class="hljs-type"><span class="hljs-type">Modifiers</span></span> ---------------------+------------------+----------- userid | oid | dbid | oid | queryid | bigint | query | text | calls | bigint | total_time | double precision | rows | bigint | shared_blks_hit | bigint | shared_blks_read | bigint | shared_blks_dirtied | bigint | shared_blks_written | bigint | local_blks_hit | bigint | local_blks_read | bigint | local_blks_dirtied | bigint | local_blks_written | bigint | temp_blks_read | bigint | temp_blks_written | bigint | blk_read_time | double precision | blk_write_time | double precision |</code> </pre> <br><p>  Here, all requests are grouped, that is, we receive statistics not for each request, but for a group of requests that are identical from the point of view of pg (I’ll tell you more about it).  All counters grow from the moment of start or from the moment of reset of counters (pg_stat_statements_reset). </p><br><ul><li>  <strong>query</strong> - <strong>query</strong> text </li><li>  <strong>calls</strong> - the number of calls to the request </li><li>  <strong>total_time</strong> - the sum of the request execution times in milliseconds </li><li>  <strong>rows</strong> - the number of rows returned (select) or modified during the query (update) </li><li>  <strong>shared_blks_hit</strong> - the number of shared memory blocks received from the cache </li><li><p>  <strong>shared_blks_read</strong> - the number of blocks of shared memory that is not read from the cache <br>  The documentation is not obvious, this is the total number of blocks read, or only what was not found in the cache, check by <a href="">code</a> </p><br><pre> <code class="hljs vbscript"> /* * lookup the buffer. IO_IN_PROGRESS <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> <span class="hljs-keyword"><span class="hljs-keyword">set</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> the requested block <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> currently <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> memory. */ bufHdr = BufferAlloc(smgr, relpersistence, forkNum, blockNum, strategy, &amp;found); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (found) pgBufferUsage.shared_blks_hit++; <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> pgBufferUsage.shared_blks_read++;</code> </pre> <br></li><li>  <strong>shared_blks_dirtied</strong> - the number of shared memory blocks marked as dirty during the request (the request has changed at least one tuple in the block and this block must be written to disk, either checkpointer or bgwriter does) </li><li>  <strong>shared_blks_written</strong> - the number of shared memory blocks recorded on the disc synchronously during the processing of the request.  Postgres tries to synchronously write a block if it has already returned <a href="">dirty</a> . </li><li>  <strong>local_blks</strong> - similar counters for local from the point of view of backend blocks, used for temporary tables </li><li>  <strong>temp_blks_read</strong> - the number of blocks of temporary files read from the disk. <br>  Temporary files are used to process a request when there is not enough memory, limited by the <a href="https://www.postgresql.org/docs/9.4/static/runtime-config-resource.html">work_mem</a> setting <a href="https://www.postgresql.org/docs/9.4/static/runtime-config-resource.html">.</a> </li><li>  <strong>temp_blks_written</strong> - the number of blocks of temporary files written to disk </li><li>  <strong>blk_read_time</strong> - the sum of the wait time for reading blocks of milliseconds </li><li>  <strong>blk_write_time</strong> - the amount of time to write blocks to disk in milliseconds (only synchronous writing is taken into account, the time spent by the checkpointer / bgwriter is not counted here) </li></ul><br><p>  <strong>blk_read_time</strong> and <strong>blk_write_time</strong> are collected only when the <a href="https://www.postgresql.org/docs/9.4/static/runtime-config-statistics.html">track_io_timing</a> setting is <a href="https://www.postgresql.org/docs/9.4/static/runtime-config-statistics.html">enabled</a> . </p><br><p>  Separately, it is worth noting that only completed requests fall into pg_stat_statements.  That is, if your request has already done something heavy for an hour and has not yet ended, it will be visible only in <a href="https://www.postgresql.org/docs/9.4/static/monitoring-stats.html">pg_stat_activity</a> . </p><br><h2 id="kak-gruppiruyutsya-zaprosy">  How requests are grouped </h2><br><p>  I have long believed that requests are grouped according to a real implementation plan.  It was embarrassing only that requests with different number of arguments in IN are displayed separately, then they should have the same plan. </p><br><p>  In the code, you can see that the <a href="">hash</a> is actually <a href="">taken</a> from the "significant" parts of the request after parsing.  Starting from 9.4, it is displayed in the <strong>queryid</strong> column. </p><br><p>  In practice, we have to additionally normalize and group requests already in the agent.  For example, a different number of arguments in IN we collapse into one placeholder "(?)".  Or the arguments that arrived in pg inlined in the query we ourselves replace with placeholders.  The task is further complicated by the fact that the request text may not be complete. </p><br><p>  Before 9.4, the query text is truncated to <a href="https://www.postgresql.org/docs/9.4/static/runtime-config-statistics.html">track_activity_query_size</a> , c 9.4 the query text is stored out of shared memory and the restriction is removed, but we cut the query to 8Kb anyway, because if the query contains very heavy strings, the requests from the agent significantly post-load. </p><br><p>  Because of this, we cannot parse the query with the SQL parser for additional normalization; instead, we had to write a set of regular expressions for additional stripping of queries.  This is not a very good solution, as it is constantly necessary to add new scenarios, but nothing better has yet been thought up. </p><br><p>  Another problem is that in the <strong>query</strong> field, the postgres records the first incoming query in the group <strong>before normalization</strong> while preserving the original formatting, and if the counters are reset, the request may be different for the same group.  Very often, developers use comments in queries, for example, to specify the name of the function that pulls this query or the ID of the user query, they are also saved in the <strong>query</strong> . </p><br><p>  In order not to produce new metrics for the same requests every time, we cut comments and extra whitespace characters. </p><br><h2 id="postanovka-zadachi">  Formulation of the problem </h2><br><p>  We did <a href="http://postgresql-consulting.ru/">postgres</a> monitoring with the help of our friends from <a href="http://postgresql-consulting.ru/">postgresql consulting</a> .  They suggested that the most useful when searching for problems with the database, which metrics are not particularly useful, and advised on postgresql internals. </p><br><p>  As a result, we want to receive from the monitoring answers to the following questions: </p><br><ul><li>  how does the database now work as a whole in comparison with another period </li><li>  what requests load the server (cpu, disks) </li><li>  how many requests </li><li>  What are the different requests </li></ul><br><h2 id="sobiraem-metriki">  We collect metrics </h2><br><p>  In fact, it is quite expensive to pour counters for all monitoring requests.  We decided that we are only interested in TOP-50 requests, but we can’t just take top by total_time, since if we have a new request, its total_time will catch up with the old requests for a long time. </p><br><p>  We decided to take the top of the derivative (rate) total_time per minute.  To do this, once a minute, the agent reads pg_stat_statements entirely and stores the previous values ​​of the counters.  For each counter of each request, the rate is calculated, then we try to additionally combine the same requests, which pg considered different, their statistics are summarized.  Then we take top, we make separate metrics for them, we summarize the rest of the queries into some query = "~ other". </p><br><p>  As a result, we get 11 metrics for each query from the top.  Each metric has a set of refinement parameters (tags): </p><br><pre> <code class="hljs json">{<span class="hljs-attr"><span class="hljs-attr">"database"</span></span>: <span class="hljs-string"><span class="hljs-string">"&lt;db&gt;"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"user"</span></span>: <span class="hljs-string"><span class="hljs-string">"&lt;user&gt;"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"query"</span></span>: <span class="hljs-string"><span class="hljs-string">"&lt;query&gt;"</span></span>}</code> </pre> <br><ul><li>  postgresql.query.time.cpu (we just subtracted the disk latency from total_time for convenience) </li><li>  postgresql.query.time.disk_read </li><li>  postgresql.query.time.disk_write </li><li>  postgresql.query.calls </li><li>  postgresql.query.rows </li><li>  postgresql.query.blocks.hit </li><li>  postgresql.query.blocks.read </li><li>  postgresql.query.blocks.written </li><li>  postgresql.query.blocks.dirtied </li><li>  postgresql.query.temp_blocks.read </li><li>  postgresql.query.temp_blocks.written </li></ul><br><h2 id="interpretiruem-metriki">  Interpret metrics </h2><br><p>  Very often, users have questions about the physical sense of the metrics "postgresql.query.time. *".  Indeed, it is not very clear what the sum of response times shows, but such metrics usually show well the relationship of some processes with each other. </p><br><p>  But if we agree not to take locks into account, we can very roughly assume that during the entire processing time of the request, the post-rescue utilizes a resource (processor or disk).  Such metrics have a dimension: the number of resource seconds spent per second.  You can also bring this to the percentage of utilization by request of the processor core, if multiplied by 100%. </p><br><h2 id="smotrim-chto-poluchilos">  We look what happened </h2><br><p>  Before relying on metrics, you need to check whether they show the truth.  For example, let's try to figure out what causes an increase in the number of write operations on the database server: <br><br></p><br><img src="https://habrastorage.org/files/54d/2a9/3ef/54d2a93ef5844d8a9df9f712109e3af6.png"><br><br><p>  We look, whether wrote postgres on a disk at this time: </p>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/files/c08/a8f/7a2/c08a8f7a2b6144bcb5744b717263865f.png"><br><br><p>  Further we find out, what requests "soiled" pages: </p><br><br><img src="https://habrastorage.org/files/5ed/96f/797/5ed96f7974fc487f8905cd298d35468b.png"><br><br><p>  We see that there is an approximate coincidence, but the schedule for queries does not exactly repeat the buffer reset schedule.  This is because the process of writing blocks occurs in the background and at the same time the profile of the load on the disk varies slightly. </p><br><p>  Now let's see what kind of picture we have with reading: </p><br><br><img src="https://habrastorage.org/files/44e/3ee/802/44e3ee80280f4c5cb6e2b3e830bdf164.png"><br><br><img src="https://habrastorage.org/files/c3f/646/506/c3f646506c0a4c0e88e11d45c5584a50.png"><br><br><p>  Here we also see that there is a correlation, but there is no exact match.  This can be explained by the fact that postgres reads blocks from a disk not directly, but through the cache of the file system.  Thus, we do not see part of the load on the disk, since part of the blocks is read from the cache. </p><br><p>  CPU utilization can also be explained by specific requests, but absolute accuracy cannot be expected, since there are expectations of various locks, etc.: <br><br></p><br><img src="https://habrastorage.org/files/5db/db1/495/5dbdb14958694ee0ad8f63eedea647d3.png"><br><br><img src="https://habrastorage.org/files/30f/870/dc0/30f870dc096344709573a0908e963f3a.png"><br><br><h2 id="itogo">  Total </h2><br><ul><li>  pg_stat_statements is a very cool thing that gives detailed statistics, but does not kill the server </li><li>  There are a number of assumptions and inaccuracies, they need to be understood for the correct interpretation of metrics </li></ul><br><p>  <em>On our demo booth there is <a href="https://okmeter.io/example/hosts/db-postgresql1/postgresql">an example of</a> metrics on demand, but the load there is not very interesting and it’s better to look at your metrics (we have a free, non-binding, two-week trial)</em> </p></div><p>Source: <a href="https://habr.com/ru/post/311028/">https://habr.com/ru/post/311028/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../311018/index.html">DB Backup using mutt</a></li>
+<li><a href="../311020/index.html">Development addon firefox, or another screenshot using webExtensions and addon sdk</a></li>
+<li><a href="../311022/index.html">The main thing about the strategy of The New York Times: competition with new media and business expansion</a></li>
+<li><a href="../311024/index.html">Data Science Week 2016. Review of the first and second day</a></li>
+<li><a href="../311026/index.html">Where do faces</a></li>
+<li><a href="../311030/index.html">"Recently launched an online sales system for BMW": T-Systems on the role of Java and conferences in its activities</a></li>
+<li><a href="../311034/index.html">Using ReFS features in Veeam Backup & Replication 9.5</a></li>
+<li><a href="../311036/index.html">Ruby (n) vs Python: the most important questions and answers</a></li>
+<li><a href="../311038/index.html">Smart pointer for Pimpl</a></li>
+<li><a href="../311040/index.html">How we almost lost 5,000,000 hryvnia per month due to the “wrong” hosting: client history</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

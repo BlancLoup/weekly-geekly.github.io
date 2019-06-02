@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Launch queues and the Laravel scheduler in the Elastic Beanstalk environment</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The official Laravel documentation describes in some detail the installation of the web application and the associated worker processes, but what if I...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Launch queues and the Laravel scheduler in the Elastic Beanstalk environment</h1><div class="post__text post__text-html js-mediator-article"><p>  The official Laravel documentation describes in some detail the installation of the web application and the associated worker processes, but what if I want to deploy the product in AWS Elastic Beanstalk? </p><br><p>  As it turned out, there are practically no articles on the Internet, no packagist packages at the ready, no mention in the documentation. </p><br><p>  This article will not only show how you can easily start the scheduler and queue handler in AWS, but also prove once again that Laravel is expanding very easily. </p><a name="habracut"></a><br><h3>  What is Elastic Beanstalk? </h3><br><p>  For those who are not familiar with the EB service from AWS, I will try to explain in two sentences.  Elastic Beanstalk is a ready-made bundle of services (virtual servers, load balancers, monitoring) for automatic scaling of applications.  Thanks to EB, the team doesn't have to have DevOps, and the application will automatically adapt to any load. </p><br><h3>  Elastic Beanstalk: Features </h3><br><p>  Amazon offers a separate, special type of environment for application workers — the 'worker' environment.  And despite the fact that AWS allows you to run both scheduled tasks and tasks from queues, the process differs from the standard one: </p><br><img src="https://habrastorage.org/getpro/habr/post_images/ee0/444/926/ee04449262e7cd7559c9dd2d49b7785b.png" alt="Processing Laravel Queues"><br><p>  In a standard process, Laravel inserts tasks into a queue, and another copy of the same application polls the queue periodically, hoping to get the task.  Scheduled tasks are handled by the internal Laravel scheduler, which in turn is run every minute through the standard UNIX cron tab. </p><br><p>  But in AWS EB, we can no longer install our cron files or work with the queue directly: </p><br><img src="https://habrastorage.org/getpro/habr/post_images/819/74f/f34/81974ff34c57a20b928bc699afdffb24.png" alt="Queue Processing in AWS EB"><br><p>  Instead, the internal AWS process will send us POST requests, notifying our copies of applications about scheduled tasks, ready for execution, or about new tasks in the queue.  It sounds simple enough, but Laravel (the current version is 5.2) does not support either, the scheduler is started only from the console, and the queue handler wants access to the queue directly. </p><br><h3>  Implementation </h3><br><h4>  Scheduler </h4><br><p> Let's start with the scheduler.  We want to happen the same thing that happens when running in the <code>php artisan schedule:run</code> console, but from a web request (web hook).  There is no wish to create separate hooks (some developers choose this path), since: </p><br><ul><li>  I would like to rely on the built-in Laravel scheduler - the syntax is easier to read, developers do not need knowledge of UNIX, business logic remains in the application, and not outside it; </li><li>  Other environments in which the application runs (local, development) may not be in AWS, and we do not want to have two different ways of working for AWS and non-AWS options; </li><li>  I do not want to create a bunch of hook methods that will be used only by AWS. </li></ul><br><p>  This is the final version of the controller method that runs the scheduler.  The method is very similar to the built-in Laravel ScheduleRunCommand :: class: </p><br><pre> <code class="php hljs"><span class="hljs-comment"><span class="hljs-comment">/** * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> Container $laravel * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> Kernel $kernel * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> Schedule $schedule * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@return</span></span></span><span class="hljs-comment"> array */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">schedule</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(Container $laravel, Kernel $kernel, Schedule $schedule)</span></span></span><span class="hljs-function"> </span></span>{ $events = $schedule-&gt;dueEvents($laravel); $eventsRan = <span class="hljs-number"><span class="hljs-number">0</span></span>; $messages = []; <span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> ($events <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> $event) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (! $event-&gt;filtersPass($laravel)) { <span class="hljs-keyword"><span class="hljs-keyword">continue</span></span>; } $messages[] = <span class="hljs-string"><span class="hljs-string">'Running: '</span></span>.$event-&gt;getSummaryForDisplay(); $event-&gt;run($laravel); ++$eventsRan; } <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (count($events) === <span class="hljs-number"><span class="hljs-number">0</span></span> || $eventsRan === <span class="hljs-number"><span class="hljs-number">0</span></span>) { $messages[] = <span class="hljs-string"><span class="hljs-string">'No scheduled commands are ready to run.'</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;response($messages); }</code> </pre> <br><p>  Perhaps the most important line.  As we know, Laravel will try to provide all the dependencies in the parameter list, but in this case we need a side effect from this: </p><br><pre> <code class="php hljs"><span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">schedule</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(Container $laravel, Kernel $kernel, Schedule $schedule)</span></span></span></span></code> </pre> <br><p>  The Laravel web application uses its own kernel class, which does not load the list of scheduled tasks, but we are asked to provide us with a console kernel (Illuminate \ Contracts \ Console \ Kernel) - Laravel will have to download it for us.  During the download, a 'side effect' will occur - scheduled tasks will be downloaded from the App / Console, and the application will finally know about them.  When Laravel provides the following dependency, the Schedule class will have an application. </p><br><p>  An important detail: swap Kernel and Schedule in the parameter list and the method will stop working.  The kernel needs to be loaded before Schedule, because we need a side effect of loading it. </p><br><p>  What happens next is quite simple and understandable, almost repeats ScheduleRunCommand.  It would be nice to use an existing class, but unfortunately it cannot be expanded or redefined. </p><br><h4>  Queues </h4><br><p>  One of the goals was to keep the number of new classes to a minimum, so I did not enter my queues or connections — I managed to manage only one job-class, which will be transferred to the standard queue handler. </p><br><p>  The method turned out like this: </p><br><pre> <code class="php hljs"><span class="hljs-comment"><span class="hljs-comment">/** * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> Request $request * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> Worker $worker * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> Container $laravel * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@return</span></span></span><span class="hljs-comment"> array */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">queue</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(Request $request, Worker $worker, Container $laravel)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;validateHeaders($request); $body = <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;validateBody($request, $laravel); $job = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> AwsJob($laravel, $request-&gt;header(<span class="hljs-string"><span class="hljs-string">'X-Aws-Sqsd-Queue'</span></span>), [ <span class="hljs-string"><span class="hljs-string">'Body'</span></span> =&gt; $body, <span class="hljs-string"><span class="hljs-string">'MessageId'</span></span> =&gt; $request-&gt;header(<span class="hljs-string"><span class="hljs-string">'X-Aws-Sqsd-Msgid'</span></span>), <span class="hljs-string"><span class="hljs-string">'ReceiptHandle'</span></span> =&gt; <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>, <span class="hljs-string"><span class="hljs-string">'Attributes'</span></span> =&gt; [ <span class="hljs-string"><span class="hljs-string">'ApproximateReceiveCount'</span></span> =&gt; $request-&gt;header(<span class="hljs-string"><span class="hljs-string">'X-Aws-Sqsd-Receive-Count'</span></span>) ] ]); <span class="hljs-keyword"><span class="hljs-keyword">try</span></span> { $worker-&gt;process( $request-&gt;header(<span class="hljs-string"><span class="hljs-string">'X-Aws-Sqsd-Queue'</span></span>), $job, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span> ); } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (\<span class="hljs-keyword"><span class="hljs-keyword">Exception</span></span> $e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;response([ <span class="hljs-string"><span class="hljs-string">'Couldn\'t process '</span></span> . $job-&gt;getJobId() ], <span class="hljs-number"><span class="hljs-number">500</span></span>); } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;response([ <span class="hljs-string"><span class="hljs-string">'Processed '</span></span> . $job-&gt;getJobId() ]); }</code> </pre> <br><p>  All that had to be done was to pull out the SQS metadata from the HTTP headers, and insert them into the job class.  It turned out a kind of adapter with HTTP to SQS.  We don’t need to remove the work from the queue ourselves or mark it as unsuccessful, AWS will do it all.  If we do not return the HTTP code 200 (for example, we caught the error), then AWS will do the rest. </p><br><p>  That's all!  It remains to add a couple of routes (only two routes for any number of tasks) and the application is ready for battle! </p><br><h4>  AWS Setup </h4><br><p>  Do not forget to subscribe the AWS worker environment to the corresponding SQS queue (or SNS topic). </p><br><p>  In order for AWS to start “pestering” every minute, at the moment of submitting a new version of the application, the cron.yaml file must be in the root.  You can add it to the repository, or you can add it in the last step.  File contents: </p><br><pre> <code class="hljs pgsql"><span class="hljs-keyword"><span class="hljs-keyword">version</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> cron: - <span class="hljs-type"><span class="hljs-type">name</span></span>: "schedule" url: "/worker/schedule" schedule: "* * * * *"</code> </pre> <br><h3>  findings </h3><br><p>  Laravel has once again proved its flexibility and extensibility. </p><br><p>  The full source code, a working package with integration for Laravel and Lumen has already uploaded to GitHub (and Packagist): <a href="https://github.com/dusterio/laravel-aws-worker">https://github.com/dusterio/laravel-aws-worker</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/302590/">https://habr.com/ru/post/302590/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../302566/index.html">Wolfram Technologies: 4th Russian Conference</a></li>
+<li><a href="../302568/index.html">Already 2016, and the future does not come. Who is to blame and what to do?</a></li>
+<li><a href="../302570/index.html">Write the code as if it would be accompanied by a violent psychopath who knows where you live.</a></li>
+<li><a href="../302576/index.html">Tony Robbins seminar review “Free your inner strength”. Day 2: Turning dreams into reality (part 2)</a></li>
+<li><a href="../302580/index.html">How I caught a Wi-Fi printer via OSPF, corporate network on MikroTik part 2</a></li>
+<li><a href="../302594/index.html">Client-side Linq to NHibernate</a></li>
+<li><a href="../302598/index.html">SMS as a secret weapon</a></li>
+<li><a href="../302600/index.html">BGP Inter-AS</a></li>
+<li><a href="../302602/index.html">Creating a blog on symfony 2.8 lts [Part 4]</a></li>
+<li><a href="../302606/index.html">About the three-dimensional Z-order put in a word</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

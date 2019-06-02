@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Storage System for Billions of Records with Key Access</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Formulation of the problem 
+
+
+ In one of the past projects I was given the task of writing a system for storing billions of records. Access to the dat...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Storage System for Billions of Records with Key Access</h1><div class="post__text post__text-html js-mediator-article"><p><img src="http://s1.anekdoty.ru/uploads/images/funny/open/slonenok-ustal-open.jpg" alt="Even an elephant will not sustain so much data."></p><br><h1 id="postanovka-zadachi">  Formulation of the problem </h1><br><p>  In one of the past projects I was given the task of writing a system for storing billions of records.  Access to the data must be done by key: in the general case, one key corresponds to a set (in practice, up to tens of millions) of records that can be added but not modified or deleted. </p><br><p>  The storage systems tested by SQL / NoSQL proved to be poorly adapted to such a number of records, so the client suggested developing a specialized solution from scratch. </p><a name="habracut"></a><br><h1 id="vybrannyy-podhod">  Selected approach </h1><br><p>  After a series of experiments, the following approach was chosen.  The data in the database is divided into sections, each of which is a file or directory on the disk.  Section corresponds to the value of CRC16-hash, i.e.  perhaps only 65,536 sections.  Practice shows that modern file systems (ext4 tested) quite effectively cope with so many items within a single directory.  So, the added records are hashed by the key and distributed into the corresponding sections. </p><br><p>  Each section consists of a cache (a file in which unordered entries are accumulated up to a given size) and an index (a set of compressed files that store ordered by key records).  Those.  The following scenario is assumed: </p><br><ol><li>  Records are accumulated in memory up to a certain limit, and further distributed into sections. </li><li>  Inside the recording section will be cached if it does not exceed the specified size. </li><li>  Otherwise, the contents of the index will be fully read (with some reservations, about them below), the contents of the cache will be added to it, and then all this data will be sorted and divided into index files (the cache will be reset). </li></ol><br><p>  Each index file has the same name as the key of the first stored record (in practice, it is url-encoded for compatibility with file systems).  Thus, when searching for records by key, the index allows not to read the entire section, but only the cache and a small part of the index files in which the records may be located. </p><br><h3 id="podrobnyy-algoritm-dobavleniya-zapisey-v-sekciyu">  Detailed algorithm for adding entries to the section </h3><br><ol><li>  If the size of the added entries in the amount with the size of the cache file is less than the specified maximum volume, then the entries are simply added to the cache file, and the section processing is complete. </li><li>  Otherwise, the contents of the cache file as well as the index files are read (excluding files with a size larger than the specified limit) and added to the section being processed. </li><li>  The section is sorted by key value. </li><li>  A temporary directory is created in which new index files will be written. </li><li>  The sorted array of records is divided into equal parts (without breaking the records) of a given size (but with different names, otherwise the file grows to the desired size, ignoring the limit) and written into gzip-compressed index files.  Each such file has the name _url_encoded &lt;key&gt; _XXXX, where the key is the key of the first record of the file contents, and XXXX is 4 hexadecimal digits (needed to distinguish files with one key value while maintaining the lexicographic naming order).  XXXX is equal to 0000 if there is no file with the same name in the section directory, otherwise 0001, etc. </li><li>  For all files whose names have collisions (and had to increase XXXX) we create hard links in the temporary directory. </li><li>  Delete the old directory of the section and rename the temporary one to its place. </li></ol><br><h1 id="kak-polzovatsya">  How to use </h1><br><p>  <a href="https://github.com/ababo/mastore">Mastore</a> (from massive storage) is written in Golang and is assembled into an executable file launched in read, write or self-test mode.  While running in the write mode, Mastore reads stdin text strings consisting of a key and a value separated by a tab (for binary data, additional encoding can be used, for example, Base85): </p><br><pre><code class="bash hljs">mastore write [-config=&lt;config&gt;]</code> </pre> <br><p>  To read records by a given key, use the following command: </p><br><pre> <code class="bash hljs">mastore <span class="hljs-built_in"><span class="hljs-built_in">read</span></span> [-config=&lt;config&gt;] -key=&lt;key&gt;</code> </pre> <br><p>  And to get a list of all the keys: </p><br><pre> <code class="bash hljs">mastore <span class="hljs-built_in"><span class="hljs-built_in">read</span></span> [-config=&lt;config&gt;] -keys</code> </pre> <br><p>  Mastore is configured using a JSON file.  Here is a default configuration example: </p><br><pre> <code class="hljs json">{ <span class="hljs-attr"><span class="hljs-attr">"StorePath"</span></span>: <span class="hljs-string"><span class="hljs-string">"$HOME/$STORE"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"MaxAccumSizeMiB"</span></span>: <span class="hljs-number"><span class="hljs-number">1024</span></span>, <span class="hljs-attr"><span class="hljs-attr">"MaxCacheSizeKiB"</span></span>: <span class="hljs-number"><span class="hljs-number">1024</span></span>, <span class="hljs-attr"><span class="hljs-attr">"MaxIndexBlockSizeKiB"</span></span>: <span class="hljs-number"><span class="hljs-number">8192</span></span>, <span class="hljs-attr"><span class="hljs-attr">"MinSingularSizeKiB"</span></span>: <span class="hljs-number"><span class="hljs-number">8192</span></span>, <span class="hljs-attr"><span class="hljs-attr">"CompressionLevel"</span></span>: <span class="hljs-number"><span class="hljs-number">-1</span></span>, <span class="hljs-attr"><span class="hljs-attr">"MaxGoroutines"</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> }</code> </pre> </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/317874/">https://habr.com/ru/post/317874/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317864/index.html">Assembly Architecture Go</a></li>
+<li><a href="../317866/index.html">How to keep logs of data changes by users in the database, storing them in another database</a></li>
+<li><a href="../317868/index.html">The digest of interesting materials for the mobile # 184 developer (December 12-18)</a></li>
+<li><a href="../317870/index.html">CRM pumped for sales</a></li>
+<li><a href="../317872/index.html">Does your code speak Russian?</a></li>
+<li><a href="../317876/index.html">FPGA Debug Board - Frankenstein. Sounds and music</a></li>
+<li><a href="../317878/index.html">VulnHub Analysis of tasks with CTF SkyDog: 2016 - Catch Me If You Can</a></li>
+<li><a href="../317880/index.html">Why are we angry?</a></li>
+<li><a href="../317882/index.html">Lock-free data structures. Iterable list</a></li>
+<li><a href="../317884/index.html">Transaction Isolation Levels with PostgreSQL Examples</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

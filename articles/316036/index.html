@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>On the impact of full-page writes</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="By customizing postgresql.conf , you may have noticed that there is a full_page_writes parameter. The commentary next to it says something about the p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>On the impact of full-page writes</h1><div class="post__text post__text-html js-mediator-article">  By customizing <i>postgresql.conf</i> , you may have noticed that there is a <i>full_page_writes</i> parameter.  The commentary next to it says something about the partial recording of pages and people tend to leave it <i>on</i> - which is not bad, which I will explain later in this article.  Nevertheless, it is very useful to understand what <i>full_page_writes</i> does, since the impact on the system can be significant. <br><br>  Unlike my previous post about <a href="http://blog.2ndquadrant.com/basics-of-tuning-checkpoints/">setting up checkpoints</a> , this is not a guide on how to set up a server.  There is not so much that you could customize, in fact, but I will show you how some solutions at the application level (for example, the choice of data types) can interact with the recording of full pages. <br><a name="habracut"></a><br><h5>  <b>Partial Entry / “Torn” Pages</b> </h5><br>  So what is a full page entry?  As the commentary from <i>postgresql.conf</i> says, PostgreSQL uses a 8kB page size (the default) to recover from partial page writing, while other parts of the stack use excellent chunk sizes.  The Linux file system typically uses 4kB pages (it’s possible to use smaller pages, but 4kB is the maximum on x86), at the hardware level, old drives use 512B sectors, while new ones write data in larger chunks (usually 4kB, or even 8kB). <br><br>  That way, when PostgreSQL writes an 8kB page, the rest of the storage layers can break it down into smaller pieces that are processed separately.  This is a problem of atomicity of the record.  An 8KB PostgreSQL page can be split into two 4kB filesystem pages and then into 512B sectors.  Now, what happens if the server goes down (power failure, kernel error, ...)? 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Even if the server uses a storage system designed to cope with such failures (SSD with capacitors, RAID controllers with batteries, ...), the kernel already divides the data into 4kB pages.  There is a possibility that the database recorded an 8kB data page, but only part of it hit the disk before the crash. <br><br>  From this point of view, you are now probably thinking that this is exactly what we have for the transaction log (WAL) and you are right!  So, after starting the server, the database will read WAL (from the last checkpoint executed), and apply the changes again to make sure that the data files are correct.  Simply. <br><br>  But there is a trick - the restoration does not apply the changes blindly, it is often necessary for him to read pages with data, etc., which means that the page is no longer spoiled in some way, for example in connection with partial recording.  What seems to be just a little internally contradictory, because to correct data corruption, we mean that the data was not damaged. <br><br>  A full page entry is something of a solution to this puzzle — when you change a page for the first time after a checkpoint, the whole page will be recorded in WAL.  This ensures that during recovery, the first WAL entry associated with this page stores the complete page, freeing us from having to read a potentially damaged page from the data file. <br><br><h5>  <b>Record increase</b> </h5><br>  Of course, the negative consequence of this is an increase in the size of WAL'a - changing one byte on the 8kB page will lead to its full entry in WAL.  A full page record occurs only on the first record after the checkpoint, that is, reducing the checkpoint frequency - this is one way to improve the situation, in fact, there is a small “explosion” of the full page record after the checkpoint, after which relatively few complete records occur before it ends. <br><br><h5>  <b>UUID against BIGSERIAL keys</b> </h5><br>  There are still some unexpected interactions with design decisions made at the application level.  Let's assume that we have a simple table with a primary key, a UUID or BIGSERIAL, and we write data to it.  Will there be a difference in the size of the generated WAL (assuming that we write the same number of lines)? <br><br>  It seems reasonable to expect approximately the same size of WALs in both cases, but the following diagrams clearly demonstrate that there is a huge difference in practice: <br><img src="https://habrastorage.org/getpro/habr/post_images/6e8/8fd/8a3/6e88fd8a33591e6cab352c436d7fa926.png" alt="image"><br><br>  Here are the sizes of WALs obtained as a result of an hourly test, accelerated to 5000 inserts per second.  With BIGSERIAL as the primary key, this resulted in ~ 2GB of WAL while the UUID issued more than 40GB.  The difference is more than palpable, and most of the WAL is related to the index behind the primary key.  Let's look at the record types in WAL: <br><img src="https://habrastorage.org/getpro/habr/post_images/470/f95/0da/470f950da55fb27b6db90afddf39dcaf.png" alt="image"><br><br>  Obviously, the absolute majority of records are full-page images (FPI), i.e.  the result of a full page entry.  But why is this happening? <br><br>  Of course, this is due to the inherent UUID'u accident.  New BIGSERIALs are consistent, and therefore are written to the same branches of the btree index.  Since only the first page change causes a full page record, such a small number of WAL records are FPIs.  With a UUID, it's quite another thing, of course, the values ​​are completely inconsistent and each insert is likely to fall into a new branch of the index (assuming the index is rather large). <br><br>  The database can do nothing special with this - the load is random in nature, which causes a large number of full page entries. <br><br>  Of course, it’s not so difficult to achieve a similar increase in the record even with BIGSERIAL keys.  It just requires a different type of load, for example, updates, random updates of records will change the distribution, the diagram looks like this: <br><img src="https://habrastorage.org/getpro/habr/post_images/1f1/7b0/3ce/1f17b03ce2457aa8e8047b9d7c0319b9.png" alt="image"><br><br>  Suddenly, the difference between the data types disappeared - access is made randomly in both cases, resulting in approximately the same size as the WALs produced.  Another difference is that most WAL is associated with “heap”, i.e.  tables, not indexes.  “HOT” cases were reproduced to enable HOT UPDATE optimization (i.e., updates without having to touch the index), which almost completely eliminates all WAL traffic associated with the indices. <br><br>  But you can protest that most applications do not change the entire data set.  Usually, only a small part of the data is “active” - people are interested in messages from the past few days on the forums, unresolved orders in online stores, etc.  How does this affect the results? <br><br>  Fortunately, pgbench supports non-uniform distributions, and, for example, with an exponential distribution relating to a 1% data set ~ 25% of the time, the charts will look like this: <br><img src="https://habrastorage.org/getpro/habr/post_images/739/107/fe3/739107fe311c55cac79dfbac15863701.png" alt="image"><br><br>  If we make the distribution even more asymmetric, concerning 1% of the data ~ 75% of the time: <br><img src="https://habrastorage.org/getpro/habr/post_images/cc0/691/9fe/cc06919fed74c95ae4bfc4380fdca053.png" alt="image"><br><br>  This again shows how much difference the choice of data types can cause, and how important the setting of hot updates is. <br><br><h5>  <b>8kB and 4kB pages</b> </h5><br>  Another interesting question is how much WAL traffic can be saved by using smaller pages in PostgreSQL (which requires compiling a custom package).  At best, this can save up to 50% of WAL, thanks to logging only 4kB, instead of 8kB pages.  For load with evenly distributed updates, it looks like this: <br><img src="https://habrastorage.org/getpro/habr/post_images/53a/027/b97/53a027b9709da382e2357acfe7f42d24.png" alt="image"><br><br>  In general, the savings are not quite 50%, but the reduction from ~ 140GB to ~ 90GB is still quite noticeable. <br><br><h5>  <b>Do we need a complete record of the pages?</b> </h5><br>  This may seem blatant after explaining all the dangers of partial recording, but perhaps disabling full page writing may be a viable option, at least in some cases. <br><br>  First, I wonder if Linux file systems are still vulnerable for partial writes?  The parameter was introduced in PosqtgreSQL version 8.1, released in 2005, so perhaps many file system improvements have since resolved this problem.  This is probably not a universal approach for any workload, but perhaps given some additional conditions (for example, using 4kB pages in PostgreSQL) will it suffice?  In addition, PostgreSQL never overwrites only part of the 8kB page, but only the full page. <br><br>  I have conducted many tests recently, trying to cause a partial recording, but I could not even cause a single case.  Of course, this is not proof that there is no problem.  But even if it is, checksums can be sufficient protection (this will not fix the problem, but at least will indicate a damaged page). <br><br>  Secondly, many modern systems rely on replicas that use streaming replication — instead of waiting for the server to reboot after a hardware failure (which can take a long time) and then spend even more time on recovery, the systems will simply switch to hot standby.  If the database on the corrupted master was removed (and then cloned from the new master), partial entries are not a problem. <br><br>  But, I'm afraid if we start recommending this approach, then “I don’t know how the data was damaged, I just did full_page_writes = off on systems!” Will become one of the most common sentences right before the death of the DBA (along with “I saw this snake on reddit, it is not poisonous "). <br><br><h5>  <b>Conclusion</b> </h5><br>  Not much can be done to set up a full page record directly.  For a larger number of loads, most of the complete records occur immediately after the checkpoint, and then disappear to the next checkpoint.  So it’s quite important to set up checkpoints so that they don’t follow each other too often. <br><br>  Some solutions at the application level can increase the randomness of writing to tables and indexes — for example, UUIDs are, by their nature, random, turning even the usual load from inserts into random updates of indexes.  The scheme used in the examples was rather trivial - in practice, there would be secondary indexes, foreign keys, etc.  Using BIGSERIAL as primary keys (and leaving the UUID as side keys) can at least reduce the increase in the record. <br><br>  I’m really interested in discussing the need to fully write pages on different kernels / file systems.  Unfortunately, I did not find a lot of resources, if you have any relevant information, let me know. </div><p>Source: <a href="https://habr.com/ru/post/316036/">https://habr.com/ru/post/316036/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../316022/index.html">Autumn in indie game markets</a></li>
+<li><a href="../316024/index.html">Beginner's Guide to VR Developers</a></li>
+<li><a href="../316028/index.html">Lean Manufacturing at an Advertising Agency: Robotize the daily routine work of employees with AutoIt</a></li>
+<li><a href="../316030/index.html">Universal Auto Designer</a></li>
+<li><a href="../316032/index.html">data.table: we squeeze out the maximum speed when working with data in the R language</a></li>
+<li><a href="../316038/index.html">News Yii 2. №1</a></li>
+<li><a href="../316040/index.html">New survey “State of the Nation of Developers” by Vision Mobile</a></li>
+<li><a href="../316046/index.html">Strange games</a></li>
+<li><a href="../316048/index.html">How to open a startup in Berlin [infographics]</a></li>
+<li><a href="../316050/index.html">Badoo Worldwide Billing QA Eyes</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

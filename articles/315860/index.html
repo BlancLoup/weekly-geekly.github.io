@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Monitoring Elasticsearch through pain and suffering</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="We finally finished monitoring the elasticsearch before the public release. In total, we reworked it three times, because the result did not suit us a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Monitoring Elasticsearch through pain and suffering</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/c89/c29/a72/c89c29a722f340e6a0bd0f5a39f60c4b.jpg" align="left" width="200"><br><p>  We finally finished monitoring the elasticsearch before the public release.  In total, we reworked it three times, because the result did not suit us and did not show the problems that we had on our ES cluster. </p><br><p>  Under the cut the story about our production cluster, our problems and our new monitoring ES. <br><br clear="all"></p><a name="habracut"></a><br><h2 id="super-kratkiy-kurs-po-elastiku">  Super Short Elastic Course </h2><br><p>  Elasticsearch is a distributed, self-scalable RESTful full-text search service built on the Apache Lucene library. </p><br><p>  ES Terminology: </p><br><ul><li>  <strong>A node (node)</strong> is a JVM process running on a server. </li><li>  <strong>Index (index)</strong> - a set of documents on which you want to search, in the index there can be several types of documents </li><li>  <strong>Shard (shard)</strong> - part of the index.  Indexes are divided into parts in order to distribute the index and its requests between servers. </li><li>  <strong>Replica (replica)</strong> - a copy of the shard.  Each index piece is stored in multiple copies on different servers for failover. </li></ul><br><p>  Inside, every shard is an index, but in Lucene terms, and it is divided into segments. </p><br><h2 id="kak-my-ispolzuem-es">  How we use ES </h2><br><p>  All metrics in okmeter.io have tags, in other words, the key-value dictionary is the identifier of the metrics in our system, for example: </p><br><ul><li><code>{name: net.interface.bytes.in, site: okmeter, source_hostname: es103, plugin: net, interface: eth1}</code> </li> <li> <code>{name: process.cpu.user, site: okmeter, source_hostname: es103, plugin: process_info, process: /usr/bin/java, username: elasticsearch, container: ~host}</code> </li> <li> <code>{name: elasticsearch.shards.count, site: okmeter, source_hostname: es103, plugin: elasticsearch, cluster: okmeter-ovh, index: monthly-metadata-2016-10, shard_state: active, shard_type: primary}</code> </li> </ul><br><p>  Each such metric identifier dictionary is a document in ES.  For example, to build such a graph </p><br><p><img src="https://habrastorage.org/files/07c/fd9/b60/07cfd9b609114f7cbeddfe88fc203d8b.png" alt="index size"></p><br><p>  we are looking at ES for this (very simplified) request </p><br><pre> <code class="hljs pgsql">site:okmeter <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-type"><span class="hljs-type">name</span></span>:elasticsearch.<span class="hljs-keyword"><span class="hljs-keyword">index</span></span>.size</code> </pre> <br><p>  it returns some <code>id</code> metrics by which we retrieve the values ​​of the metrics from cassandra. </p><br><h2 id="status-klastera">  Cluster Status </h2><br><p>  ES itself <a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.4/cluster-health.html">believes</a> that a cluster can be in three states: </p><br><ul><li>  green - the required number of copies of each shard of each index is available </li><li>  yellow - some copies of the shard are either in the state of migration, or are not attached to the nodes </li><li>  red - part of the index is not available at all </li></ul><br><p>  The main schedule of our standard ES dashboards was chosen based on the same conditions: </p><br><p><img src="https://habrastorage.org/files/b41/349/f19/b41349f190ff41269f31aa26b3c59ca3.png" alt="shards by state"></p><br><p>  I'll tell you about this day.  The day before we added more powerful servers to the cluster, and now we had to remove two old nodes.  At about 2:00 pm, I had an idea about whether or not to hold the exercises?  We discussed and decided that we could experiment - turn off one node and see how this elastic elastic will work out. </p><br><p>  They turned off, and immediately started monitoring that there was a problem on the metrics collector.  Why ?? </p><br><p>  We returned the node, waited a bit, everything was fine.  Strange, well, it can not be such that due to the shutdown of one of several elastics, we lie down.  Probably something else ... </p><br><p>  Turned off the node again somewhere at 14:30 - again alerts.  Hmmm  The teachings showed that the fall of one elastic makes us painful - the same result, but you need to understand. </p><br><p>  Made some sort of <a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.4/allocation-filtering.html">decommission</a> - carefully brought out the nodes on one of the cluster.  The blue on the graph at 15:10 is it, the shards moved to other nodes.  There were no problems. </p><br><p>  Looked at the number of shards: 140 - strange, <em>number_of_shards</em> is 20, <em>number_of_replicas</em> is 2, and another master copy, i.e.  there should be 60 shards per index.  There are 3 indices for each month, so there should be only 180 shards.  It turned out that the December index was created with <em>number_of_replicas</em> - 0, i.e.  without replicas, so turning off any node completely breaks down the work with this index! </p><br><p>  It is good that the lack of replicas was found in a controlled experiment.  If we hadn’t noticed this, we could have a big problem in the future - we would have to rush through a complete re-indexing of the data from the main storage. </p><br><p>  To see this problem in the future, we made an automatic trigger that will report if there are 0 replicas in some index.  This trigger was released as an auto trigger for all clients at once, we are a monitoring service :) </p><br><h2 id="split-brain">  Split brain </h2><br><p>  The most frightening and well-known problem with elastic is the <strong>split brain</strong> , when due to problems with connectivity of nodes over the network, or if the node did not respond for a long time (because it was stuck in the GC for example), a second master node may appear in the cluster. </p><br><p>  In this case, it turns out like two versions of the index, some documents are indexed into one part of the cluster, others into the other.  Non-consistency will appear in the search - different results will be issued for the same query.  Restoring the index in such a case will be a difficult task; most likely, it will be necessary to either complete reindexing or restoring from the backup and with the following topping up the changes to the current moment. </p><br><p>  In ES there is a protection mechanism against split-brain, the most important setting is <a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.4/modules-discovery-zen.html">minimum_master_nodes</a> , but by default <em>discovery.zen.minimum_master_nodes: 1</em> , i.e.  there is no protection. </p><br><p>  We reproduced this on the ElasticSearch test cluster and made two auto-triggers based on the results: one will work if it sees more than one master node in the cluster, the second will warn if the <em>discovery.zen.minimum_master_nodes</em> parameter is less than the recommended - quorum (N / 2 + 1) from the current cluster size.  It needs to be monitored, because you can decide to add a node and forget to correct <em>minimum_master_nodes</em> . </p><br><h2 id="monitoring-zaprosov-v-elastic">  Monitoring requests to elastic </h2><br><p>  We sort of figured out the state of the cluster, then we need to understand how many queries process the cluster and how quickly they work out. </p><br><p><img src="https://habrastorage.org/files/fc8/cf4/05b/fc8cf405b950439c9fccba06165a2f66.png" alt="client requests"></p><br><p>  We do any search on our ES by three indices at once, each of which is divided into 20 shards.  Because of this, the initial ~ 250 requests per second for searching from our code for ES turn into ~ 15 thousand. </p><br><p>  We actually have about 200 requests per indexing per second, but since each shard is stored in three copies (main + 2 replicas), the ES sees ~ 600 rps. </p><br><p>  For the times of the requests, ES provides rather scant statistics: there is a counter of the processed requests and there is a cumulative sum of the times of requests by types.  Thus, we can calculate only the average response time for each type of requests, we get a graph of this type (we calculate the average right when drawing the graph, since the sum of the response times is also an interesting metric in itself): </p><br><p><img src="https://habrastorage.org/files/1a3/44e/4e4/1a344e4e4b74480a83f9b51953f65fb0.png" alt="client requests latency"></p><br><p>  The orange line is a search.  It is seen that at some point it accelerated approximately 3 times. </p><br><p>  This we just made <a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.4/indices-forcemerge.html">force merge</a> segments.  We index cut monthly.  It is always indexed (almost) in the current month, it is searched by three.  Since only the reading of the indices from the previous months goes, we can make force merge segments on them right under the load: </p><br><p><img src="https://habrastorage.org/files/64f/ae0/738/64fae07384ed425db2939f2be056b7af.png" alt="segments by index"></p><br><p>  As a result, one segment remained in each shard, the search for these indices became noticeably faster.  Perhaps we should make the kroons, which will make the force merge index over the past month. </p><br><h4 id="background-ops-grafiki">  Background ops graphics </h4><br><p>  In addition, we separately deduced the "background" operations - this is what the elastic does in the background itself or on request as with force merge.  Separately, because it is more logical to see "user" requests separately from "system": they have completely different timings - seconds instead of milliseconds, so it will be inconvenient to look at one graphic.  And the number of such operations is very small and can be lost against the background of all user requests. </p><br><p>  This graph shows the same merge, which reduced our search response time, but this time it’s more convenient to look at the sum of ES response times (we’re kind of looking at what the cluster’s computational resources were generally spent on): </p><br><p><img src="https://habrastorage.org/files/182/b01/7ba/182b017ba44745439f1007108b34c350.png" alt="background operations"></p><br><p>  From the point of view of Linux system metrics, this merge looked like an active writing to disk by the ES process: </p><br><p><img src="https://habrastorage.org/files/34f/e99/ca7/34fe99ca755b452493dd2169cb23e6f8.png" alt="write bytes by disk bytes"></p><br><h2 id="keshi">  Cache </h2><br><p>  To ensure the speed of query execution in elastic there are caches: </p><br><ul><li>  <em>query_cache</em> (formerly called <em>filter_cache</em> ) - bitsets of documents that are matched to a specific filter in the query </li><li>  <em>fielddata_cache</em> - used for aggregations </li><li>  <em>request_cache</em> - the shard caches the response to the entire request </li></ul><br><p>  More details on what is cached when it is cached, when it is invalid, as it is better to read in documentation. </p><br><p>  Our monitoring agent will remove for each of these caches: size, hits, missy, eviksheny (vystsezheniya). </p><br><p>  Here, for example, was the case - the elastics have dropped by OutOfMemory.  It is difficult to figure out the logs, but then, when we’ve already raised, we noticed a sharp increase in the memory usage of the <em>fielddata</em> cache on the graph: </p><br><p><img src="https://habrastorage.org/files/89a/c9e/406/89ac9e40609a41d4a9ecffcd3c216e7c.png" alt="cache size"></p><br><p>  Actually, we do not use elasticsearch aggregation, we generally use only the most basic functionality.  Without scoring, we need to find all the documents in which the given fields have given values.  Why has the use of <em>fielddata</em> cache increased so <em>much</em> ? </p><br><p>  It turned out that it was also a controlled experiment :-) Manually curl pulled heavy requests for aggregation, and from this everything fell.  In theory, it was possible to protect against this by correctly setting the memory limits for <em>fielddata</em> .  But either they did not work, or elastic bugs (we then sat on the old version 1.7). </p><br><h2 id="sistemnye-metriki">  System metrics </h2><br><p>  In addition to the internal metrics of an elastic, you should look at it from above, like a process in the operating system.  How much CPU time it consumes, how much memory, how much load on the disk. </p><br><p>  When we started updating ES from version 1.7.5, we decided to upgrade to 2.4 right away (the last, the five, while we are afraid).  The major update elastic according to the standard procedure is somehow dumb, we usually raise the second cluster and make a synchronous copy through our code - it can index into several clusters at once. </p><br><p>  When you turn on the new cluster in the indexing, it was found that the new ES writes to disk ~ 350 times per second, while the old one only ~ 25: </p><br><p><img src="https://habrastorage.org/files/967/571/aeb/967571aebd2f4a25988b71b254db4a95.png" alt="disk writes"></p><br><p>  es101 is the node from the old cluster, and es106 is from the new one.  Plus, the new nodes did not put the SSD (they thought that everything would fit into the memory), so this io dropped the performance very much. </p><br><p>  Let's reread all the newer versions of elastic 2 and find <a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.0/index-modules-translog.html">index.translog.durability</a> .  It defaulted to <em>request</em> , with this value translog splits to disk after each index request.  Changed to <em>async</em> with standard <em>sync_interval</em> in 5 seconds and it was almost like before. </p><br><p>  In addition to the system metrics for ES, it is useful to look at the JVM metrics - gc, memory pools, and so on.  Our agent will automatically pick it all up via jmx, and the graphs will also appear automatically. </p><br><h2 id="avtomaticheskoe-obnaruzhenie-es">  Automatic ES detection </h2><br><p>  Not so long ago, we already <a href="https://habrahabr.ru/company/okmeter/blog/312560/">said</a> that we spend a lot of energy on the fact that all services on our clients' servers are included in monitoring automatically, without configuration.  Such an approach allows not to forget anything to monitor and greatly accelerates the implementation. </p><br><p>  Autodetect for ES is like this: </p><br><ul><li>  in the list of processes we find a process similar to ES: jvm with the launch class org.elasticsearch.bootstrap </li><li>  start line trying to find the config ES </li><li>  we read a config, we understand listen IP and port </li></ul><br><p>  Next thing is the technique - periodically we remove metrics using the standard API and send them to the cloud. </p><br><h2 id="vmesto-zaklyucheniya">  Instead of conclusion </h2><br><p>  We always try to start from real use cases.  To fix the monitoring of a service, we have to thoroughly deal with it, to understand what and how it might break.  Therefore, in the first place, we did support those services that we are good at preparing and using ourselves. </p><br><p>  In addition, customers who talk about their problems are very helpful.  We are constantly refining dashboards / auto-triggers, in order to eventually show not some graphics, but immediately the causes of problems. </p><br><p>  <em>If you have an ES that is waiting to be monitored, our free 2-week trial is what you need, a link to the site below :)</em> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/315860/">https://habr.com/ru/post/315860/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../315848/index.html">Module import goods in Bitrix</a></li>
+<li><a href="../315850/index.html">Antidote - TOX client for iOS has finally become available</a></li>
+<li><a href="../315852/index.html">Skills experienced programmer: The most popular tips for beginners</a></li>
+<li><a href="../315854/index.html">International competition for young researchers and information security professionals</a></li>
+<li><a href="../315856/index.html">Where to live well in the world, or 5 reasons to go Viking trail</a></li>
+<li><a href="../315862/index.html">Dual authentication Vkontakte - sex or imitation?</a></li>
+<li><a href="../315864/index.html">Analysis of the report of Sergey Kuksenko with JPoint 2016</a></li>
+<li><a href="../315868/index.html">Non-game VR: Perspectives and Opportunities on the Web - Interview with VR enthusiast Martin Splitt, Archilogic</a></li>
+<li><a href="../315870/index.html">More examples of using R to solve practical business problems</a></li>
+<li><a href="../315872/index.html">How companies attract the best IT professionals to work - expert answers</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

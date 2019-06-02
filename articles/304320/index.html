@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL based application performance: explicit and hidden latency</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="If you are trying to optimize the performance of your PostgreSQL-based application, you probably use the basic tools: EXPLAIN (BUFFERS, ANALYZE), pg_s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL based application performance: explicit and hidden latency</h1><div class="post__text post__text-html js-mediator-article">  If you are trying to optimize the performance of your PostgreSQL-based application, you probably use the basic tools: <i>EXPLAIN (BUFFERS, ANALYZE), pg_stat_statements, auto_explain, log_statement_min_duration, etc.</i> <br><br>  Maybe you are looking in the direction of lock conflicts with <i>log_lock_waits</i> , monitor the behavior of your control points, etc. <br><br>  But have you ever thought about network delays?  Players know about it, but is it related to your server with the application? 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a43/27f/cef/a4327fcefc6e420a99d3c2274dae30b2.jpg" alt="image"></div><br><a name="habracut"></a><br><h3>  <b>Delay affects</b> </h3><br>  Typical client / server latency delays can range from 0.01 ms (local) to ~ 0.5 ms in a switched network, 5 ms over WiFi, 20 ms with ADSL, 300 ms with intercontinental routing, and even more for things like satellites and WWAN links. <br><br>  Trivial <i>SELECT</i> can take about 0.1 ms to execute on the server side.  Trivial <i>INSERT</i> 0.5 ms. <br><br>  Each time your application executes a request, it has to wait for a response from the server with success / error and possibly result, request metadata, etc.  This entails at least one round trip delay on the network. <br><br>  When working primarily with small, simple requests, the network latency can be significant for their execution time if the database and application are on different servers. <br><br>  Most applications, especially ORMs, are very prone to performing a large number of fairly simple queries.  For example, if your Hibernate application gets an entity through the lazily extracted @OneToMany relationship to 1000 children, it probably plans to execute 1001 queries due to the n + 1 sampling problem, if not more.  This means that it will spend a thousand times the delay time of your network to go back and forth just to wait.  You can use <i>left join fetch</i> to avoid this ... but then you will pass 1000 times the parent element in the JOIN and have to dedup it. <br><br>  Likewise, if you populate the database through ORM, you probably do hundreds of thousands of regular <i>INSERTs</i> ... and wait after each separate <i>INSERT for</i> confirmation from the server that everything is in order. <br><br>  It's easy enough to focus on the query execution time and try to optimize it, but there are a large number of options for what can be done with the simplest <i>INSERT INTO ... VALUES ....</i>  Remove some indexes and restrictions, make sure that it is in a transaction, and everything is almost ready. <br><br>  But what about getting rid of all network expectations?  Even in the local network, they begin to grow after thousands of requests. <br><br><h3>  <b>COPY</b> </h3><br>  One way to avoid delays is to use <i>COPY</i> .  In order to use PostgreSQl COPY support, your application or driver must produce a CSV-like set of strings and broadcast them to the server in a continuous sequence.  Or, the server may be asked to send a CSV-like stream to your application. <br><br>  In any case, the application cannot alternate COPY with other requests, and copy-paste must be loaded directly into the target table.  The general approach is to make COPY into a temporary table, and directly from it to do <i>INSERT INTO ... SELECT ..., UPDATE ... FROM ...., DELETE FROM ... USING ...</i> , etc., using copied data to change the main tables in a single operation. <br><br>  This is convenient if you write your own SQL directly, but frameworks and ORMs do not support this, plus it can only directly replace a simple insert.  Your application, framework, or user driver has to deal with the special presentation necessary for COPY, look for the necessary metadata, etc. <br><br>  (Well-known drivers that actually support COPY include: libpq, PgJDBC, psycopg2, and Pg gem ... but it’s not at all necessary that the frameworks and ORMS based on them also support COPY.) <br><br><h3>  <b>PgJDBC - grouping mode</b> </h3><br>  PostgreSQL's JDBC driver has a solution for this problem.  It is based on the peculiarities of grouping the JDBC driver API: it sends a group of requests to the server, and then waits for only one confirmation that the entire set was successful. <br><br>  At least in theory.  In fact, some implementation problems limit this all to a few hundred requests in a batch at a time at best.  A driver can also only perform queries that return a result as a set, if it can determine how large the result will be over time.  Despite these limitations, using <i>Statement.executeBatch ()</i> can offer a very large performance boost to applications that perform tasks such as bulk loading data from remote database instances. <br><br>  Since this is a standard API, it can be used by applications that run on multiple DBMSs.  Hibernate, for example, can use JDBC grouping, although it does not do this by default. <br><br><h3>  <b>libpq and grouping</b> </h3><br>  Most (all?) Of other PostgreSQL drivers do not have grouping support.  PgJDBC uses the PostgreSQL protocol completely and independently, while most other drivers use the libpq C library, which is supplied as part of PostgreSQL. <br><br>  libpq has an asynchronous non-blocking API, but the user can still only have one running query at a time.  You must wait for the results of this query before sending the next one. <br><br>  The PostgreSQL server supports grouping just fine, and PgJDBC is already using it.  In this regard, <a href="">I wrote grouping support for libpq</a> and <a href="https://commitfest.postgresql.org/10/634/">offered it to the next version of PostgreSQL</a> .  Since it only changes the client, if confirmed, it will still speed up the process when connecting to old servers. <br><br>  I would be very interested in feedback from authors and advanced users of libpq-based user drivers and developers of libpq-based applications.  The patch is successfully applied to PostgreSQL version 9.6 beta 1 if you want to try it.  <a href="http://2ndquadrant.github.io/postgres/libpq-batch-mode.html">Detailed documentation</a> and a <a href="">comprehensive program example are available</a> . <br><br><h3>  <b>Performance</b> </h3><br>  I think that a database server based on RDS or Heroku Postgres would be a good example of where the described functionality can be useful.  In particular, accessing them from outside their own networks is a good example of how delay can damage. <br><br>  At ~ 320 ms network latency: <br><br><ul><li>  500 insert without grouping: 167.0 sec </li><li>  500 insert with grouping: 1.2 sec </li></ul><br>  ... which is about 120 times faster. <br><br>  As a rule, you do not use an intercontinental connection between the server on which the application resides and the server on which the database is deployed, the same servers are used to illustrate the effects of the delay.  Even through a Unix socket on the local host, I saw a performance gain of 50% for 10,000 insert. <br><br><h3>  <b>Grouping in existing applications</b> </h3><br>  Unfortunately, you cannot automatically enable grouping for existing applications.  They should use a slightly different interface where they send a series of requests and only then request the result. <br><br>  It should be fairly easy to adapt applications that already use the asynchronous libpq interface, especially if they use the non-blocking mode and the <i>select () / poll () / epoll () / WaitForMultipleObjectsEx</i> loop.  Applications that use the synchronous libpq interface will require more changes. <br><br><h3>  <b>Grouping in other custom drivers</b> </h3><br>  Similarly, user drivers, frameworks, and ORMs usually require an interface and internal changes to allow the use of grouping.  If they already use event looping and non-blocking I / O, they should be easy enough to change. <br><br>  I would be glad to see Python, Ruby and other users having the opportunity to use this functionality, so it is interesting for me to see who is interested.  Imagine being able to do this: <br><br><pre><code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> psycopg2 conn = psycopg2.connect(...) cur = conn.cursor() <span class="hljs-comment"><span class="hljs-comment"># this is just an idea, this code does not work with psycopg2: futures = [ cur.async_execute(sql) for sql in my_queries ] for future in futures: result = future.result # waits if result not ready yet ... process the result ... conn.commit()</span></span></code> </pre> <br>  Performing asynchronous grouping should not be difficult on the part of the user. <br><br><h4>  <b>COPY is the fastest</b> </h4><br>  Practical customers still prefer COPY.  Here are some results from my laptop: <br><br><pre> <code class="sql hljs">inserting 1000000 rows batched, unbatched and <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> COPY batch <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> elapsed: <span class="hljs-number"><span class="hljs-number">23.715315</span></span>s <span class="hljs-keyword"><span class="hljs-keyword">sequential</span></span> <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> elapsed: <span class="hljs-number"><span class="hljs-number">36.150162</span></span>s COPY elapsed: <span class="hljs-number"><span class="hljs-number">1.743593</span></span>s Done.</code> </pre><br>  Grouping work generates a surprisingly large performance boost even on a local unix socket ... but COPY leaves both individual INSERT approaches far behind in the dust. <br><br>  Use COPY. <br><br><h3>  <b>Picture</b> </h3><br>  The image for this article is the <a href="https://en.wikipedia.org/wiki/Goldfields_Water_Supply_Scheme">Goldfields Water Supply Scheme</a> pipeline from the Mundaring Weir near Perth in Western Australia to the internal (desert) gold mines.  It fits this article because, due to the duration of its construction and under a barrage of criticism, its creator and main initiator, <a href="https://en.wikipedia.org/wiki/C._Y._O%2527Connor">CY O'Connor</a> , committed suicide 12 months before putting the pipeline into operation.  Locals often (erroneously) say that he died after the pipeline was open, but the water did not flow — it took so much time that everyone thought the pipeline project was a failure.  But, a week later, the water went. </div><p>Source: <a href="https://habr.com/ru/post/304320/">https://habr.com/ru/post/304320/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../304304/index.html">The fight for code style or Bracket Wars</a></li>
+<li><a href="../304306/index.html">NetApp ONTAP 9</a></li>
+<li><a href="../304308/index.html">std :: shared_ptr and custom allocator</a></li>
+<li><a href="../304312/index.html">LoRa technology</a></li>
+<li><a href="../304316/index.html">How to quickly create product descriptions for your store</a></li>
+<li><a href="../304322/index.html">How to make friends unit testing with a database</a></li>
+<li><a href="../304324/index.html">Second rows of associations, or how to make the robot read "between the lines"</a></li>
+<li><a href="../304326/index.html">Proportions in art. Is there anything better than the golden section? Research over 1,000,000 old and modern paintings</a></li>
+<li><a href="../304328/index.html">Telegram bot and PostGIS</a></li>
+<li><a href="../304332/index.html">How does Apple Pay affect the payment industry?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Put on a diet PostgreSQL indices for Zabbix</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently we transferred Zabbix to work with the PostgreSQL database. Together with the move to the server with SSD, this gave a significant increase i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Put on a diet PostgreSQL indices for Zabbix</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/d81/1a1/34c/d811a134c60c434095067bfc83ac8f76.jpg" align="left">  Recently we transferred Zabbix to work with the PostgreSQL database.  Together with the move to the server with SSD, this gave a significant increase in the speed of work.  Also solved the problem with duplicate hosts in the database, <a href="https://support.zabbix.com/browse/ZBX-8612">bug request</a> .  Here the article could have ended, but we noticed that Zabbix uses a lot of disk space, so I will tell you below how it happened.  And how we figured it out. <br><a name="habracut"></a><br>  We have Zabbix with a relatively large database.  It monitors almost 1500 hosts and collects about 180 thousand metrics.  We use partitioning in the database, which makes it easy to clear historical data.  In addition, for each partition has its own index.  Well, you understand what I'm hinting at. <br><br>  Yes, now we will talk about indexes.  We found out that the number of indices grows almost 2 times, with our volumes they occupy 5-7 Gb for each partition.  And provided that we store historical data for 10 days and trends for 3 months, the total is about 70 Gb superfluous.  With a total database of about 220 Gb, and the use of SSD is very noticeable. <br><br>  Approach number one.  Solved the problem in the forehead and run a full reindex.  It turned out well, released almost 70 Gb, as expected.  Disadvantage: operation time.  Or rather, even the fact that for this time lock is set on the table, and reindex takes about 3 hours. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Approach number two.  We looked in the direction of <a href="https://github.com/reorg/pg_repack">pg_repack</a> .  This utility allows you to produce vacumm full and reindex without lock on the table.  They installed it, set it up, started it and got ready to exult.  What was our disappointment when we saw that less than a gigabyte was freed.  We open the documentation and read very carefully, there is a point - literally: <br><br>  "Target table must have a PRIMARY KEY, or at least a UNIQUE total index on a NOT NULL column."  Next, open the database and see that the tables we need have neither one nor the other. <br><br>  You could, of course, add them, but this would increase the size of the database and the developers clearly had a reason not to add PRIMARY KEY.  We played and found that, for example, in the table that contains information on monitoring logs, the lines can be completely duplicated.  As a result, we had to abandon pg_repack. <br><br>  Approach the third, victorious.  If you take the partition for the previous day, then no one writes to it, and you can reindex with it without the Zabbix server downtime.  Invented - checked.  No, it turns out, lock is superimposed on the whole table, and not on the partition.  Well, well, if you can’t reindex, why not make a new index, and here we finally found a solution.  The algorithm is simple: <br><br><ol><li>  We create a new index with the construction: “CREATE INDEX CONCURRENTLY”, which allows us not to impose a long lock on the database, since nobody writes to this partition, then the index is created successfully. <br></li><li>  Delete the old index. </li><li>  Rename the new index to the old one. </li><li>  We happily beat ourselves in the chest. </li></ol><br>  Now every night we run a script that goes through the tables and does all these operations. <br><br><div class="spoiler">  <b class="spoiler_title">Script</b> <div class="spoiler_text"><pre><code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> `seq 1 10`; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> dd=`date +%Y_%m_%d -d <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$i</span></span></span><span class="hljs-string"> day ago"</span></span>` index_name=<span class="hljs-string"><span class="hljs-string">"history_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1"</span></span> index_name_new=<span class="hljs-string"><span class="hljs-string">"history_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1_new"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"CREATE INDEX CONCURRENTLY </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> ON partitions.history_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string"> USING btree (itemid, clock); "</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done CREATE"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"DROP INDEX partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done DROP"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"ALTER INDEX IF EXISTS partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> RENAME TO </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done ALTER"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Reindex history_uint_p Start \n"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> `seq 1 10`; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> dd=`date +%Y_%m_%d -d <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$i</span></span></span><span class="hljs-string"> day ago"</span></span>` index_name=<span class="hljs-string"><span class="hljs-string">"history_uint_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1"</span></span> index_name_new=<span class="hljs-string"><span class="hljs-string">"history_uint_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1_new"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"CREATE INDEX CONCURRENTLY </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> ON partitions.history_uint_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string"> USING btree (itemid, clock); "</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done CREATE"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"DROP INDEX partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done DROP"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"ALTER INDEX IF EXISTS partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> RENAME TO </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done ALTER"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Reindex trends_p Start \n"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> `seq 1 2`; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> dd=`date +%Y_%m -d <span class="hljs-string"><span class="hljs-string">"1 month ago"</span></span>` index_name=<span class="hljs-string"><span class="hljs-string">"trends_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1"</span></span> index_name_new=<span class="hljs-string"><span class="hljs-string">"trends_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1_new"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"CREATE INDEX CONCURRENTLY </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> ON partitions.trends_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string"> USING btree (itemid, clock); "</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done CREATE"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"DROP INDEX partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done DROP"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"ALTER INDEX IF EXISTS partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> RENAME TO </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done ALTER"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Reindex trends_uint_p Start \n"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> `seq 1 2`; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> dd=`date +%Y_%m -d <span class="hljs-string"><span class="hljs-string">"1 month ago"</span></span>` index_name=<span class="hljs-string"><span class="hljs-string">"trends_uint_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1"</span></span> index_name_new=<span class="hljs-string"><span class="hljs-string">"trends_uint_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string">"</span></span><span class="hljs-string"><span class="hljs-string">"_1_new"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"CREATE INDEX CONCURRENTLY </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> ON partitions.trends_uint_p</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$dd</span></span></span><span class="hljs-string"> USING btree (itemid, clock); "</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done CREATE"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"DROP INDEX partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done DROP"</span></span> psql -U postgres -d zabbix -c <span class="hljs-string"><span class="hljs-string">"ALTER INDEX IF EXISTS partitions.</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name_new</span></span></span><span class="hljs-string"> RENAME TO </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$index_name</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Done ALTER"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span></code> </pre> <br></div></div><br>  Please do not strictly criticize the script - this is a draft for clarity of the article. <br><br>  Thanks for attention! </div><p>Source: <a href="https://habr.com/ru/post/310462/">https://habr.com/ru/post/310462/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../310450/index.html">Development of an electronic document management system from the inside: How we prepare SED TEZIS for release</a></li>
+<li><a href="../310452/index.html">The book "Command line Linux. Complete Guide »</a></li>
+<li><a href="../310454/index.html">Secrets of Progressive Web Apps: Part 1</a></li>
+<li><a href="../310456/index.html">Custom Software Development</a></li>
+<li><a href="../310460/index.html">The Complete Docker Practical Guide: From Scratch to AWS Cluster</a></li>
+<li><a href="../310464/index.html">Work with Apache Ignite topology</a></li>
+<li><a href="../310466/index.html">Automation of IT services</a></li>
+<li><a href="../310470/index.html">Solar JSOC - the experience of building a commercial SOC</a></li>
+<li><a href="../310472/index.html">You do not have enough speed R? We are looking for hidden reserves</a></li>
+<li><a href="../310474/index.html">16 myths about CRM-systems</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

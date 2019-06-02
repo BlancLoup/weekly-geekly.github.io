@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Asynchronous processing of requests in the database in memory, or how to cope with a million transactions per second on one core</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! In my last two articles I talked about how in-memory DBMSs ensure data integrity. You can find them here and here . 
+
+ In this article I would ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Asynchronous processing of requests in the database in memory, or how to cope with a million transactions per second on one core</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/files/d62/8a6/90b/d628a690b7074ef9aed53c8dc208f9c0.jpg"></div><br>  Hello!  In my last two articles I talked about how in-memory DBMSs ensure data integrity.  You can find them <a href="https://habrahabr.ru/company/mailru/blog/316634/">here</a> and <a href="https://habrahabr.ru/company/mailru/blog/317150/">here</a> . <br><br>  In this article I would like to touch on the performance problem of the DBMS in RAM.  Let's start the performance discussion with the simplest use case, where the value simply changes according to a given key.  For even greater simplicity, assume that the server part is missing, i.e.  there is no client-server interaction over the network (it will be clear further why we did this).  So, the DBMS (if you can call it that) is completely in the RAM of your application. <br><a name="habracut"></a><br>  In the absence of a database server, you might have stored key-value pairs in a hash table in the memory of your application.  In C / C ++, this data structure would look like this: <br><br> <code><a href="http://en.cppreference.com/w/cpp/container/unordered_map">std::unordered_map</a></code> <br> <br>  To check the speed of this structure, I created a <code>1.cpp</code> file with the following contents: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;map&gt; #include &lt;unordered_map&gt; #include &lt;iostream&gt; const int SIZE = 1000000; int main() { std::unordered_map&lt;int,int&gt; m; m.reserve(1000000); long long c = 0; for (int i = 0; i &lt; SIZE;++i) c += m[i*i] += i; std::cout &lt;&lt; c &lt;&lt; std::endl; }</span></span></span></span></code> </pre> <br>  Then I compiled it and ran: <br><br><pre> <code class="bash hljs">g++ -std=c++11 -O3 1.cpp -o 1 MacBook-Air-anikin:Downloads anikin$ time ./1</code> </pre> <br>  and got the following result: <br><br><pre> <code class="bash hljs">real 0m0.465s user 0m0.422s sys 0m0.032s</code> </pre> <br>  What can be learned from this?  My conclusions are: <br><br><ol><li>  I love C / C ++. </li><li>  I love my good old MacBook Air (actually, no, because it works slower and slower, but this is a different story). </li><li>  I love to use the optimization flag <code>-O3</code> .  Some are afraid to use it, but in vain, because, otherwise, the performance will be bad.  To demonstrate this, let's run this command: <br><br><pre> <code class="bash hljs">MacBook-Air-anikin:Downloads anikin$ g++ -std=c++11 1.cpp -o 1 MacBook-Air-anikin:Downloads anikin$ time ./1</code> </pre> <br>  And make sure that the result without <code>-O3</code> twice as bad: <br><br><pre> <code class="bash hljs">real 0m0.883s user 0m0.835s sys 0m0.033s</code> </pre> </li><li>  The application mostly worked in user mode.  The short time spent in kernel mode was most likely spent on pre-allocating pages for the hash table (and <code>-O3</code> , by the way, this time was not optimized), making the <a href="https://linux.die.net/man/2/mmap"><i>mmap</i></a> system call and loading the executable file. </li><li>  This application inserts approximately one million keys into a hash table.  Here, the word <i>roughly</i> means that in fact there may be less than a million keys in the hash table due to repetitions caused by overflow when <i>i</i> * <i>i is</i> multiplied.  Thus, the insertion of new data can turn into an update of existing data.  However, exactly one million operations are performed on the hash table. </li><li>  The application inserts a million keys and shuts down in about half a second, i.e.  it produces about two million inserts of key-value pairs per second. </li></ol><br>  The last observation is of particular interest.  We can assume that you already have a storage engine of key-value pairs in RAM represented by <code>std::unordered_map</code> , capable of performing two million operations per second on one core of such good old MacBook Air: <br><br><pre> <code class="bash hljs">MacBook-Air-anikin:Downloads anikin$ uname -a Darwin MacBook-Air-anikin.local 13.4.0 Darwin Kernel Version 13.4.0: Mon Jan 11 18:17:34 PST 2016; root:xnu-2422.115.15~1/RELEASE_X86_64 x86_64</code> </pre> <br>  Notice that I used integer keys and values.  I could use strings, but did not do this simply because I did not want memory allocation and copying to affect the test results.  Another argument against strings: when using <code>std::unordered_map&lt;std::string, …&gt;</code> greater likelihood of collisions affecting performance. <br><br>  You can see that the hash table in RAM is capable of performing two million operations per second on one core, however, I recall, I was going to talk about the <i>DBMS</i> in RAM.  What is the difference between a DBMS in RAM and a hash table in RAM?  A DBMS is a server application, whereas a hash table is a library, i.e.  A DBMS is a hash table plus something else.  And this <i>something else</i> includes at least the server harness itself. <br><br>  Let's create a server application based on <code>std::unordered_map&lt;int, int&gt;</code> .  A naive approach might look something like this: <br><br><ol><li>  Accept connections in the main thread. </li><li>  Create a new thread for each accepted connection (or start a pool of previously created threads). </li><li>  We protect <code>std::unordered_map</code> with the help of some synchronization primitive (for example, a mutex). </li><li>  Do not forget about data integrity - we write each update operation to the transaction log. </li></ol><br>  I would not like to bore you with the writing of the application code, so let's imagine that we have already done this.  Take any database server arranged on the principle of a “separate thread for each connection” (MySQL, MariaDB, Postgres, etc.): at best, it can execute tens of thousands of queries per second on one core (16 or 32). nuclear server, it can be under a million operations per second).  This is well known from various benchmarks.  The best performance indicator among traditional DBMS that I managed to find on the network is about a million queries per second and is owned by MariaDB, which runs on a computer with 20 cores.  Detailed calculations can be found <a href="https://mariadb.org/10-1-mio-qps/">here</a> .  By simple calculations we get 50 thousand requests per second per core.  One of the best DBMS on the market, which is optimized by perhaps the best specialists in the world, processes only 50 thousand simplest queries (in fact, a search by key) per second on a single core. <br><br>  50 thousand and two million - forty times the difference, when compared with <code>std::unordered_map</code> .  How do you like it?  We just added a server to the data structure to provide other applications with remote access to it - and our performance dropped 40 times!  (Once again, this is a benchmark with the simplest operations, everything is in the cache, the DBMS is tuned by the best experts in the world - and tuned to the maximum throughput, minimizing all the overheads that can be in the DBMS.) It is so discouraging that it seems it is better to forget about multi-tier architecture and write all business logic and DBMS logic in one application within one process.  This, of course, was a joke.  Better to try to optimize the database server. <br><br>  Let's look through the prism of system calls on what happens when a server with the above architecture processes a transaction: <br><br><ol><li>  Reading a request from the network. </li><li>  Lock hash table. </li><li>  Unlocking the hash table. </li><li>  Transaction logging. </li><li>  Write to the network. </li></ol><br>  We get at least five system calls to the DBMS per request.  Each call requires you to enter and exit kernel mode. <br><br>  When entering the kernel mode and leaving it, the modes are switched, which entails a certain amount of work.  Details can be read, for example, <a href="http://www.cs.cmu.edu/~chensm/Big_Data_reading_group/papers/flexsc-osdi10.pdf">here</a> .  In addition, switching modes can cause context switching and lead to even greater copying and delays.  More information about this can be found on the <a href="https://en.wikipedia.org/wiki/Context_switch">link</a> . <br><br>  To show you all the evils of system calls (understand me correctly, I love system calls, but they are slow, so I try not to abuse them), I wrote another program (in C): <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdio.h&gt; #include &lt;fcntl.h&gt; #include &lt;unistd.h&gt; int main() { int fd = open(“/dev/zero”, O_RDONLY); for (int i = 0; i &lt; 1000000; ++i) { unsigned char c; if (read(fd, &amp;c, 1) == -1) { fprintf(stderr, “error on read\n”); break; } } close(fd); return 0; }</span></span></span></span></code> </pre> <br>  This program only produces a million byte reads from the <code>/dev/zero</code> file.  The test results are as follows: <br><br><pre> <code class="bash hljs">MacBook-Air-anikin:Downloads anikin$ time ./2 real 0m0.639s user 0m0.099s sys 0m0.495s</code> </pre> <br>  First, the program spends almost all the time in kernel mode.  Secondly, it makes about one and a half million system calls per second.  Recall that the performance of the hash table was approximately two million operations per second.  Curiously, the <i>read</i> system call is 30% slower than a search in a hash table.  And this is with all the simplicity of this call: he did not access the disk or the network, but simply returned zeros. <br><br>  As I wrote above, when using a database server for a single search operation in a hash table, there are at least five system calls.  This means that we need at least 6.5 times longer (5 * 1.3 =) only for system calls!  If you translate the situation into the tax plane, then the system calls are like an 85% tax.  Would you be happy with the 85% payroll tax, i.e.  if only you received 15 of the 100 rubles you earned?  After thinking about it, let's go back to <i>read</i> , <i>write</i> and other system calls.  They perform a wide range of tasks: reading from a network buffer, allocating memory blocks in the Linux kernel, searching for and modifying internal nuclear structures, etc.  Therefore, more than 85% tax actually looks very small.  To check how many system calls MySQL or any other traditional DBMS produces when processing a request, you can use the <i>strace</i> utility on Linux. <br><br>  So, system calls are evil.  Is it possible to abandon them altogether and transfer the entire logic of the DBMS to the core?  Sounds good, but difficult.  Perhaps there is a more practical solution.  Look at the example below: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdio.h&gt; #include &lt;fcntl.h&gt; #include &lt;unistd.h&gt; int main() { int fd = open(“/dev/zero”, O_RDONLY); for (int i = 0; i &lt; 1000; ++i) { unsigned char c[1000]; if (read(fd, &amp;c, 1000) == -1) { fprintf(stderr, “error on read\n”); break; } } close(fd); return 0; }</span></span></span></span></code> </pre> <br>  The result is as follows: <br><br><pre> <code class="bash hljs">MacBook-Air-anikin:Downloads anikin$ time ./2 real 0m0.007s user 0m0.001s sys 0m0.002s</code> </pre> <br>  This program does exactly the same as the previous one - it copies a million bytes from the <code>/dev/zero</code> file — however, its execution time is only 7 ms, which is almost 100 times faster than the previous result of 639 ms!  How is this possible?  The trick is that we reduce the number of system calls and increase the amount of work that each of them performs.  It turns out that system calls are not so evil, if you properly load them with work.  You pay a fixed price for a call - and then you can use them almost for free.  This is similar to overseas amusement parks: paid once for an entrance ticket - and enjoy all day rides.  Well, or a little less than the whole day: the cost of the ticket will remain unchanged, although in terms of a separate attraction will be a little more expensive. <br><br>  So, to speed up the database server, we need to make fewer system calls and perform more operations within each such call.  How to achieve this?  Let's just combine requests and their processing: <br><br><ol><li>  Read 1000 requests from the network with one call to <i>read</i> . </li><li>  Lock the hash table. </li><li>  We process 1000 requests. </li><li>  Unlock the hash table. </li><li>  Write 1000 transactions to the log with one call to <i>write</i> / <i>writev</i> . </li><li>  We write 1000 responses in a network by means of one call <i>write</i> . </li></ol><br>  Wonderful!  But wait a second, the DBMS usually does not process requests in batches (at least, if they don’t ask for it explicitly), it works online: as soon as a request arrives, the DBMS immediately processes it with the lowest possible delay.  She cannot wait for the receipt of a packet of 1000 requests, because this may never happen. <br><br>  How to solve this problem? <br><br>  Let's look at public transport.  There, this problem was solved in the last century (if not the year before).  A bus ticket is cheaper than a taxi ride, because the bus has a higher capacity - and therefore the price of a trip per passenger is lower.  However, the delay (waiting time) of the bus (or subway train, depending on the specific city) is about the same as that of a taxi in a busy center (I observed this pattern at least in New York, Moscow, Paris, Berlin and Tokyo).  How it works? <br><br>  The bottom line is that the bus never waits until there are a hundred people at the bus stop.  Passengers at the bus stop are usually always sufficient, because the center is a busy part of the city (read: the workload is high).  Thus, one bus stops, takes passengers (until the cabin is filled or until there is no one left at the bus stop) and leaves.  Then the next bus comes up and again takes a sufficient number of passengers, because in the time elapsed between the departure of the first bus and the arrival of the second, new people appeared at the bus stop.  The bus never waits for filling.  He works with a minimum delay: there are people — he took it, he drove on. <br><br>  In order for the DBMS to work in the same way, it is necessary to consider the network subsystem, the transaction processor and the disk subsystem as independent buses (or, if you prefer, subway trains).  Each of these buses operates asynchronously with respect to the other two.  And each of these buses takes as many passengers as there are at the bus stop.  If there are not enough passengers - well, yes, the processor is used inefficiently, because buses with a high fixed cost of travel remain almost empty.  On the other hand, what's the big deal?  We perfectly cope with the existing load.  The processor can be loaded up to 99% with 10 thousand requests per second, and with a million requests per second, but the response time will be equally good, because the number of system calls in both cases is the same.  And this indicator is more important than the number of bytes transferred in one system call.  The processor is always loaded, but it miraculously scales under load, remaining equally loaded with both large and small volumes of work performed.  Let me remind you: the response time practically does not change, even if the number of operations performed in the system call will differ 100 times.  The reason for this is the very high fixed price of a single system call. <br><br>  How to implement all this in the best way?  Asynchronously.  Consider the example of the <a href="https://tarantool.org/">Tarantool</a> DBMS: <br><br><ol><li>  Tarantool has three streams: a stream for working with the network, a stream for processing transactions (we use the abbreviation <i>TX</i> , <i>transaction processing</i> , but do not ask why there is X, not P!), And a stream for working with a disk. </li><li>  The network stream reads requests from the network (how many can read from the network buffer without blocking I / O, whether it is one request, a thousand or more) and then transmits them to TX.  He also receives responses from TX and writes them to the network, and he does this in one network packet no matter how many responses the packet contains. </li><li>  Stream TX groups processes in-memory transactions received from the stream to work with the network.  Having processed one group of transactions in memory, it transfers it to the stream for working with the disk;  at the same time, the groups are transferred one by one, regardless of how many transactions are in one group or another.  It's like a crowd of people coming off the train and heading for the bus stop.  The bus will pick up from the bus stop all the passengers to one.  If someone did not have time to get to the bus stop before the departure of the bus, he will have to wait for the next one.  The bus does not wait for a single extra millisecond: if there is no one else behind the last passenger, he sets off.  After processing the group, the stream for working with the disk returns it to the TX stream so that it commits the transaction and returns all the queries contained in this group to the stream for working with the network. </li></ol><br>  In this way, we significantly reduced the number of system calls in Tarantool.  The <a href="https://gist.github.com/danikin/a5ddc6fe0cedc6257853">link</a> can read more about how our system works and copes with a million transactions per second on one core. <br><br>  The image below schematically shows the entire workflow: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/b19/3c4/630/b193c46305e84855bd17900496e37ae2.png"></div><br>  The main thing that you should pay attention to here is that each thread runs in parallel and does not interfere with the work of the remaining two.  The more parallel and higher the load, the less system calls per request and the more requests the system can handle per second. <br><br>  At the same time, we have a good response time, because the threads are not idle while waiting for other threads, but simply perform the work they currently have, and while this happens, a new batch of work is being prepared for them in parallel. <br><br>  There will be more articles about the database in memory.  Stay tuned! <br><br>  All questions related to the content of the article can be addressed to the author of the original <a href="https://habrahabr.ru/users/danikin/" class="user_link">danikin</a> , technical director of mail and cloud services Mail.Ru Group. </div><p>Source: <a href="https://habr.com/ru/post/317274/">https://habr.com/ru/post/317274/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317262/index.html">DIY Genetic Algorithm</a></li>
+<li><a href="../317264/index.html">HighLoad ++ 2016: how it was</a></li>
+<li><a href="../317268/index.html">Russian AI Cup. Intermediate results of the championship</a></li>
+<li><a href="../317270/index.html">Elusive bugs: errors that have escaped all tests and checks</a></li>
+<li><a href="../317272/index.html">Security Week 49: Google fuzz open source, Android Trojan steals user accounts, Microsoft fixes old bug</a></li>
+<li><a href="../317276/index.html">ITMO University Digest: A Selection of Resources on Artificial Intelligence</a></li>
+<li><a href="../317278/index.html">A person. Alan Kay - the prophet, the author of the concept of GUI and the language of Smalltalk</a></li>
+<li><a href="../317280/index.html">Telegram-bot: my story. Part two</a></li>
+<li><a href="../317282/index.html">Servers in the Netherlands for Habr for free for December: E5-2650 v4 (6 Cores) 10GB DDR4 240GB SSD 1Gbps 10TB - $ 29 / month</a></li>
+<li><a href="../317286/index.html">Bagofich .RU or how to get problems where they should not be for many years</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

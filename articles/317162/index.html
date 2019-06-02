@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Magento 2: ObjectManager and Proxy Classes</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The process of creating objects in Magento 2 includes some features inherent in Magento 2 and associated with automatic code generation under certain ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Magento 2: ObjectManager and Proxy Classes</h1><div class="post__text post__text-html js-mediator-article"><p>  The process of <a href="http://devdocs.magento.com/guides/v2.0/extension-dev-guide/depend-inj.html">creating objects</a> in Magento 2 includes some features inherent in Magento 2 and associated with automatic code generation under certain conditions ( <a href="http://devdocs.magento.com/guides/v2.0/extension-dev-guide/proxies.html">proxies</a> , <a href="http://devdocs.magento.com/guides/v2.0/extension-dev-guide/factories">factories</a> and <a href="http://devdocs.magento.com/guides/v2.0/extension-dev-guide/plugins.html">interceptors</a> ).  With interceptors, everything was more or less clear for me, but the purpose of the two other types of generated classes was hidden by a fog of misunderstanding.  And if I still have fog for the factories, then for the proxy classes, the fog has cleared. </p><a name="habracut"></a><br><p> Suppose we make a <a href="https://github.com/flancer32/sample_mage2_module/blob/Habr_Di_Proxy/src/Console/Command/Own.php">command</a> to perform some action in CLI mode.  Suppose that in this command we use the implementation of the <code>\Magento\Quote\Api\CartManagementInterface</code> , which is passed to the ObjectManager constructor: </p><br><pre> <code class="hljs php"><span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">__construct</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(\Magento\Quote\Api\CartManagementInterface $cartManagement)</span></span></span><span class="hljs-function"> </span></span>{}</code> </pre> <br><p>  We can not use the <code>\Magento\Quote\Api\CartManagementInterface</code> directly in our team, this implementation can be pulled indirectly - our team depends on <code>\ClassA</code> , which depends on <code>\ClassB</code> , which depends on ..., which depends on <code>\Magento\Quote\Api\CartManagementInterface</code> . </p><br><p>  However, if our team has a direct or indirect dependence on the default implementation of the <code>\Magento\Quote\Api\CartManagementInterface</code> , then when trying to run a command, for example: </p><br><pre> <code class="hljs ruby">$ ./bin/magento list</code> </pre> <br><p>  we fall out by mistake </p><br><pre> <code class="hljs pgsql">[Magento\Framework\<span class="hljs-keyword"><span class="hljs-keyword">Exception</span></span>\SessionException] Area code <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">set</span></span>: Area code must be <span class="hljs-keyword"><span class="hljs-keyword">set</span></span> <span class="hljs-keyword"><span class="hljs-keyword">before</span></span> starting a <span class="hljs-keyword"><span class="hljs-keyword">session</span></span>.</code> </pre> <br><p>  This is because before starting <code>./bin/magento</code> creates all the commands that are specified in the <code>etc/di.xml</code> descriptors.  To create our team, ObjectManager creates a class <code>\Magento\Quote\Model\QuoteManagement</code> , implementing the <code>\Magento\Quote\Api\CartManagementInterface</code> .  In the process of creating dependencies for this class, ObjectManager reaches the creation of dependencies <code>\Magento\Framework\Session\SessionManager</code> in the constructor of which there is a line: </p><br><pre> <code class="hljs kotlin">$<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>-&gt;start();</code> </pre> <br><p>  and if for some reason (for example, <em>Area code not set</em> ) the session does not start, an exception is thrown and the execution of the CLI command abnormally terminates.  And it doesn’t matter that we didn’t intend to use the sessions while executing our team (or didn’t suspect that creating something there that implements the interface we need will fly out because it’s necessary to create this “something there” resource that is not projected in this mode). </p><br><p>  The developers of Magento 2, faced with such non-kosher behavior of objects in the process of their creation by ObjectManager, came to a simple solution - proxy classes.  It is enough to specify in the constructor a dependency not on <code>\Magento\Quote\Api\CartManagementInterface</code> , but on <code>\Magento\Quote\Api\CartManagementInterface\Proxy</code> , and when you create your object, the interface decorator will not be transferred to it (automatically generated ), which will create direct implementation at the first use of any method being implemented. </p><br><p>  In other words, it is enough to add after the name of the interface or class <code>\Proxy</code> : </p><br><pre> <code class="hljs php"><span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">__construct</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(\Magento\Quote\Api\CartManagementInterface\Proxy $cartManagement)</span></span></span><span class="hljs-function"> </span></span>{}</code> </pre> <br><p>  how the problem with the launch of the command is solved (if it does not solve it, clean the rendered: <code>rm -fr ./var/cache/* ./var/generation/*</code> ).  <code>\ClassA\Proxy</code> , <code>ClassB\Proxy</code> , ..., <code>\Magento\Quote\Api\CartManagementInterface\Proxy</code> - choose the level you like. </p><br><p>  Alan Storm has a good article " <a href="http://alanstorm.com/magento_2_object_manager_proxy_objects/">Magento 2 Object Manager: Proxy Objects</a> " (he has a lot of good articles on Magento 2), but it wasn’t quite clear to me exactly why Proxy Decorators were created in Magento 2 and what is the scope their application.  Only after I was faced with the inability to translate my application in production mode </p><br><pre> <code class="hljs dos">$ ./bin/magento deploy:<span class="hljs-built_in"><span class="hljs-built_in">mode</span></span>:<span class="hljs-built_in"><span class="hljs-built_in">set</span></span> production</code> </pre> <br><p>  Due to the treacherous behavior of some designers, I have somewhat clarified for myself the scope of the use of proxy classes in Magento 2. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/317162/">https://habr.com/ru/post/317162/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317152/index.html">A critical vulnerability was found in the AirDroid application that allows for MitM attacks.</a></li>
+<li><a href="../317154/index.html">Case: game development through the eyes of a designer</a></li>
+<li><a href="../317156/index.html">GitLab 8.14 released</a></li>
+<li><a href="../317158/index.html">Segment routing: how and why</a></li>
+<li><a href="../317160/index.html">Interactive landing or how to blow up conversion with the help of instant messengers</a></li>
+<li><a href="../317164/index.html">How to pay programmers less</a></li>
+<li><a href="../317166/index.html">Working with JSON in SQL Server 2016</a></li>
+<li><a href="../317170/index.html">How the company is headed by a general director-programmer - opinions and experience of experts</a></li>
+<li><a href="../317172/index.html">Inkscape: the beginning (translation)</a></li>
+<li><a href="../317174/index.html">Recovering virtualized Active Directory deleted objects from tombstone objects</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

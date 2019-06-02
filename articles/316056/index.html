@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How I did mirroring virtual machines for Free ESXi</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In my home lab, I use free virtualization from VMware — it's cheap and reliable. First there was one server, then I started adding local datastores to...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How I did mirroring virtual machines for Free ESXi</h1><div class="post__text post__text-html js-mediator-article"><p>  In my home lab, I use free virtualization from VMware — it's cheap and reliable.  First there was one server, then I started adding local datastores to it, then I assembled a second server ... A standard problem was the relocation of the virtual machine.  Doing these operations manually, I came across one method that allowed switching a running virtual machine to copies of flat in a completely different place.  The method is extremely simple: just create a snapshot of the virtual machine, clone the flat in a new place, and then in the delta kill the link to the parent disk.  The hypervisor does not keep the disk metadata files open, so when you remove snapshot, merge with the new disk, and you can safely delete the old one.  This method works fine without any VDDK that is not available on free hypervisors and is used, for example, by Veeam in a similar situation. </p><br><p>  I easily automated this procedure in python by applying a few more tricks that, if I have queries, I can reveal in the following articles.  A little later, there was a good person from my former colleagues in the shop who agreed to write a gooey, the latter, however, was implemented on Unity, but for the resulting free solution, called us Extrasphere, it was not bad at all.  What is not a toy for the admin? </p><a name="habracut"></a><br><p>  Having made the migration of virtual machines for my home lab, I thought about crash protection.  The minimum requirement was to back up a running virtual machine, the maximum unattainable is the lack of a backlog of the backup from the original.  Not that I had such data, where a loss of 15 seconds is critical, to tell the truth, it’s not critical for me to lose even a couple of days, but I wanted to come to this ideal with the future. <br>  I will not give an analysis and comparison of the available solutions - it was a long time ago, no notes have been preserved since, I remember only about the unthinkable bicycling. </p><br><p>  On a free hypervisor, you can make the simplest backup agent from a Linux machine, to which to attach flat files to a hosted virtual machine.  This solution is well suited for creating full backups, but it is absolutely not suitable for incremental backup, since  native CBT is not available for free hypervisors. </p><br><p>  I thought it would be nice to cut CBT myself, but how?  I heard about Zerto and SRM with their vSCSIFilter, but by downloading the open-source package for ESXi I didn’t find anything similar there - well, except that you can write a character device.  I decided to take a look at the hbr_filter device, to my surprise, everything turned out to be not too difficult.  Three weeks of experiments - and now I can already attach my filter driver to the virtual disk and track changes. </p><br><p>  And what if not just tracking changes, but replicating them?  Here the biggest danger is to start writing a ton of code providing the transmission channel: then pull out the changes, pack and send to the network, receive, unpack and write, and you need to ensure error handling at every step.  Without a couple of agents, it seems not enough.  Just look at the architecture of Zerto, to understand what to write and stabilize such a solution alone is unrealistic: </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image1.png" alt="image"><br><p>  <em>Fig.</em>  <em>1. Architecture Zerto Virtual Replication from the commercial.</em> </p><br><p>  Then I remembered that ESXi itself can write over the network via iSCSI and NFS for example.  All that is needed is to mount the target datastore locally.  And if you also include a replica, then you can write to it directly from the filter driver!  I started the experiments: at first I didn’t know what to do with the included replica and just loaded it with the Ubuntu Live CD, after a couple of weeks I started to get a workable copy, and then I learned how to transfer changes on the fly.  Moreover, the original machine does not receive confirmation of the record until it has passed the records to both recipients.  So I got replication with zero lag. </p><br><p>  The technology turned out to be agentless, the minimum code, the creation of a replica immediately immediately put it on python.  For this dissimilarity to classic replication and simplicity, I decided to call it mirroring. </p><br><p>  The problem of the included mirror I decided to write a simple bootloader, and in order to get at least some benefit from it, it shows the last status of the mirror on the boot, and then freezes.  As a result, the actual memory consumption tends to zero, the CPU is spent a little while transferring data, but the installed agent would eat no less.  As a result, the graph of disk activity on the record at the mirror and the source machine are identical. </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image2.png" alt="image"><br><p>  <em>Fig.</em>  <em>2. CPU consumption on source machine with load.</em> </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image3.png" alt="image"><br><p>  <em>Fig.</em>  <em>3. CPU consumption on the mirror in the same period.</em> </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image4.png" alt="image"><br><p>  <em>Fig.</em>  <em>4. Memory consumption on the source machine with a load.</em> </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image5.png" alt="image"><br><p>  <em>Fig.</em>  <em>5. Memory consumption on the mirror in the same period.</em> </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image6.png" alt="image"><br><p>  <em>Fig.</em>  <em>6. The disk performance of the original machine under load.</em> </p><br><img src="https://dl.dropboxusercontent.com/u/198158664/habr/image7.png" alt="image"><br><p>  <em>Fig.</em>  <em>7. Disk mirror performance over the same period.</em> </p><br><p>  In order to check the state of the mirror, I made test machines that run as linked-clone from the snapshot of the mirror.  If desired, snapshots can be stored and then run the tests again, and if you really like the test, you can turn it into a persistent virtual machine using the built-in migration, which I told you about in the beginning of the story. </p><br><p>  Local targeting is good, but what if you need to mirror to another office / city?  Even if the communication channel is wide enough, the response time will drastically lower the performance of the source machine, we remember that the source machine does not receive confirmation of the record until it completes to both recipients.  The solution here is extremely simple: you need to extend the recording uncertainty interval from zero to some reasonable value.  For example, a tolerable lag of 3-5 seconds will ensure both good data integrity and decent performance.  I am currently working on this decision.  The next step is to work without ssh and application-level consistency, which, too, will not do without tricks, which I will gladly share. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/316056/">https://habr.com/ru/post/316056/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../316046/index.html">Strange games</a></li>
+<li><a href="../316048/index.html">How to open a startup in Berlin [infographics]</a></li>
+<li><a href="../316050/index.html">Badoo Worldwide Billing QA Eyes</a></li>
+<li><a href="../316052/index.html">Oracle buys high-profile Dyn provider in hopes of bypassing Amazon in the cloud market</a></li>
+<li><a href="../316054/index.html">Auto-Deploying Django from GitLab</a></li>
+<li><a href="../316058/index.html">Rambler.Android # 4 results</a></li>
+<li><a href="../316060/index.html">“People often forget about engaging the audience in their performance” - an interview with Roman Pochorchim, presentation coach</a></li>
+<li><a href="../316062/index.html">Nobelic: how to make the camera smart, homely, durable</a></li>
+<li><a href="../316064/index.html">10 reasons why you should try Microsoft SQL Server right now</a></li>
+<li><a href="../316066/index.html">Where and why it is worth registering a company for a new startup</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

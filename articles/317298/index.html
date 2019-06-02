@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Tuning Swift compiler. Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Continuing research into ways to speed up Swift compilation. Mockery of the semantic analyzer and unexpected project settings. 
+
+
+ Link to the first p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Tuning Swift compiler. Part 2</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://cloud.kilograpp.com/f/26970d482b/?dl=1&amp;t=1" alt="image"></p><br><p>  Continuing research into ways to speed up Swift compilation.  Mockery of the semantic analyzer and unexpected project settings. </p><br><p>  <a href="https://habrahabr.ru/post/316986/">Link to the first part</a> for those who missed. </p><br><a name="habracut"></a><br><h3 id="vstuplenie">  Introduction </h3><br><p>  Good day, gentlemen, developers.  I want to thank all those who did not avoid the last post, it was extremely nice to get feedback.  I hope you enjoy this article as much.  Without long preludes I will say: today there will be no analysis of the speed of various operands of the guard and if-else types, it will not be a boring chase for nano-seconds in a cycle of 100,000 iterations.  We found something more interesting. </p><br><h3 id="staryy-bag-luchshe-novyh-dvuh">  Old bug is better than new two </h3><br><p>  Apple, I repaired everything, it's going again 12 hours! </p><br><p><img src="https://cloud.kilograpp.com/f/03f8bbe52f/?dl=1" alt="image"></p><br><p>  Just kidding, the type is just wrong.  There is not an array, but a dictionary.  However, the compiler goes into a rage from such tricks.  This is a bad indicator, but in the end we ourselves were mistaken. </p><br><p>  Correct the error.  Put the Dictionary instead of Array. </p><br><p><img src="https://cloud.kilograpp.com/f/38fb6682bf/?dl=1" alt="image"></p><br><p><del>  Who turned off the lights? </del>  Segmentation error, backlight off, compiler stalled.  With such symptoms, we have a type-checker crash that can never figure out which key value we are waiting for.  Going into the report from the assembly, we see the stacktrace, which tells us about it: </p><br><p><img src="https://cloud.kilograpp.com/f/f827bd6cc3/?dl=1" alt="image"></p><br><p>  Good.  What does this give us and how can it be used?  To answer this question you will have to load you with a bit of theory: </p><br><p>  The Swift compiler consists of several modules: </p><br><ul><li>  <strong>Parser</strong> <br>  Parsing the code in a convenient for later parsing view ( <a href="https://ru.wikipedia.org/wiki/%25D0%2590%25D0%25B1%25D1%2581%25D1%2582%25D1%2580%25D0%25B0%25D0%25BA%25D1%2582%25D0%25BD%25D0%25BE%25D0%25B5_%25D1%2581%25D0%25B8%25D0%25BD%25D1%2582%25D0%25B0%25D0%25BA%25D1%2581%25D0%25B8%25D1%2587%25D0%25B5%25D1%2581%25D0%25BA%25D0%25BE%25D0%25B5_%25D0%25B4%25D0%25B5%25D1%2580%25D0%25B5%25D0%25B2%25D0%25BE">AST</a> ).  This is necessary to make the porridge you write readable for the semantic analyzer. </li><li>  <strong>Semantic analysis</strong> <br>  Parses the resulting representation, makes it type-safe (!) AST by some special apple sorceress. </li><li>  <strong>SIL Generator</strong> <br>  Engaged in the generation of intermediate code Swift and its optimization.  The intermediate code is the code that the person no longer understands, but the machine does not yet understand.  But just right for the compiler. </li><li>  <strong>LLVM IR Generation</strong> . <br>  It generates an intermediate code for the LLVM itself, which is probably familiar to all of us. </li><li>  <strong>Llvm</strong> <br>  Creates object files directly. </li></ul><br><p>  Graphically, this sequence looks like this: </p><br><p><img src="https://cloud.kilograpp.com/f/0bf439430c/?dl=1" alt="image"></p><br><p>  Do not rush to google every term, we just need to get an idea that the Swift compiler consists of modules. </p><br><p>  <a href="https://habrahabr.ru/users/Johan/">@Johan</a> in the <a href="https://habrahabr.ru/post/316986/">comment</a> to the previous article correctly suggested that the problem is associated with type inference.  And this task is just a semantic analyzer.  All the brakes that we saw in the last article apply to it. </p><br><p>  So, we found out that Swift painfully perceives type casting.  Now that we know where our legs grow from, let's take advantage of this and clearly indicate the format of our dictionary: </p><br><pre><code class="hljs vbscript"><span class="hljs-keyword"><span class="hljs-keyword">let</span></span> myCompany: [<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>: [<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>: [<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>: <span class="hljs-built_in"><span class="hljs-built_in">String</span></span>]]] = [ <span class="hljs-string"><span class="hljs-string">"employees"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"employee 1"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 2"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 3"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 4"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 5"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 6"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 7"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 8"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 9"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 10"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 11"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 12"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 13"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 14"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 15"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 16"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 17"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 18"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 19"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], <span class="hljs-string"><span class="hljs-string">"employee 20"</span></span>: [<span class="hljs-string"><span class="hljs-string">"attribute"</span></span>: <span class="hljs-string"><span class="hljs-string">"value"</span></span>], ] ]</code> </pre> <br><p>  <strong>Compile time</strong> : 30 ms.  It was 90 ms.  Accelerate three times. </p><br><p>  Success.  We conclude that it is better to always <strong>explicitly specify types</strong> , and not to rely on the compiler wit.  By the way, there is a downside.  If you type the wrong type, it will take a long time before the compiler understands where you sent it ¯ \ _ (ツ) _ / ¯ </p><br><p>  Another question may arise, is there a difference between the literal and the explicit indication of the Dictionary / Array class?  I will say right away - this is one and the same, it does not affect the compilation and execution time.  But for readability I recommend to use literal. </p><br><div class="spoiler">  <b class="spoiler_title">Some fun code</b> <div class="spoiler_text"><p>  Since nested dictionaries in Swift are optional, you can get the following punctuation: </p><br><pre> <code class="hljs javascript"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> myCompany: [<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>: [<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>: <span class="hljs-built_in"><span class="hljs-built_in">String</span></span>]?] = [ <span class="hljs-string"><span class="hljs-string">"employees"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"attribute"</span></span> : <span class="hljs-string"><span class="hljs-string">"value"</span></span>] ] <span class="hljs-keyword"><span class="hljs-keyword">let</span></span>  = myCompany[<span class="hljs-string"><span class="hljs-string">"employees"</span></span>] print(?!)</code> </pre> <br><p>  And it compiles. </p></div></div><br><h3 id="esche-bolshe-skorosti">  More speed </h3><br><p>  There is a stereotype that the inclusion of optimization slows down the assembly.  However, if you read the <a href="https://swift.org/blog/whole-module-optimizations/">documentation of the compiler</a> , it turns out the opposite. </p><br><p>  By default, the compiler collects each file individually.  If you open the build log with default settings, you will see a report on each Swift file separately: </p><br><p><img src="https://cloud.kilograpp.com/f/997a1edf4a/?dl=1" alt="image"></p><br><p>  In the optimization settings there is a flag like whole-module-optimization.  With this flag, the compiler considers the project as a whole, sees all the available functions in its entirety and saves on unnecessary casting of types. </p><br><p>  In cases of compiling with this flag, the assembly of all Swift classes is combined into one operation: </p><br><p><img src="https://cloud.kilograpp.com/f/1a47f05059/?dl=1" alt="image"></p><br><p>  Let's compare the speed now.  Take some abstract <a href="https://github.com/Kilograpp/Mattermost-iOS-Swift">test project</a> .  Let it be one of the open source creations of our company.  It is not distinguished by the purity of the code and the genius of the solutions, which is what we need. </p><br><p>  We first collect without optimization: </p><br><p><img src="https://cloud.kilograpp.com/f/5a9d147383/?dl=1" alt="image"></p><br><p>  <strong>Compile time</strong> : 84 seconds. </p><br><p>  Now enable whole-module-optimization: </p><br><p><img src="https://cloud.kilograpp.com/f/df795ec62b/?dl=1" alt="image"></p><br><p>  <strong>Compile time</strong> : 52 seconds.  Win 40%! </p><br><p>  Naturally, this also has a positive effect on performance.  In my personal experience, it gives ~ 10% increase to the overall speed. </p><br><p>  As usual, it is worth asking the question: "What is the catch?".  When you start the application and park at breakpoint, the debugger tells us the following: </p><br><p><img src="https://cloud.kilograpp.com/f/7e87bfcbb7/?dl=1&amp;t=1" alt="image"></p><br><p>  Font braille: "Project was compiled with optimization - stepping may behave oddly; variables may not be available." </p><br><p>  Translation: "The project was compiled with optimizations - debugging steps may behave strangely; some variables may be missing." </p><br><p>  The point is that the optimization removes unused variables and dead code, so there may be strange failures in debugging.  Indeed, situations often occur with suddenly disappearing variables or the debugger’s reluctance to stop at breakpoint. </p><br><p>  The “Fast” parameter is to blame for everything, which invariably comes with whole-module-optimization in the Xcode optimization settings.  Need to get rid of it.  Let's return the optimization to 'None', but now we will try to enable WMO through the project settings. </p><br><p>  To do this, we just need to add the <strong>SWIFT_WHOLE_MODULE_OPTIMIZATION = YES</strong> flag in the user-defined-settings. </p><br><p>  To do this, go to the project’s build settings and select a plus on the top panel.  In the drop-down menu, click on the user-defined settings and set the value in the usual line: </p><br><p><img src="https://cloud.kilograpp.com/f/f3aade5335/?dl=1&amp;t=2" alt="image"></p><br><p>  Result: </p><br><p><img src="https://cloud.kilograpp.com/f/893dd09d70/?dl=1" alt="image"></p><br><p>  <strong>Compile time</strong> : 19 seconds.  Initially it was 1.5 minutes. </p><br><p>  The build speed jumped significantly and the warning during debugging was gone.  However, full module optimization imposes certain limitations.  For example, you cannot use the flag 'HEADERMAP_USES_VFS' (suggested by <a href="https://habrahabr.ru/users/gxoct/" class="user_link">GxocT</a> ), which solves the issue with incremental compilation in some cases.  However, in terms of speed then it comes out. </p><br><p>  <strong>Conclusion</strong> : whole-module-optimization significantly speeds up the compilation process if you don’t use your incompatible flags. </p><br><div class="spoiler">  <b class="spoiler_title">Bonus</b> <div class="spoiler_text"><p>  On the Rights of jokes. </p><br><p>  In the comments to the previous article, they wrote that Swift has an incremental compilation. <br>  For the experiment, I pre-assembled the project and added a single print to the existing method.  That's what came out of it: </p><br><iframe width="560" height="315" src="https://www.youtube.com/embed/xY8LvAsprqs" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><p>  Who can not see: 50 seconds build from scratch, 45 seconds incremental. </p><br><p>  If you believe <a href="http://stackoverflow.com/a/40601822/1092100">stackoverflow</a> , then in Xcode 8.2 these problems will be fixed.  Unfortunately, my project on the beta version is not going to.  So we will wait for the official release. </p></div></div><br><hr><br><p>  On this second part we summarize.  In it, we found out the main cause of the compiler inhibition, found the optimizer flags to speed up the build, and also observed the imperfection of the incremental compilation in Swift. </p><br><p>  In the next article we will look at ways to fix incremental compilation and general ways to speed up a project. </p><br><p>  Thanks: <br>  <a href="https://habrahabr.ru/users/grimmaple/" class="user_link">GrimMaple</a> - for advice on the structure of the compiler and help in the selection of formulations. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/317298/">https://habr.com/ru/post/317298/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317286/index.html">Bagofich .RU or how to get problems where they should not be for many years</a></li>
+<li><a href="../317288/index.html">Interview with the developer of the alien software: "If something happened, my ass would have taken the brunt"</a></li>
+<li><a href="../317290/index.html">Integrating two video surveillance systems: Axxon Next and SureView</a></li>
+<li><a href="../317292/index.html">Ocean floor as an effective method of cooling equipment</a></li>
+<li><a href="../317296/index.html">Technical interview at Google for Software Engineer - my experience</a></li>
+<li><a href="../317300/index.html">In C ++ 17, there are still no normal multidimensional arrays that have been in Fortran since Fortran 90</a></li>
+<li><a href="../317302/index.html">List of material classes Material Design Lite</a></li>
+<li><a href="../317304/index.html">Classic parser combinators in Python</a></li>
+<li><a href="../317306/index.html">Breaking the admin panel of the router</a></li>
+<li><a href="../317312/index.html">The perfect programmer. Part 1</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

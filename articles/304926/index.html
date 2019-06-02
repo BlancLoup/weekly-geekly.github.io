@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Machine learning instead of DPI. Building a traffic classifier</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="One can hardly imagine the world of modern network technologies without DPI (deep packet inspection). It contains the systems for detecting network at...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Machine learning instead of DPI. Building a traffic classifier</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/165/f97/0d5/165f970d56cf6ab7221de1a2a864f10b.jpg" alt="image"><br><br>  One can hardly imagine the world of modern network technologies without DPI (deep packet inspection).  It contains the systems for detecting network attacks, the lion's share of corporate network security policies, shaping and blocking user traffic by the telecom operator - yes, each provider must have a DPI tool to fulfill the requirements of Roskomnadzor. <br><br>  And yet, with all its relevance, DPI has some drawbacks.  The main one is that the DPI tools need to see the payload of the analyzed packets.  And what to do when the client uses encryption?  Or, for example, if we do not have DPI here and now, but in the future we will need to carry out some analysis of the current traffic on the network - then we just have to save all the payload for subsequent analysis, which is very inconvenient. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In this article, I want to propose an alternative way to solve one of the main tasks of the DPI — to determine the application-level protocol — based on a very small amount of information, without checking the list of well-known ports and not looking at the packet payload.  At all. <br><a name="habracut"></a><br><h5>  <b>Solution approach</b> </h5><br>  First, let's decide on the object of classification - for which entity will we define the application layer protocol? <br><br>  In DPI means, as a rule, the object of classification is the traffic flow of the transport layer - this is a set of IP packets that have the transport layer protocol and an unordered pair of endpoints: &lt;(source ip, source port), (destination ip, port destination)&gt;.  We will also work with such flows. <br><br>  The idea behind the proposed method is that different applications using different protocols also generate transport layer flows with different statistical characteristics.  If we accurately and concisely determine the set of statistical flow metrics, then using the values ​​of these metrics it will be possible to predict with high accuracy which application generated this flow and, accordingly, which application layer protocol is transferred by this flow. <br><br>  Before defining these metrics, we introduce a couple of definitions: <br><ul><li>  Client - initiator of TCP connection or sender of the first UDP datagram of the stream, depending on the transport layer protocol; </li><li>  The server is the receiving side of the TCP connection or the destination of the first UDP datagram of the stream, depending on the transport layer protocol. </li><li>  A chunk of data is a collection of application-level payloads that were transferred from one side to the other (from the client to the server or vice versa) and were not interrupted by the payload from the other side. </li></ul><br>  The latter definition requires some explanation, so my inner Michelangelo to the rescue: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/563/a43/09e/563a4309ed398b7b933bd266868367c9.jpg" alt="image"><br>  In this example, after the TCP handshake, the client begins to transmit the payload — hence, a portion of the data from the client begins.  While the server does not send any payload in response, but merely sends an ACK, a portion of the data from the client continues.  When the server feels the need to transfer some load of the application layer, the portion of the client data ends and the portion of the server data begins.  As it is easy to understand, the entire transfer of the payload is an alternation of chunks of data from one side to the other.  With a very intensive exchange of data from both sides of the data can degenerate into separate IP packets. <br><br><h5>  <b>Statistical flow metrics</b> </h5><br>  All of our statistical flow characteristics will dance around four rows of numbers: <br><ul><li>  The sequence of sizes of transport layer segments (TCP or UDP) sent from the client; </li><li>  The sequence of sizes of the transport level segments sent from the server side; </li><li>  The sequence of the sizes of the chunks of data sent by the client; </li><li>  The sequence of the sizes of the chunks of data sent by the server; </li></ul><br>  For the short example shown in the figure above, this series will have the following meanings: <br><ul><li>  Client side segment sizes: [220, 520] </li><li>  Server-side segment sizes: [720, 420] </li><li>  Client data sizes: [700] </li><li>  The size of the chunks of data from the server: [1100] </li></ul><br>  These 4 rows of numbers (as we will see later) very well characterize the data flow, and based on them you can quite accurately guess the application layer protocol. <br><br>  Turning on the fantasy, we formulate the statistical characteristics of the data stream, starting from these 4 rows of numbers: <br><ol><li>  Client-side average packet size </li><li>  Standard deviation of packet size on the client side </li><li>  Server-side average packet size </li><li>  Standard server packet size deviation </li><li>  Average client data size </li><li>  Standard deviation of the portion of data from the client </li><li>  Average server chunk size </li><li>  Standard deviation of the data portion size on the server side </li><li>  Average number of packets per client data portion </li><li>  Average number of packets per server data portion </li><li>  Client's efficiency - the amount of application load transferred, divided by the total amount of application and transport load transferred </li><li>  Server efficiency </li><li>  Ratio of bytes - how many times the client transmitted more bytes than the server </li><li>  Payload Ratio - how many times the client transmitted more bytes than the server </li><li>  Package Ratio - how many times the client has transmitted more packets than the server </li><li>  The total number of bytes transferred by the client </li><li>  The total amount of application load transferred from the client </li><li>  The total number of transferred segments of the transport layer from the client </li><li>  The total number of transferred pieces of data from the client </li><li>  Total number of bytes transferred by the server </li><li>  The total amount of application traffic transferred from the server side </li><li>  The total number of transmitted segments of the transport layer from the server </li><li>  The total amount of data transferred by the server </li><li>  The size of the first segment of the transport level from the client </li><li>  Client’s second transport segment size </li><li>  The size of the first segment of the transport layer on the server side </li><li>  The size of the second segment of the transport layer on the server side </li><li>  The size of the first portion of data from the client </li><li>  The size of the second portion of data from the client </li><li>  The size of the first portion of data from the server </li><li>  The size of the second portion of data from the server </li><li>  Protocol type of the transport layer (0 - UDP, 1 - TCP) </li></ol><br>  Now we need to clarify a few points. <br><br>  First, the signs of the “total X” type are unstable in themselves, because their value depends on how long we observe the flow.  The more we observe, naturally, the more bytes will be transferred, and the application load, and segments, and chunks of data.  In order to add certainty to these indicators, in the future we will not consider the entire stream from the beginning of the observation to the end, but a certain section of each stream along the first N segments of the transport layer.  When calculating all the listed metrics, we will use only the first N segments. <br><br>  Secondly, it may not be clear why we need in terms of the size of the first and second segments and portions of data from each side.  As shown in one of the scientific papers on this topic <sup>[1]</sup> (link in the sources), the size of the first few IP packets can carry a lot of information about the protocol used.  So these indicators will not be superfluous. <br><br>  Now we will define how we will try to guess the application-level protocol of a specific flow, having the calculated statistical metrics on hand.  Machine learning will help us here.  The task in question is in its classical formulation the task of classifying objects into several classes. <br><br>  Each object has as many as 32 characteristics, and the relevance of each of them to an object’s class label at this stage of the study remains in question.  Therefore, it would be wise to choose the popular machine learning algorithm, Random Forest, because it is not very sensitive to noise and feature correlation (and some of our statistical metrics are likely to correlate strongly with each other). <br><br>  This algorithm works on the principle of "learning with the teacher."  This means that we need some sample of objects for which class labels are already known.  We will divide this sample in the ratio of 1 to 2 for training and testing.  We will train the model on the training set (in our case, the training consists in building a set of decision trees), and on the test set we will evaluate how well the model copes with the task. <br><br><h5>  <b>Harvest time</b> </h5><br>  With the methodology of the experiment, now everything is clear, it remains to find the traffic itself, the characteristics of which we will calculate. <br><br>  No provider, of course, will allow us to collect traffic into its network - who knows there, what data will we collect?  We will manage artisanal conditions.  For several days I spent capturing the traffic of my own computer, doing normal business along the way - I sat in VK, watched a video on Youtube, made some calls on Skype, downloaded a couple of torrents.  The result was more than 3 GB of captured traffic. <br><br>  Now, remember that in addition to the traffic itself, we also need for each captured stream to reliably determine the application layer protocol that it transfers.  And this is where the DPI tools will help us, specifically the nDPI library.  Included with this library is an example of a traffic analyzer called ndpiReader, which will be useful to us.  A nice bonus is that this application will separate all of our raw traffic dumps into traffic flows for us, so we don’t even have to do this. <br><br>  But still it will be necessary to delve into the depths of pcap files.  For this we use the dpkt library.  Unfortunately, it was not ported to the third version of Python, so the script for processing pcap files will be written in the second version of the language. <br><br>  Putting it all together, we’ll write a script that converts PCAP files to a feature table and exports it to CSV format.  Link to the repository with this script at the end of the article. <br><br><h5>  <b>What time is it?</b>  <b>Classification time!</b> </h5><br>  Yes, yes, we finally got to what it was all about! <br><br>  But before pushing the entire table of attributes from the ship to the ball into the first Random Forest, consider the data a little more closely.  Here is a list of application protocols and the number of streams of each protocol that is in our sample: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/eee/6c0/db7/eee6c0db7dd9b9818888e1d80eaea468.jpg" alt="image"><br><br>  The first thing I want to do is merge all SSL_No_Cert traffic into SSL, because this is essentially the same thing. <br><br>  The second is kicking traffic from Apple, NTP, Unencrypted_Jabber and Unknown.  The first three protocols have too few streams to classify, and under Unknown anything can be hidden. <br><br>  Now we divide our data into training and test samples.  We get this: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/8d7/b5d/f05/8d7b5df056230023f7eff6a6f7c0c424.jpg" alt="image"><br><br>  After several experiments, the following values ​​were chosen as parameters of the Random Forest algorithm: <br><ul><li>  Number of trees: 27 </li><li>  Criterion: entropy </li><li>  Maximum tree depth: 9 </li></ul><br>  Recall that some of our statistical characteristics oblige us to fix the volume of traffic under consideration for each stream.  To begin, take a more traffic cutoff - the first 1000 segments in each stream.  Let us check whether the application-level protocol can be predicted by our statistical metrics at all.  Drumroll! <br><br><img src="https://habrastorage.org/getpro/habr/post_images/533/f0c/a1d/533f0ca1dbacde6e349b9b58b9283e61.jpg" alt="image"><br><br>  Above is a table of the accuracy and completeness of the predictions for each class.  Accuracy for class K is the proportion of predictions of the form “object X belongs to class K”, which turned out to be correct.  Completeness for class K - the number of objects X, which are recognized by the classifier as belonging to the class K, divided by the total number of objects belonging to the class K.  F-measure is the harmonic mean of completeness and accuracy. <br><br>  Well, a little more simple table: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/578/492/289/578492289029b4cedce4e5195248a968.jpg" alt="image"><br><br>  Here, in each cell, a number is indicated, which means the number of cases when the traffic flow belonging to the class specified in the row header was classified as belonging to the class specified in the column header.  That is, the numbers on the main diagonal are correct classifications, the numbers outside it are all sorts of errors. <br><br>  In general, it seems that the classifier does its job well.  With the exception of rare errors, all predictions are correct. <br><br>  The Random Forest machine learning algorithm is also good in that it can give us information about which signs turned out to be more useful than others.  Out of curiosity, take a look at the most important signs: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/2e3/952/465/2e39524657934396ccf9ada6eb250061.jpg" alt="image"><br><br>  Top stably occupy the signs, tied to the statistical characteristics of the client side.  From this we can conclude that it is the customers of different applications that differ the most, and the servers - less. <br><br>  From the server, only the size of the second packet got lost.  This is easily explained by the fact that by the size of the second packet, you can easily select SSL from the rest of the traffic, because in the second packet of the server a certificate is transmitted. <br><br>  It is pleasantly surprising that the protocol type of the transport level is included only in the TOP-10 of the most important signs - although it would seem that a lot of information is contained in this attribute!  So, in our statistical metrics information is much more. <br><br>  I also want to note that when the semen of the pseudo-random number generator changes, the top of the most important signs changes somewhat.  What remains common is that customer-related metrics are consistently above, but their order is changing.  A protocol transport level jumps between the first and tenth place. <br><br>  Now the fun part.  Before that, we took a slice of the first 1000 segments of each stream, and based on this slice we calculated statistical metrics.  A natural question arises: how much can this slice be reduced and still get good classification indicators? <br><br>  The answer is discouraging.  You can omit the number of segments in each stream to ... three.  Not including TCP handshake, of course, because it does not carry any information. <br><br>  Below are the values ​​of completeness and accuracy for each class, a table of real and predicted classes and top characteristics when building and testing a model on only the first three segments of the transport layer (for TCP, these are actually 6 segments, the first three are discarded). <br><br><img src="https://habrastorage.org/getpro/habr/post_images/448/bd3/e56/448bd3e569e29577f96146b7d45f3d5b.jpg" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/1ab/7c3/84b/1ab7c384b43c210ad67e975dd7c8f34e.jpg" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/ec4/8de/8c6/ec48de8c6dfca86ffee36e1922f59660.jpg" alt="image"><br><br>  The attentive reader may notice that the total number of records in the sample has become less compared to the previous case.  The fact is that for the calculation of most characteristics it is necessary that there should be at least one piece of data from the client and at least one from the server.  If it turns out that in the first 3 segments only the client or only the server transmitted, such a stream is rejected at the stage of drawing up the table of attributes. <br><br>  The result was unexpected because with a sharp decrease in the number of segments in each stream, the quality of the classification did not deteriorate, but even somewhat improved.  This can be attributed to the fact that it is the first segments transferred that carry the greatest information about the type of application.  Therefore, as the number of segments decreases, our statistical metrics begin to carry information only about the first segments, but not about all, and the quality of the classification slightly increases. <br><br><h5>  <b>Conclusion</b> </h5><br>  In this article, I clearly demonstrated how to perform a sufficiently high-quality traffic analysis in order to determine the application-level protocol without DPI tools.  That is characteristic, it is possible to determine the application protocol with sufficient accuracy by the first several transmitted segments of the transport layer. <br><br>  All developed code is posted in the <a href="https://github.com/vnetserg/traffic-v2">repository on github</a> .  The readme repository gives instructions on how you can repeat the results obtained in the article.  The csv folder contains the attribute tables obtained after processing the collected PCAP files.  But you will not find PCAP files there - I apologize, but the confidentiality of my data is above all. <br><br>  As a visual illustration of the real-time classifier operation, I developed a <a href="https://github.com/vnetserg/sherlock">simple application on PyQt4</a> .  And even recorded a <a href="https://www.youtube.com/watch%3Fv%3DuXp471N9mIY">video with a demonstration of his work</a> . <br><br>  For what can be applied the stated approach?  For example, to identify the application layer protocols used in those conditions when the payload is encrypted (hello, paranoia).  Or, for the proactive collection of statistics for analysis in case such an analysis is required - after all, to determine the application layer protocol, it is enough to have only 256 bytes of information per stream (32 floating point numbers). <br><br><h5>  <b>Thanks</b> </h5><br>  I want to thank Daniel Prokhorov and Nadezhda Troflyanina, with whom we were engaged in the development of this idea, collected traffic and then spoke at the VII Youth Scientific Forum of MTUCI. <br><br><h5>  <b>Sources</b> </h5><br>  It would be wrong not to specify the scientific work, from which we drew inspiration and some good ideas: <br><ol><li>  <a href="http://conferences.sigcomm.org/co-next/2010/CoNEXT_papers/09-Lim.pdf">Internet Traffic Classification Demystified: On the Sources of the Discriminative Power</a> </li><li>  <a href="http://ijrect.com/wp-content/themes/vantage/vol1issue2/r_s_anu.pdf">SVM Based Network Traffic Classification Using Correlation Information</a> </li><li>  <a href="https://www.cl.cam.ac.uk/~awm22/publications/moore2005internet.pdf">Internet Traffic Classification Using Bayesian Analysis Techniques</a> </li></ol></div><p>Source: <a href="https://habr.com/ru/post/304926/">https://habr.com/ru/post/304926/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../304904/index.html">Purchase history of a single ticket on the Russian Railways website</a></li>
+<li><a href="../304906/index.html">Applications for the VIII Summer School of High-Performance Computing in the Field of Computer Vision have been opened</a></li>
+<li><a href="../304908/index.html">How to start developing a large, atypical project. Practical guide</a></li>
+<li><a href="../304918/index.html">Take a technical interview</a></li>
+<li><a href="../304924/index.html">USB mass storage device and libopencm3</a></li>
+<li><a href="../304932/index.html">Data Protection - Modern Security Challenges</a></li>
+<li><a href="../304934/index.html">Important aspects of the browser for developers. Part 2</a></li>
+<li><a href="../304936/index.html">About tasty and healthy food ESP8266 from batteries</a></li>
+<li><a href="../304982/index.html">Sparrowdo is a simple configuration management tool.</a></li>
+<li><a href="../304988/index.html">Signals and slots in PHP. Same as in Qt. Almost</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

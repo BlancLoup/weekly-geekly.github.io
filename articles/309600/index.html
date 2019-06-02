@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Monitoring the linux network stack</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Often, the monitoring of the network subsystem of the operating system ends at the packet, octet, and network interface error counters. But this is on...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Monitoring the linux network stack</h1><div class="post__text post__text-html js-mediator-article"><p><img height="200" src="https://habrastorage.org/files/186/f6a/c3c/186f6ac3ca244779a297d1d2cfb05bf9.jpg" align="left">  Often, the monitoring of the network subsystem of the operating system ends at the packet, octet, and network interface error counters.  But this is only the 2nd level of the <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25B5%25D1%2582%25D0%25B5%25D0%25B2%25D0%25B0%25D1%258F_%25D0%25BC%25D0%25BE%25D0%25B4%25D0%25B5%25D0%25BB%25D1%258C_OSI">OSI model</a> ! <br>  On the one hand, most of the problems with the network arise just at the physical and data link levels, but on the other hand, applications working with the network operate at the TCP session level and do not see what is happening at the lower levels. </p><br><p>  I’ll tell you how fairly simple TCP / IP stack metrics can help deal with various problems in distributed systems. </p><a name="habracut"></a><br><h2 id="netlink">  Netlink </h2><br><p>  Almost everyone knows the <a href="http://man7.org/linux/man-pages/man8/netstat.8.html">netstat</a> utility in linux, it can show all current TCP connections and additional information on them.  But with a large number of connections, netstat can work for quite a long time and significantly load the system. </p><br><p>  There is a cheaper way to get connection information - the <a href="http://man7.org/linux/man-pages/man8/ss.8.html">ss</a> utility from the iproute2 project. </p><br><p>  For comparison: </p><br><pre><code class="hljs go">$ time netstat -an|wc -l <span class="hljs-number"><span class="hljs-number">62109</span></span> <span class="hljs-built_in"><span class="hljs-built_in">real</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>m0<span class="hljs-number"><span class="hljs-number">.467s</span></span> user <span class="hljs-number"><span class="hljs-number">0</span></span>m0<span class="hljs-number"><span class="hljs-number">.288s</span></span> sys <span class="hljs-number"><span class="hljs-number">0</span></span>m0<span class="hljs-number"><span class="hljs-number">.184s</span></span></code> </pre> <br><pre> <code class="hljs go">$ time ss -ant|wc -l <span class="hljs-number"><span class="hljs-number">62111</span></span> <span class="hljs-built_in"><span class="hljs-built_in">real</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>m0<span class="hljs-number"><span class="hljs-number">.126s</span></span> user <span class="hljs-number"><span class="hljs-number">0</span></span>m0<span class="hljs-number"><span class="hljs-number">.112s</span></span> sys <span class="hljs-number"><span class="hljs-number">0</span></span>m0<span class="hljs-number"><span class="hljs-number">.016s</span></span></code> </pre> <br><p>  Acceleration is achieved by using the <a href="http://man7.org/linux/man-pages/man7/netlink.7.html">netlink</a> protocol for querying information about connections from the kernel.  Our agent uses netlink directly. </p><br><h2 id="schitaem-soedineniya">  Consider connections </h2><br><p>  <em>Disclaimer: to illustrate working with metrics in different slices, I will show our interface (dsl) work with metrics, but this can be done on opensource repositories</em> . </p><br><p>  First of all, we divide all connections into inbound and outbound with respect to the server. </p><br><p>  Each TCP connection at a certain point in time is in one of the <a href="https://tools.ietf.org/html/rfc793">states</a> , the breakdown by which we also save (this can sometimes be useful): </p><br><img src="https://habrastorage.org/files/af7/96a/b00/af796ab0051f475ea139453e792f6908.png"><br><p><br>  Using this graph, you can estimate the total number of incoming connections, the distribution of compounds by states. </p><br><p>  Here you can also see a sharp drop in the total number of connections shortly before <em>11 Jun</em> , we will try to look at the connections in the context of listen ports: </p><br><img src="https://habrastorage.org/files/084/579/80e/08457980e85b4f45bae73a00296a759c.png"><br><p><br>  This graph shows that the most significant drop was on port 8014, we will see only 8014 (in the interface we can simply click on the desired element of the legend): </p><br><img src="https://habrastorage.org/files/cce/d40/fba/cced40fbaffb4d73ac583dfe79dbff91.png"><br><p><br>  Let's try to see if the number of incoming connections for all servers has changed? </p><br><p>  Select servers by mask “srv10 *”: </p><br><img src="https://habrastorage.org/files/c25/b34/fce/c25b34fcea544a7da6af6e30eba41cbe.png"><br><p><br></p><br><p>  Now we see that the number of connections to port 8014 has not changed, we will try to find on which server they migrated: </p><br><img src="https://habrastorage.org/files/ac7/d1e/92d/ac7d1e92d2664c7e8ca2788e44edc532.png"><br><p><br></p><br><p>  <em>We limited the selection to only port 8014 and did grouping not by port, but by servers.</em> </p><br><p>  Now it is clear that the connections from the <em>srv101</em> server <em>have</em> switched to <em>srv102</em> . </p><br><h2 id="razbivka-po-ip">  IP breakdown </h2><br><p>  It is often necessary to see how many connections there are from different IP addresses.  Our agent removes the number of TCP connections not only broken down by listen ports and states, but also by remote IP if this IP is in the same network segment (for all other addresses, the metrics are summed up and instead of IP we show “~ nonlocal”). </p><br><p>  Consider the same time period as in the previous cases: </p><br><img src="https://habrastorage.org/files/729/8b0/c4a/7298b0c4a4f849509a193c26de94c318.png"><br><p><br></p><br><p>  Here it can be seen that the number of connections from <em>192.168.100.1</em> has become much smaller, and at the same time connections from <em>192.168.100.2</em> have appeared. </p><br><h2 id="detalizaciya-rulit">  Detailing taxis </h2><br><p>  In fact, we worked with one metric, it was just very detailed, the identifier of each instance looks like this: </p><br><pre> <code class="hljs pgsql">{<span class="hljs-type"><span class="hljs-type">name</span></span>="netstat.connections.inbound.count", state="&lt;TCP_STATE&gt;", listen_ip="&lt;IP&gt;" listen_port="&lt;PORT&gt;" remote_ip="&lt;REMOTE_IP&gt;"}</code> </pre> <br><p>  For example, at one of the clients on the loaded front-end server, <strong>~ 700</strong> instances of this metric are removed. </p><br><h2 id="tcp-backlog">  TCP backlog </h2><br><p>  Using the metrics of TCP connections, you can not only diagnose network operation, but also identify problems in the operation of services. </p><br><p>  For example, if a service serving clients across a network fails to cope with the load and stops processing new connections, they are queued ( <a href="http://veithen.github.io/2014/01/01/how-tcp-backlog-works-in-linux.html">backlog</a> ). </p><br><p>  There are actually two queues: </p><br><ul><li>  SYN queue - the queue of unset connections (the <strong>SYN</strong> packet has been received, the <strong>SYN-ACK</strong> has not yet been sent), the size is limited according to the <em>sysctl net.ipv4.tcp_max_syn_backlog</em> ; </li><li>  Accept queue - the queue of connections for which the ACK packet was received (as part of the <a href="http://www.inetdaemon.com/tutorials/internet/tcp/3-way_handshake.shtml">triple handshake</a> ), but was not <a href="http://man7.org/linux/man-pages/man2/accept.2.html">accepted by the</a> application (the queue is limited by the application) </li></ul><br><p>  When the accept queue <strong>ACK</strong> limit is reached, the remote host packet is simply discarded or sent to the <strong>RST</strong> (depending on the value of the sysctl variable <em>net.ipv4.tcp_abort_on_overflow</em> ). </p><br><p>  Our agent removes the current and maximum accept queue for all listen sockets on the server. </p><br><p>  For these metrics, there is a graph and a pre-set trigger that will notify if <strong>any</strong> service’s backlog is used by more than 90%: </p><br><img src="https://habrastorage.org/files/b9e/dc5/90d/b9edc590d8f34786a0e3b9fa188d1519.png"><br><p><br></p><br><h2 id="schetchiki-i-oshibki-protokolov">  Counters and protocol errors </h2><br><p>  Once the site of one of our clients underwent a DDOS attack, only an increase in traffic on the network interface was visible in the monitoring, but we showed absolutely no metrics on the content of this traffic. </p><br><p>  At the moment, an unequivocal answer to this question cannot still be given by okmetre, since we have just <a href="https://habrahabr.ru/company/okmeter/blog/308328/">begun to master</a> sniffing, but we have made some progress in this matter. </p><br><p>  Let's try to understand something about these emissions of incoming traffic: </p><br><img src="https://habrastorage.org/files/a0a/2d4/ba2/a0a2d4ba2d4e4b0e8b7052cf1dde23da.png"><br><p><br></p><br><img src="https://habrastorage.org/files/288/b54/1b3/288b541b3c904b399f91379fc8e70e69.png"><br><p><br>  Now we see that this is incoming UDP traffic, but the first of the three outliers is not visible here. <br>  The fact is that packet counters by protocol in linux increase only if the packet is processed successfully. </p><br><p>  Let's try to look at the errors: </p><br><img src="https://habrastorage.org/files/dc6/429/04d/dc642904d7314baea64d2740626d4eeb.png"><br><p><br></p><br><p>  And here is our first peak - <strong>UDP</strong> errors <strong>: NoPorts</strong> (the number of datagrams that came to UPD ports that no one listens to) </p><br><p>  We emulated this example using iperf, and in the first run we didn’t turn on the packet receiving server on the correct port. </p><br><h2 id="tcp-retransmity">  TCP retransmit </h2><br><p>  Separately, we show the number of TCP retransmit ( <a href="https://en.wikipedia.org/wiki/Retransmission_(data_networks)">retransmission of TCP segments</a> ). </p><br><p>  The mere presence of retransmit does not mean that there are packet losses on your network. <br>  A segment retransmission occurs if the transmitting node has not received an acknowledgment (ACK) from the receiving entity within a certain time (RTO). </p><br><p>  This timeout is <a href="http://sgros.blogspot.ru/2012/02/calculating-tcp-rto.html">calculated dynamically</a> based on measurements of data transfer time between specific hosts (RTT) in order to ensure guaranteed data transfer while maintaining minimal delays. </p><br><p>  In practice, the number of retransmitters is usually correlated with the load on the servers and it is important to look not at the absolute value, but at various anomalies: </p><br><img src="https://habrastorage.org/files/ad5/f2f/f6a/ad5f2ff6abc14f30ac331c2f127d9f2c.png"><br><p><br>  On this graph, we see 2 retransmit spikes, at the same time the <em>postgres</em> processes utilized the server’s CPU: </p><br><img src="https://habrastorage.org/files/4c8/104/cd8/4c8104cd85224d8ab058604dad2ffc99.png"><br><p><br></p><br><p>  We get protocol counters from <strong>/ proc / net / snmp</strong> . </p><br><h2 id="conntrack">  Counterrack </h2><br><p>  Another common problem is the overflow of the <strong>ip_conntrack</strong> table in linux ( <a href="https://en.wikipedia.org/wiki/Iptables">iptables is</a> used), in which case linux starts to just drop packets. </p><br><p>  This is seen in the dmesg post: </p><br><pre> <code class="hljs pgsql">ip_conntrack: <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> <span class="hljs-keyword"><span class="hljs-keyword">full</span></span>, dropping packet</code> </pre> <br><p>  The agent automatically removes the current size of this table and the limit from servers using ip_conntrack. </p><br><p>  There is also an automatic trigger in the meter, which will notify you if the ip_conntrack table is more than 90% full: </p><br><img src="https://habrastorage.org/files/b93/93d/ad9/b9393dad94ba46e58cd21a39d2ea0fba.png"><br><p><br></p><br><p>  This chart shows that the table was full, the limit was raised and it was not reached any more. </p><br><h2 id="vmesto-zaklyucheniya">  Instead of conclusion </h2><br><ul><li>  Metric granularity is very important. </li><li>  if somewhere something may overflow, it is imperative to monitor such places </li><li>  we remove a lot of things different over TCP / IP (RTT, connections with non-empty send / recv queues), but have not yet figured out how to work properly with this </li></ul><br><p>  <em>Examples of our standard charts can be found in our <a href="https://okmeter.io/example">demo project</a> .</em> <em><br></em>  <em>There you can also see Netstat graphics.</em> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/309600/">https://habr.com/ru/post/309600/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../309584/index.html">3 useful tools for the preparation of a marketing campaign in E-commerce</a></li>
+<li><a href="../309586/index.html">MS Office spells the words to a new line</a></li>
+<li><a href="../309588/index.html">Announcement of the conference "Designing Business Architectures 2016"</a></li>
+<li><a href="../309592/index.html">Review services cloud PBX Beeline</a></li>
+<li><a href="../309596/index.html">The concept of the programming language of the 5th generation. Part 3</a></li>
+<li><a href="../309602/index.html">Skype-bot with a human face (on the Microsoft Bot Framework V3 and Slack API)</a></li>
+<li><a href="../309606/index.html">Moscow JS Meetup in Badoo</a></li>
+<li><a href="../309608/index.html">Business planning web studio at the start</a></li>
+<li><a href="../309612/index.html">What interesting things have I learned in two years of developing and promoting a mobile game?</a></li>
+<li><a href="../309614/index.html">“Not a single break”: what is the cost of making an online broadcast that will not fall, slow down and cause pain in the eyes?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

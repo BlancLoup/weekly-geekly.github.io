@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Pitfalls when using Linked Server</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A rather interesting project has come to our company related to processing the queue of tasks. The project was previously developed by another team. W...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Pitfalls when using Linked Server</h1><div class="post__text post__text-html js-mediator-article">  A rather interesting project has come to our company related to processing the queue of tasks.  The project was previously developed by another team.  We needed to deal with the problems that arise when a large load on the queue, and, accordingly, to correct the found. <br><br>  In short, the project consists of several databases and applications located on different servers.  The “task” in this project is a stored procedure or .Net application.  Accordingly, the “task” should be performed on a specific database and on a specific server. <br><br><img src="https://habrastorage.org/files/8f2/0e3/87e/8f20e387e1a54a558b5687fc24624ab8.jpg" alt="image"><br><a name="habracut"></a><br>  All data that pertains to the queue is stored on a dedicated server.  On servers where tasks need to be performed, only metadata is stored, i.e.  procedures, functions, and service data related to this server.  Accordingly, we receive the data relating to tasks by inquiries using LinkedServer. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      All data that pertains to the queue is stored on a dedicated server.  On servers where tasks need to be performed, only metadata is stored, i.e.  procedures, functions, and service data related to this server.  Accordingly, we receive the data relating to tasks by inquiries using LinkedServer. <br><br><h3>  Why is that? </h3><br><ol><li>  Convenience.  We can indicate at any time that data is now stored on server B. </li><li>  So it was implemented before us. </li></ol><br>  The following are the two most popular classic queue processing methods: <br><br><ol><li>  Send a notification to the task handler about the presence of the task. </li><li>  To poll the queue for the presence of tasks. </li></ol><br>  Initially, the project was implemented the second option.  To minimize the waiting time for processing tasks, our application polls the queue every 100-500ms. <br><br>  Actually, this is nothing terrible and there is no one except for this: with such an implementation, the table is once again blocked.  I will say in advance that the query uses row lock with the ability to only read unlocked rows: <br><br><pre><code class="sql hljs">READPAST, ROWLOCK, UPDLOCK</code> </pre> <br>  So back to the problem.  In the analysis, I noticed the value of the counter - <b>batch requests / sec</b> in Active Monitor.  This value, with a small number (about 50) of the tasks in the queue, went off scale beyond 1000, and the CPU load increased sharply. <br><br>  First thought: you need to go to the implementation of the first option (sending a notification to the task handler).  This method was implemented using <b>Service Broker</b> and <b>SignalR</b> : <br><br><ul><li>  Service Broker used to send a notification when a task appeared; </li><li>  SignalR was used to send notifications to task handlers. </li></ul><br><h3>  Why SignalR? </h3><br>  This tool is already used in the project, and the dates have been compressed, so I did not implement something similar, for example, <b>NServiceBus</b> . <br><br>  There was no limit to my surprise when this decision did not help.  Yes, a performance gain was obtained, but this did not completely solve the problem.  A stress test was written for debugging, when more than 500 tasks are added to the queue. <br><br>  The creation of such a stress test allowed us to find the " <i>root of evil</i> ." <br><br>  Analysis of the list of active queries and performance reports, during a heavy load of showing the presence of "very interesting queries", which consisted of one command: <br><br><pre> <code class="sql hljs">fetch api_cursor0000000000000003</code> </pre><br>  Further analysis revealed that these are requests from LinkedServer.  The question immediately arose: “Is this type of select * from RemoteServer.RemoteDatabase.dbo.RemoteTable where the FieldId = <a href="https://habrahabr.ru/users/value/" class="user_link">Value</a> generates a request (fetch api_cursor000000000000000003) on the RemoteServer?” It turns out, yes, even when LinkedServer is MS SQL. <br><br>  For a more illustrative example, create a “Test” table (the table creation code is available in the <a href="https://bitbucket.org/akotelevets/for-articles-by-inostudio/src/f69337e12bfa/LinkedServer/%3Fat%3Ddefault">appendix</a> to the article) on the server “A”, and on the server “B” we will run the query: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> dev2.test_db.dbo.test</code> </pre><br>  where <i>dev2</i> is our server “A”. <br><br>  When you first perform such a request, we will have a similar log in the profiler on server A: <br><br><div class="spoiler">  <b class="spoiler_title">Part of the log on server A</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/e9e/254/f7f/e9e254f7f80e4a628ea1faf24b4b6a80.png"><br><br>  The full log is available <a href="">here</a> . <br></div></div><br>  And now let's execute the queries already by ID: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> dev2.test_db.dbo.test <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ID</span></span> = <span class="hljs-number"><span class="hljs-number">3</span></span></code> </pre><br><div class="spoiler">  <b class="spoiler_title">Profiler log for the second request</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/569/8d5/99d/5698d599de39404ba1ab9b8f4ff1e135.png"><br><br>  The full log is available <a href="">here</a> . <br></div></div><br>  As you can see in the screenshot, the query plan has been added to the cache.  If you perform this query a second time, then a little better. <br><br><div class="spoiler">  <b class="spoiler_title">profiler log after restart</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/fc8/591/6c3/fc85916c3cef4218b8846dce0c6632ec.png"><br><br>  Full log is available <a href="">here.</a> <br></div></div><br>  As we can see, the data is already taken from the cache. <br><br>  When conditions change, we will get a similar sample - the <i>first sample according to the specified Id</i> .  But the bottom line is that with large numbers of different cache requests are not enough.  And sql begins to fence a bunch of queries to the table, which leads to "brakes".  You ask: “But what about the indices?” There are indices, but requests, even with the Primary Key (PK) condition, caused this problem. <br><br>  And what does Google say about this?  And a lot of things, just no use: <br><br><ul><li>  That requests must be executed from a user who belongs to one of the following roles: sysadmin, db_owner, db_ddladmin, so that you can use statistics; </li><li>  Incorrectly configured LinkedServer. </li></ul><br>  More sensible answers were found only in 3 articles: <br><br><ul><li>  <a href="http://www.sql-server-performance.com/2006/api-server-cursors/">Exposing API Server Cursors</a> </li><li>  <a href="http://stage.toadworld.com/platforms/sql-server/b/weblog/archive/2013/05/14/top-3-performance-killers-for-linked-server-queries">Top 3 Performance Killers For Linked Server Queries</a> </li><li>  <a href="http://www.sql.ru/articles/mssql/2007/051803pushandpullinmicrosoftsqlserverlinkedservers.shtml">Push and Pull technologies when working with linked servers in Microsoft SQL Server</a> </li></ul><br>  As far as I understood, you cannot configure LinkedServer to always use Pull technology to get data from LinkedServer.  It all depends on where you are processing the request. <br><br>  Time was running out, and the only solution that could save us was to rewrite part of the queries for dynamic sql.  Those.  perform queries on the server where the data is stored. <br><br>  There are several ways to work with data on LinkedServer: <br><br><ol><li>  In the request directly specify the data source - the remote server.  This implementation has several drawbacks: <br><ul><li>  low productivity; </li><li>  returns a large amount of data. </li></ul><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> RemoteServer.RemoteDatabase.dbo.RemoteTable <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Id</span></span> = @<span class="hljs-keyword"><span class="hljs-keyword">Id</span></span></code> </pre><br></li><li>  Use OPENQUERY.  Not suitable for several reasons: <br><br><ul><li>  Cannot specify the name of the remote server as a parameter; </li><li>  pass parameters to the request; </li><li>  there are also problems that were described in the <a href="http://inostudio.com/ru/article/dynamic-sql.html">Dynamic T-SQL</a> article <a href="http://inostudio.com/ru/article/dynamic-sql.html">and how it can be useful</a> </li></ul><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> OPENQUERY(RemoteServer, <span class="hljs-string"><span class="hljs-string">'select * from RemoteDatabase.dbo.RemoteTable'</span></span>).</code> </pre><br>  The links are examples of logs for the following requests.  These requests will be executed on server “B”, and logs from server “A”: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> OPENQUERY(dev2, <span class="hljs-string"><span class="hljs-string">'select * from test_db.dbo.test'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> = <span class="hljs-number"><span class="hljs-number">26</span></span></code> </pre><br><ul><li>  <a href="">OpenQuery / fetch with given Id.trc</a> </li></ul><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> OPENQUERY(dev2, <span class="hljs-string"><span class="hljs-string">'select * from test_db.dbo.test where ID = 26'</span></span>)</code> </pre><br><ul><li>  <a href="">OpenQuery / fetch with given Id as parameter .trc</a> </li></ul><br></li><li>  Run a query on a remote server.  Similar to OPENQUERY: <br><br><ul><li>  You cannot specify the server name as a parameter, since the name is set at the stage of the procedure compilation; </li><li>  there are also problems that were described in the <a href="http://inostudio.com/ru/article/dynamic-sql.html">Dynamic T-SQL</a> article <a href="http://inostudio.com/ru/article/dynamic-sql.html">and how it can be useful</a> </li></ul><br><pre> <code class="sql hljs">exec ('<span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> RemoteDatabase.dbo.RemoteTable<span class="hljs-string"><span class="hljs-string">') at RemoteServer</span></span></code> </pre><br>  The links are examples of logs for the following requests: <br><br><pre> <code class="sql hljs">exec ('<span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> test_db.dbo.test<span class="hljs-string"><span class="hljs-string">') at dev2</span></span></code> </pre><br><ul><li>  <a href="">exec at server / client side.trc</a> </li><li>  <a href="">exec at server / server side.trc</a> </li></ul><br><pre> <code class="sql hljs">exec ('<span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> test_db.dbo.test <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Id</span></span> = <span class="hljs-number"><span class="hljs-number">30</span></span><span class="hljs-string"><span class="hljs-string">') at dev2</span></span></code> </pre><br><ul><li>  <a href="">exec at server / Client side with given Id.trc</a> </li><li>  <a href="">exec at server / On the server side with the specified Id.trc</a> </li></ul><br></li><li>  It is still possible to execute the query on a remote server by running sp_executesql. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> @C_SP_CMD <span class="hljs-keyword"><span class="hljs-keyword">nvarchar</span></span>(<span class="hljs-number"><span class="hljs-number">50</span></span>) = <span class="hljs-keyword"><span class="hljs-keyword">QUOTENAME</span></span>(@RemoteServer) + N<span class="hljs-string"><span class="hljs-string">'.'</span></span>+@RemoteDatabase +N<span class="hljs-string"><span class="hljs-string">'.sys.sp_executesql'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> @C_SQL_CMD <span class="hljs-keyword"><span class="hljs-keyword">nvarchar</span></span>(<span class="hljs-number"><span class="hljs-number">4000</span></span>) = <span class="hljs-string"><span class="hljs-string">'select * from dbo.RemoteTable'</span></span> EXEC @C_SP_CMD @C_SQL_CMD</code> </pre><br>  The links are examples of logs of query execution using sp_executesql: <br><br><ul><li>  <a href="">sp_executesql / Full fetch on client.trc</a> </li><li>  <a href="">sp_executesql / Full server side vybrka.trc</a> </li><li>  <a href="">sp_executesql / Fetching by Id on client.trc</a> </li><li>  <a href="">sp_executesql / Fetching by Id on server.trc</a> </li></ul><br></li></ol><br>  The fourth method was used to solve the problem. <br><br>  Below are some graphs of incoming and outgoing traffic on the server where the main base of the queue is located before and after using sp_executesql.  The size of the database is 200-300Mb. <br><br><div class="spoiler">  <b class="spoiler_title">incoming and outgoing traffic for several days on the server, before using sp_executesql</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/6b6/6e5/34c/6b66e534cbda4cac8254383842a6c4ea.png"><br></div></div><br><div class="spoiler">  <b class="spoiler_title">incoming and outgoing traffic after using sp_executesql</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/26b/804/fe0/26b804fe09fe420bb336b902ad78997c.png"><br></div></div><br>  Outgoing peaks are copying backup to NFS. <br><br>  <b><i>The conclusion suggests itself:</i></b> initially the MS driver for working with “MS sql linked server” cannot execute queries on the data source server itself.  Therefore, colleagues, let's try to perform them at the data source, to solve at least some of the performance issues. <br><br>  <a href="https://bitbucket.org/akotelevets/for-articles-by-inostudio/src/6723e6787b99/LinkedServer/%3Fat%3Ddefault">Files</a> for the article. </div><p>Source: <a href="https://habr.com/ru/post/302958/">https://habr.com/ru/post/302958/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../302946/index.html">Not a single iron: IBM Software Defined Storage</a></li>
+<li><a href="../302950/index.html">C # client generation for Wargaming API</a></li>
+<li><a href="../302952/index.html">20 most notable events in the history of backup and recovery</a></li>
+<li><a href="../302954/index.html">Reduce the pain in the navigation of the application on Yii2</a></li>
+<li><a href="../302956/index.html">Unicast multicast traffic routing</a></li>
+<li><a href="../302960/index.html">Does your AngularJS work on 3.5Mb of RAM?</a></li>
+<li><a href="../302962/index.html">Delimobil agreement. We abstract and divide</a></li>
+<li><a href="../302964/index.html">Documentation - the basis of the game</a></li>
+<li><a href="../302966/index.html">Intel Media SDK 2016 R2 - what's new?</a></li>
+<li><a href="../302968/index.html">D3.js. Graph visualization</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

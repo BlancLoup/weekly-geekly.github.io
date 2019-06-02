@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>LXC in QoS service (replace ifb with veth)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Probably anyone who has set up traffic prioritization in Linux has come across the fact that ifb’s ability to manage incoming traffic is quite scarce....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>LXC in QoS service (replace ifb with veth)</h1><div class="post__text post__text-html js-mediator-article">  Probably anyone who has set up traffic prioritization in Linux has come across the fact that ifb’s ability to manage incoming traffic is quite scarce.  Next, I will talk about a number of typical problems in building QoS, and how these problems were solved with the help of containers. <br><a name="habracut"></a><br><h3>  Why such problems? </h3><br>  It so happened that we can only control the speed of the network flow in the direction "to the output".  What has already come to us on the interface has already passed many bottlenecks, and it would seem that there is no point in discarding or delaying this traffic.  But, since most of the protocols (TCP and those that are built on top of UDP, or have their own implementation) have outbound flow control mechanisms that can take into account the actual client throughput and change the sending speed.  In such a situation, it makes sense to manage the flow that goes to the customer on our side.  There are a lot of mechanisms that implement them, I will consider a part of them. <br><br><h3>  Typical situations and problems </h3><br><h5>  One interface to the Internet and a local network, no tunnels </h5><br><br>  The simplest and problem-free situation.  Hereinafter, we will take for granted (for simplicity): the gateway itself does not generate traffic, it simply transmits it. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      So, everything is simple, we hang queues on both interfaces, and we control the speed to the clients (incoming), on the interface, which looks at the local network (on its outgoing stream).  Outgoing, respectively, on the external interface.  Everything works, nothing interesting, go ahead. <br><br><h5>  Add another internal interface </h5><br>  Now everything is not so good.  How to divide the "incoming" flow between internal networks?  Queues of neighboring interfaces do not know anything about the actual load on the channel.  Here you can divide the entire speed in half, and give half to each network.  As a result, if the second network does not use the channel, and the second wants the maximum, it will receive only half of it ... Sadness, but ifb (or its almost deceased competitor imq) will help us. <br><br>  The idea of ​​ifb is that we place a pseudo-interface in front of our real one, and thus begin to control the “incoming” flow of the real interface.  Unfortunately, there is too much tar in this barrel.  It turns out that ifb is so special that the iptables utility’s labeling and filtering mechanisms cannot be applied to it, only with tc.  What's wrong with tc?  And the fact that in terms of filtering and labeling, he knows very little and the syntax is completely different. <br><br>  No matter how bad it is with tc, he will be able to solve the posed problem quite well, we will put it on the incoming interface, and we will remove the rules from the internal ones, they are no longer needed there. <br><br><h5>  Now connect two offices with a tunnel. </h5><br>  Now everything is getting really bad.  We have a new interface that works as usual, but among other things, it "imperceptibly" uses the bandwidth of another interface. <br><br>  Now we cannot efficiently distribute traffic, ifb will not help us here either.  There remains a solution in the "forehead": select a fixed band for the tunnel, and manage the contents of the tunnel as a normal interface (by hanging on it ifb and regular queues). <br><br>  Everything is “not bad”, only for nothing can we lose the speed given to the tunnel or to the normal network (how to look). <br><br><h3>  LXC will help us! </h3><br>  In general, the main idea is in the application of netns, but it is simpler to use the container (although it consumes more resources, mainly disk space). <br><br>  So: we need an intermediate chain of interfaces between "external" and "internal" interfaces.  It is on this chain that you can easily make the QoS of all traffic, and the maximum that we will lose from it is 4.5% (count the overhead, here I took IPSec \ GRE) into tunneling and encryption (to guarantee that everyone will receive the specified lane, we assume that all the traffic that comes \ goes to us, comes from the tunnel). <br><br>  I think that everyone can create a container on the LXC, I will consider only some particulars that we may need. <br><br>  So, in the configuration of the container, we need: <br><br>  Add our real external interface to the container (we “sell” it to the container, so it will “disappear” from the main namespace): <br><br><pre><code class="bash hljs">lxc.network.type = phys lxc.network.flags = up lxc.network.link = enp3s6</code> </pre> <br>  Or similarly for vlan: <br><br><pre> <code class="bash hljs">lxc.network.type = vlan lxc.network.flags = up lxc.network.link = enp2s0 lxc.network.vlan.id = 603</code> </pre><br>  Add an interface through which we will communicate with the main system (the script will raise the interface in the main system, the configuration must be set in advance): <br><br><pre> <code class="bash hljs">lxc.network.type = veth lxc.network.flags = up lxc.network.veth.pair = route0 lxc.network.name = eth1 lxc.network.hwaddr = 02:b2:30:41:30:25 lxc.network.script.up = /usr/bin/nmcli connection up route0</code> </pre><br>  Let's add automatic start and stop of the interfaces of the main system, when starting / stopping the container: <br><br><pre> <code class="bash hljs">lxc.hook.pre-start = /var/lib/lxc/route0/pre-start.sh lxc.hook.post-stop = /var/lib/lxc/route0/post-stop.sh</code> </pre><br><div class="spoiler">  <b class="spoiler_title">/var/lib/lxc/route0/pre-start.sh</b> <div class="spoiler_text"><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh /usr/bin/nmcli connection down vlan603 &gt;/dev/null 2&gt;&amp;1 exit 0</span></span></code> </pre><br></div></div><br><div class="spoiler">  <b class="spoiler_title">/var/lib/lxc/route0/post-stop.sh</b> <div class="spoiler_text"><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh /usr/bin/nmcli connection up vlan603 &gt;/dev/null 2&gt;&amp;1 exit 0</span></span></code> </pre><br></div></div><br>  Add the ability to use tun \ tap interfaces: <br><br><pre> <code class="bash hljs">lxc.hook.autodev = /var/lib/lxc/route0/autodev.sh</code> </pre><br><div class="spoiler">  <b class="spoiler_title">/var/lib/lxc/route0/autodev.sh</b> <div class="spoiler_text"><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash cd ${LXC_ROOTFS_MOUNT}/dev mkdir net mknod net/tun c 10 200 chmod 0666 net/tun</span></span></code> </pre><br></div></div><br>  Let us manage some routing parameters (who knows how to make narrower permissions, I ask for a hint): <br><br><pre> <code class="bash hljs">lxc.mount.auto = proc:rw sys:ro</code> </pre><br>  If necessary, make the container autorun. <br><br>  In the main system, we need a profile for the route0 interface, which will appear when the container starts, I assume that you are using NetworkManager. <br><br>  What you need to configure more: <br><br><ul><li>  Configure the route0 interface interface in the main ip system, for example: 192.168.20.22/30 and the default route 192.168.20.21 </li><li>  In the container, you must configure the ip address of interface eth1, for example: 192.168.20.21/30 and the route to the internal network 192.168.21.0/24 via 192.168.20.22 </li><li>  In the container you need to configure the "external" interface, mascarding and forwarding. </li><li>  Most likely, we only need forwarding in the main system. </li><li>  Everything that should go on the external network (including tunnels) is placed in the container. </li></ul><br>  Now we will simply configure the queues on the outgoing flows of interfaces connecting the main system with the container.  Now, there are no problems with determining the destination of traffic, and we can use the entire available band from our provider (taking into account the% of the overhead from the tunnels). <br><br>  <strong>PS</strong> The era of "basins" that distribute the Internet under Linux is rapidly leaving, the cost of hardware routers is becoming more attractive, and their power and flexibility is not much less than the "big" brothers, the same Mikrotik will solve this "problem" without much trouble. </div><p>Source: <a href="https://habr.com/ru/post/309124/">https://habr.com/ru/post/309124/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../309106/index.html">Book on intensive data processing</a></li>
+<li><a href="../309110/index.html">Logic hoster: not caught - not a thief. How to prove the opposite. Service Overview HostTracker Part 3</a></li>
+<li><a href="../309112/index.html">Huawei Connect 2016 Shanghai</a></li>
+<li><a href="../309114/index.html">Visualization of the photo portfolio. Part 2: Word embedding</a></li>
+<li><a href="../309118/index.html">Alexey Ragozin on JVM diagnostic interfaces on jug.msk.ru</a></li>
+<li><a href="../309126/index.html">How to work with MS Access in Linux</a></li>
+<li><a href="../309128/index.html">Automating the maintenance of correspondence between the names of layers in the editor and code using CodeDom</a></li>
+<li><a href="../309130/index.html">Communication Arrangements</a></li>
+<li><a href="../309132/index.html">Once again about the benefits of backups or the story of my failure</a></li>
+<li><a href="../309136/index.html">ADM interface - what is “Tetrad”</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

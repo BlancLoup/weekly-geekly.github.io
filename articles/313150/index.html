@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>DPDK Introduction: Architecture and Operation</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Over the past few years, the topic of performance of the Linux network stack has gained special relevance. This is quite understandable: the volume of...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>DPDK Introduction: Architecture and Operation</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/d1e/e52/ad4/d1ee52ad4ecbf9741aefff3759b42241.png" alt="DPDK" width="100%" height="100%"><br><br>  Over the past few years, the topic of performance of the Linux network stack has gained special relevance.  This is quite understandable: the volume of data transmitted over the network and the corresponding loads grow by leaps and bounds. <br><br>  And even the wide distribution of 10GE network cards does not solve the problem: there are a lot of bottlenecks in the Linux kernel itself that impede fast packet processing. <br><a name="habracut"></a><br>  There are numerous attempts to circumvent these bottlenecks.  The techniques used for bypass are called kernel bypass (you can find a brief overview, for example, <a href="https://blog.cloudflare.com/kernel-bypass/" rel="nofollow">here</a> ).  They allow you to completely eliminate the Linux network stack from the packet processing process and to make the application running in user space interact with the network device directly.  We would like to talk about one of these solutions - <a href="http://dpdk.org/" rel="nofollow">DPDK</a> (Data Plane Development Kit), developed by Intel - in today's article. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      About DPDK there are many publications, including in Russian (see, for example: <a href="https://habrahabr.ru/company/intel/blog/302126" rel="nofollow">1</a> , <a href="https://habrahabr.ru/company/intel/blog/280502/" rel="nofollow">2</a> and <a href="https://habrahabr.ru/company/intel/blog/309836/">3</a> ).  Among these publications, there are some quite good ones, but they do not answer the main question: how exactly does packet processing using DPDK occur?  What are the stages of the package path from the network device to the user? <br><br>  It is these questions that we will try to answer.  To find the answers, we had to do a great job: since we did not find all the necessary information in the official documentation, we had to familiarize ourselves with a lot of additional materials and immerse ourselves in studying the source code ... However, take everything in order.  And before we talk about DPDK and what problems it helps to solve, we need to remember how the packet handling is performed in Linux.  From this we begin. <br><br><h2>  Linux packet handling: basic steps </h2><br><br>  So, when the packet arrives on the network card, it is copied from there to the main memory using the DMA mechanism — Direct Memory Access. <br><blockquote>  <b>UPD</b> .  Specification: on the new hardware, the packet is copied to the Last Level Cache of the socket from which the DMA has already been initiated, and from there, from there to memory.  Thanks <a href="https://habrahabr.ru/users/izard/" class="user_link">izard</a> . <br></blockquote><br><br>  After that, you need to inform the system about the appearance of a new package and transfer the data further to a dedicated buffer (Linux allocates such buffers for each package).  For this purpose, Linux uses an interrupt mechanism: an interrupt is generated whenever a new packet enters the system.  Then the packet still needs to be transferred to user space. <br><br>  One “bottleneck” is already obvious: the more packets one has to handle, the more resources are spent on it, which negatively affects the operation of the system as a whole. <br><blockquote>  <b>UPD</b> .  In modern network cards, interrupt moderation technology is used (this expression is sometimes translated into Russian as “interrupt coordination”), which can be used to reduce the number of interruptions and unload the processor.  For clarification, thanks to <a href="https://habrahabr.ru/users/t0r/" class="user_link">T0R</a> . <br></blockquote><br><br>  Package data, as mentioned above, is stored in a dedicated buffer, or, more precisely, in <a href="" rel="nofollow">the sk_buff structure</a> .  This structure is allocated for each package and is released when the package falls into user space.  This operation uses a lot of bus cycles (i.e., cycles that transmit data from the CPU to the main memory). <br><br>  There is another problem point with the sk_buff structure: the Linux network stack was initially trying to make it compatible with as many protocols as possible.  The metadata of all these protocols are included in the sk_buff structure, but they may simply not be needed to process a particular package.  Due to the excessive complexity of the structure, processing slows down. <br><br>  Another factor negatively affecting performance is context switching.  When an application running in user space needs to accept or send a packet, it makes a system call, and the context switches to kernel mode, and then back to user mode.  This is associated with tangible system resources. <br><br>  To solve some of the problems described above, the so-called <a href="https://wiki.linuxfoundation.org/networking/napi" rel="nofollow">NAPI (New API) has</a> been added to the Linux kernel since version 2.6 of the kernel, in which the interrupt method is combined with the polling method.  Consider in brief how it works. <br><br>  At first, the network card operates in the interrupt mode, but as soon as the packet arrives at the network interface, it registers itself in the poll list and disables the interrupts.  The system periodically checks the list for new devices and picks up packages for further processing.  Once the packets have been processed, the card will be removed from the list, and the interrupts will be turned on again. <br><br>  We have described the packet processing process very fluently.  A more detailed description can be found, for example, in a <a href="https://www.privateinternetaccess.com/blog/2016/01/linux-networking-stack-from-the-ground-up-part-1/" rel="nofollow">series of articles in the blog of the company Private Internet Access</a> .  However, even a brief review is enough to see problems that cause packet processing to slow down.  In the next section, we describe how these problems are solved using DPDK. <br><br><h2>  DPDK: how it works </h2><br><br><h3>  In outline </h3><br>  Consider the following illustration: <br><img src="https://habrastorage.org/getpro/habr/post_images/63d/91d/e63/63d91de631be77e34b1a6c095d2091ea.png" alt="DPDK" width="100%" height="100%"><br>  The left hand side shows the process of packet processing in the "traditional" way, and the right side using DPDK.  As you can see, in the second case, the kernel is not involved at all: interaction with the network card is carried out through specialized drivers and libraries. <br><br>  If you have already read about DPDK or have at least some experience with it, then you know that the ports of the network card that will receive traffic will need to be removed from Linux management altogether - this is done using the dpdk_nic_bind command (or dpdk-devbind ), and in earlier versions) - ./dpdk_nic_bind.py. <br><br>  How are ports transferred to DPDK?  Every driver in Linux has so-called bind and unbind files.  They have a network card driver: <br><br><pre><code class="bash hljs">ls /sys/bus/pci/drivers/ixgbe <span class="hljs-built_in"><span class="hljs-built_in">bind</span></span> module new_id remove_id uevent unbind</code> </pre> <br>  To detach the device from the driver, you need to write the bus number of this device in the unbind-file.  Accordingly, to transfer the device under the control of another driver, you will need to record the bus number in its bind file.  More details about this can be found in <a href="https://lwn.net/Articles/143397/" rel="nofollow">this article</a> . <br><br>  The installation instructions for DPDK <a href="http://dpdk.org/doc/guides-16.04/linux_gsg/build_dpdk.html" rel="nofollow">indicate</a> that the ports need to be brought under the control of the vfio_pci, igb_uio or uio_pci_generic drivers. <br><br>  All these drivers (we will not discuss their features in detail in this article; we refer readers to articles on kernel.org: <a href="https://www.kernel.org/doc/Documentation/vfio.txt" rel="nofollow">1</a> and <a href="https://www.kernel.org/doc/htmldocs/uio-howto/about.html" rel="nofollow">2</a> ) that make it possible to interact with devices in the user space.  Of course, they include the kernel module, but its functions are reduced to initializing the devices and providing a PCI interface. <br><br>  All further work on organizing the communication of the application with the network card is taken by the PMD driver included in the DPDK (short for poll mode driver).  DPDK has PMD-drivers for all supported network cards, as well as for virtual devices (thanks to <a href="https://habrahabr.ru/users/t0r/" class="user_link">T0R</a> thanks). <br><br>  To work with DPDK, you must also configure large pages of memory (hugepages).  It is necessary that <br>  reduce the load on the TLB. <br><br>  We will discuss all the nuances in more detail below, but for now let's briefly describe the main stages of packet processing using DPDK: <br><br><ol><li>  Received packets fall into the ring buffer (we will analyze its device in the next section).  The application periodically checks this buffer for new packages. </li><li>  If there are new packet descriptors in the buffer, the application accesses the DPDK packet buffers located in a dedicated memory pool through pointers in packet descriptors. </li><li>  If there are no packets in the ring buffer, the application polls the network devices that are running DPDK, and then calls the ring again. </li></ol><br><br>  Consider the internal structure of the DPDK in more detail. <br><br><h3>  EAL: environment abstraction </h3><br>  <a href="http://dpdk.org/doc/guides-16.04/prog_guide/env_abstraction_layer.html" rel="nofollow">EAL</a> (Environment Abstraction Layer, environment abstraction layer) is the central concept of DPDK. <br><br>  EAL is a set of software tools that enable DPDK to work in a specific hardware environment and under control of a specific operating system.  In the official DPDK repository, the libraries and drivers included in EAL are stored in the rte_eal directory. <br><br>  Drivers and libraries for Linux and BSD systems are stored in this directory.  There are also sets of header files for different processor architectures: ARM, x86, TILE64, PPC64. <br><br>  The programs included in EAL are addressed when building DPDK from the source code: <br><br><pre> <code class="bash hljs">make config T=x86_64-native-linuxapp-gcc</code> </pre><br>  In this command, as it is not difficult to guess, we indicate that DPDK should be built for the architecture x86_84, OS Linux. <br><br>  It is EAL that provides the “binding” of DPDK to applications.  All applications that use DPDK (see examples <a href="http://dpdk.org/doc/guides-16.04/prog_guide/index.html" rel="nofollow">here</a> ) must include the header files that are included with EAL. <br>  We list the most common ones: <br><br><ul><li>  rte_lcore.h - control functions for processor cores and sockets; </li><li>  rte_memory.h - memory management functions; </li><li>  rte_pci.h - functions that provide the interface access to the PCI address space; </li><li>  rte_debug.h - tracing and debugging functions (logging, dump_stack and others); </li><li>  rte_interrupts.h - interrupt handling functions. </li></ul><br>  More information about the device and EAL functions can be found in the <a href="http://dpdk.org/doc/guides/prog_guide/env_abstraction_layer.html" rel="nofollow">documentation</a> . <br><br><h2>  Queue management: rte_ring library </h2><br>  As we said above, the packet arriving at the network card gets into the receiving queue, which is a circular buffer.  In DPDK, newly arrived packages are also placed in a queue implemented on the basis of the rte_ring library.  All of the following descriptions of this library are based on the developer’s guide, as well as on comments to the source code. <br><br>  When developing rte_ring, the <a href="" rel="nofollow">implementation of the ring buffer for FreeBSD</a> was taken as the basis. If you take a look at the <a href="" rel="nofollow">sources</a> , then pay attention to the following comment: Derived from FreeBSD's bufring.c. <br><br>  The queue is a non-blocking ring buffer, organized according to the <a href="https://ru.wikipedia.org/wiki/FIFO" rel="nofollow">FIFO (First In, First Out)</a> principle.  The ring buffer is a table of pointers to objects stored in memory.  All pointers are divided into four types: prod_tail, prod_head, cons_tail, cons_head. <br><br>  Prod and cons are abbreviations from the producer and consumer.  <b>The</b> producer is the process that writes data to the buffer at the current moment, and the consumer is the process that is currently taking the data from the buffer. <br><br>  <b>Tail</b> (tail) is the place where the current recording in the ring buffer.  The place from where the current buffer reading is performed is called the <b>head</b> . <br><br>  The meaning of the operation of queuing and taking out of the queue is as follows: when adding a new object to the queue, in the end everything should turn out so that the ring-&gt; prod_tail pointer points to the place where the ring-&gt; prod_head had previously indicated. <br><br>  Here we give only a brief description;  For more information about the scenarios of the ring buffer can be found in <a href="http://dpdk.org/doc/guides-16.04/prog_guide/ring_lib.html" rel="nofollow">the developer’s guide on the DPDK website</a> . <br><br>  From the advantages of this approach to queue management, first of all, it is necessary to single out a higher write speed to the buffer.  Secondly, when performing bulk enqueue operations and mass withdrawals from the queue, cache misses occur much less frequently, because pointers are stored in a table. <br><br>  The disadvantage of implementing a circular buffer in DPDK is the fixed size, which cannot be increased on the fly.  In addition, much more memory is used to work with a ring structure than to work with a linked list: the maximum possible number of pointers is always used in a ring. <br><br><h2>  Memory management: rte_mempool library </h2><br>  We have already said that DPDK needs large memory pages (HugePages) to work.  Installation instructions recommend creating HugePages of 2 megabytes each. <br><br>  These pages are combined into segments, which are then divided into zones.  Objects created by applications or other libraries — for example, queues and packet buffers — are already being placed in zones. <br><br>  The number of such objects includes the memory pools created by the rte_mempool library.  These are pools of fixed-size objects that use rte_ring to store free objects and can be identified by a unique name. <br><br>  Alignment techniques can be used to improve performance. <br><br>  Despite the fact that access to free objects is organized on the basis of a ring buffer without locks, the cost of system resources can be very large.  Several processor cores have access to the ring, and whenever the core accesses the ring, it is necessary to perform a <a href="https://en.wikipedia.org/wiki/Compare-and-swap" rel="nofollow">comparison</a> operation <a href="https://en.wikipedia.org/wiki/Compare-and-swap" rel="nofollow">with the exchange</a> (compare and set, CAS). <br><br>  To prevent the ring from becoming a bottleneck, each core receives an additional local cache in the memory pool.  The kernel has full access to the cache of free objects using the lock mechanism.  When the cache is full or released, the memory pool communicates with the ring.  This provides the kernel with access to frequently used objects. <br><br><h3>  Buffer management: rte_mbuf library </h3><br>  In the Linux network stack, as noted above, the sk_buff structure is used to represent all network packets.  DPDK uses the rte_mbuf structure for this purpose, described in the <a href="http://dpdk.org/doc/api/rte__mbuf_8h_source.html" rel="nofollow">rte_mbuf.h</a> header file. <br><br>  The approach to managing buffers in DPDK is a lot like the one used in FreeBSD: instead of one large sk_buff structure, there are many small rte_mbuf buffers.  Buffers are created before running an application that uses DPDK, and are stored in memory pools (for memory allocation, the rte_mempool library is used). <br><br>  In addition to the packet data itself, each buffer also contains metadata (message type, length, address of the beginning of the data segment).  The buffer also contains a pointer to the next buffer.  This is necessary for working with packages containing a large amount of data - in this case, packages can be combined (just as it is done in FreeBSD - you can read more about this, for example, <a href="https://www.bsdcan.org/2004/papers/NetworkBufferAllocation.pdf" rel="nofollow">here</a> ). <br><br><h3>  Other libraries: quick overview </h3><br>  In the previous sections, we have described only the most basic DPDK libraries.  But there are many other libraries, which are hardly possible to talk about in one article.  Therefore, we confine ourselves to a brief overview. <br><br>  Using the <a href="http://dpdk.org/doc/guides/prog_guide/lpm_lib.html" rel="nofollow">LPM</a> library in DPDK, the <a href="https://en.wikipedia.org/wiki/Longest_prefix_match" rel="nofollow">Longest Prefix Match (LPM)</a> algorithm is used, which is used to forward packets depending on their IPv4 address.  The main functions of this library are to add and remove IP addresses, as well as to search for a new address using the LPM algorithm. <br><br>  For IPv6 addresses, similar functionality is implemented on the basis of the <a href="http://dpdk.org/doc/guides/prog_guide/lpm6_lib.html" rel="nofollow">LPM6</a> library. <br><br>  In other libraries, similar functionality is implemented using hash functions.  With <a href="http://dpdk.org/doc/guides/prog_guide/hash_lib.html" rel="nofollow">rte_hash,</a> you can search through a large set of entries using a unique key.  This library can be used, for example, to classify and distribute packages. <br><br>  The <a href="http://dpdk.org/doc/guides/prog_guide/timer_lib.html" rel="nofollow">rte_timer</a> library provides asynchronous function execution.  The timer can be executed either once or periodically. <br><br><h2>  Conclusion </h2><br>  In this article we tried to talk about the internal structure and how DPDK works.  We tried, but did not tell to the end - this topic is so complex and extensive that one article is clearly not enough.  Therefore, wait for the continuation: in the next article we will talk in more detail about the practical aspects of using DPDK. <br><br>  In the comments, we will be happy to answer all your questions.  And if any of you have experience using DPDK, we will be grateful for any comments and additions. <br><br>  For anyone who wants to learn more, here are useful links on the topic: <br><br><ul><li>  <a href="http://dpdk.org/doc/guides/prog_guide/" rel="nofollow">http://dpdk.org/doc/guides/prog_guide/</a> - a detailed (albeit confusing) description of all the DPDK libraries; </li><li>  <a href="https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2014-08-1/NET-2014-08-1_15.pdf" rel="nofollow">https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2014-08-1/NET-2014-08-1_15.pdf</a> - a brief overview of the capabilities of DPDK, comparison with other frameworks of the same plan ( netmap and PF_RING); </li><li>  <a href="http://www.slideshare.net/garyachy/dpdk-44585840" rel="nofollow">http://www.slideshare.net/garyachy/dpdk-44585840</a> - presentation introduction to the DPDK for beginners; </li><li>  <a href="http://www.it-sobytie.ru/system/attachments/files/000/001/102/original/LinuxPiter-DPDK-2015.pdf" rel="nofollow">http://www.it-sobytie.ru/system/attachments/files/000/001/102/original/LinuxPiter-DPDK-2015.pdf</a> - presentation with explanations of the DPDK device. </li></ul><br>  If for some reason you can not leave comments here - welcome to <a href="https://blog.selectel.ru/vvedenie-v-dpdk-arxitektura-i-princip-raboty/">our corporate blog.</a> </div><p>Source: <a href="https://habr.com/ru/post/313150/">https://habr.com/ru/post/313150/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../313138/index.html">Kinematics modeling is not difficult</a></li>
+<li><a href="../313142/index.html">Joker 2016 Java Conference: More, More, More Interesting</a></li>
+<li><a href="../313144/index.html">QEMU / KVM and Windows installation</a></li>
+<li><a href="../313146/index.html">OpenShift + Jenkins + Bitbucket, continuous integration and publishing out of the box</a></li>
+<li><a href="../313148/index.html">The best projects of the telecom hackathon TADHack Moscow 2016</a></li>
+<li><a href="../313152/index.html">Esoteric language Piet</a></li>
+<li><a href="../313156/index.html">Useful life hacking: answering the most popular questions</a></li>
+<li><a href="../313158/index.html">Today startups appear for the sake of a startup, and not the realization of the idea</a></li>
+<li><a href="../313160/index.html">Kivy - even easier, more native</a></li>
+<li><a href="../313162/index.html">Is there a lot to start up with big data and AI?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

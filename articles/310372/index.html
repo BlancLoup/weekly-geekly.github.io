@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Examples of real patches in PostgreSQL: part 2 of N</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In previous articles, we looked at the PostgreSQL development process , as well as examples of some of the real patches that have been adopted by this...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Examples of real patches in PostgreSQL: part 2 of N</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/1ef/102/ef2/1ef102ef2c034df1a4f039a897758206.png"><br><br>  In previous articles, we <a href="https://habrahabr.ru/company/postgrespro/blog/308442/">looked at the PostgreSQL development process</a> , as well as <a href="https://habrahabr.ru/company/postgrespro/blog/309488/">examples of some of the real patches</a> that have been adopted by this RDBMS recently.  At the same time, the considered patches were, frankly speaking, some “frivolous” - correction of typos, correction of the simplest jambs found using static analysis, and so on. <br><br>  Today we will look at examples of more serious patches, eliminating bottlenecks in the code, correcting quite serious bugs, relatively large refactorings, and so on.  As before, the main purpose of the article is not so much to highlight the changes adopted in PostgreSQL 9.6, but to show that the development of open source projects, in particular PostgreSQL, is interesting and not as difficult as it may seem. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      If this topic is interesting to you, please under cat. <br><a name="habracut"></a><br><h3>  6. Accelerating ResourceOwner for a large amount of resources. </h3><br>  ResourceOwner is an object (as far as the word “object” is applicable to the procedural language C), designed to manage resources during the execution of SQL queries.  For each transaction and subtransaction, a separate ResourceOwner is created.  ResourceOwner has many methods like RememberLock / ForgetLock, RememberFile / ForgetFile and similar.  In addition, ResourceOwners can be built in a hierarchy.  In the case of a rollback of a transaction for any reason (the user said rollback, an exception occurred, etc.), we simply release ResourceOwner, and this release in turn leads to the release of all the resources in use in this ResourceOwner and his "children."  Details can be found in the <a href="https://github.com/postgres/postgres/blob/REL9_5_STABLE/src/backend/utils/resowner/README">corresponding README file</a> . <br><br>  In 9.5, ResourceOwner used arrays to store resources.  It was assumed that resources are usually released in the reverse order to the one in which they were allocated, therefore Forget * methods searched for resources from the end of the array.  In practice, however, it turned out that this approach does not always work well.  So <a href="https://eax.me/c-cpp-profiling/">profiling has shown</a> that when executing the simplest SELECT queries to a table with a <a href="https://habrahabr.ru/post/273933/">large number of partitions</a> with this approach, PostgreSQL spends 30% of the time in these Forget * methods. <br><br>  It was possible to eliminate bottleneck by replacing the arrays with hash tables.  However, if the number of resources in ResourceOwner is small, then arrays are used, as before: <br><br><pre><code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * ResourceArray is a common structure for storing all types of resource IDs. * * We manage small sets of resource IDs by keeping them in a simple array: * itemsarr[k] holds an ID, for 0 &lt;= k &lt; nitems &lt;= maxitems = capacity. * * If a set grows large, we switch over to using open-addressing hashing. * Then, itemsarr[] is a hash table of "capacity" slots, with each * slot holding either an ID or "invalidval". nitems is the number of valid * items present; if it would exceed maxitems, we enlarge the array and * re-hash. In this mode, maxitems should be rather less than capacity so * that we don't waste too much time searching for empty slots. * * In either mode, lastidx remembers the location of the last item inserted * or returned by GetAny; this speeds up searches in ResourceArrayRemove. */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">typedef</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">ResourceArray</span></span></span><span class="hljs-class"> {</span></span> Datum *itemsarr; <span class="hljs-comment"><span class="hljs-comment">/* buffer for storing values */</span></span> Datum invalidval; <span class="hljs-comment"><span class="hljs-comment">/* value that is considered invalid */</span></span> uint32 capacity; <span class="hljs-comment"><span class="hljs-comment">/* allocated length of itemsarr[] */</span></span> uint32 nitems; <span class="hljs-comment"><span class="hljs-comment">/* how many items are stored in items array */</span></span> uint32 maxitems; <span class="hljs-comment"><span class="hljs-comment">/* current limit on nitems before enlarging */</span></span> uint32 lastidx; <span class="hljs-comment"><span class="hljs-comment">/* index of last item returned by GetAny */</span></span> } ResourceArray;</code> </pre> <br>  This patch also includes ResourceOwner refactoring.  Previously, for each type of resource, a separate array of files, heaptuples, and so on was used.  All of these types are either pointers or integers, and therefore can be stored in a Datum (the local equivalent of uintptr_t).  A new ResourceArray entity was introduced, allowing to store any resources, which saved a significant amount of duplicate code. <br><br>  Commit: <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dcommitdiff%3Bh%3Dcc988fbb0bf60a83b628b5615e6bade5ae9ae6f4%3Bhp%3D879d71393de001880e031">cc988fbb0bf60a83b628b5615e6bade5ae9ae6f4</a> <br>  Discussion: <a href="https://www.postgresql.org/message-id/flat/20151204151504.5c7e4278%40fujitsu">20151204151504.5c7e4278@fujitsu</a> <br><br><h3>  7. Freelist Partitioning for a shared dynahash </h3><br>  Dynahash (see <a href="">file dynahash.c</a> ) is a local implementation of hash tables.  Hash tables in PostgreSQL can behave very differently depending on the flags with which they were created.  For example, they can live in the local memory of the process, as well as in <a href="https://www.freebsd.org/cgi/man.cgi%3Fquery%3Dshmget">shared memory</a> .  When using the latter, shared memory is mapped to the same virtual addresses in all PostgreSQL processes.  The shared memory is allocated once and the amount of this memory cannot be changed during the operation of the RDBMS. <br><br>  For these reasons, the so-called freelist is used to keep track of free memory in shared hash tables - a list of free pieces of small memory.  When freeing memory, it is added to the freelist.  When you need to allocate memory, it is taken from freelist.  Since access to a shared hash table is carried out at once by several processes, access to the freelist is synchronized using a spinlock.  It turned out that certain congestion causes lock contention during this spinlock. <br><br>  The patch finally adopted resolves this problem as follows.  Instead of one freelist, several are used (32), each with its own spinlock. <br><br>  It was: <br><br><pre> <code class="cpp hljs"> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">HASHHDR</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">slock_t</span></span> mutex; <span class="hljs-comment"><span class="hljs-comment">/* unused if not partitioned table */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">long</span></span> nentries; <span class="hljs-comment"><span class="hljs-comment">/* number of entries in hash table */</span></span> HASHELEMENT *freeList; <span class="hljs-comment"><span class="hljs-comment">/* linked list of free elements */</span></span> <span class="hljs-comment"><span class="hljs-comment">/* ... */</span></span></code> </pre><br>  It became: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> NUM_FREELISTS 32 typedef struct { slock_t mutex; </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* spinlock */</span></span></span><span class="hljs-meta"> long nentries; </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* number of entries */</span></span></span><span class="hljs-meta"> HASHELEMENT *freeList; </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* list of free elements */</span></span></span><span class="hljs-meta"> } FreeListData; struct HASHHDR { FreeListData freeList[NUM_FREELISTS]; </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* ... */</span></span></span></span></code> </pre><br>  The default allocation for memory allocation is freelist, the number of which is determined by the lower bits of the hash value from the key: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> FREELIST_IDX(hctl, hashcode) \ (IS_PARTITIONED(hctl) ? hashcode % NUM_FREELISTS : 0)</span></span></code> </pre><br>  However, if the memory in “our” freelist is over, it is “borrowed” from other freelists. <br><br>  Among other things, the patch is interesting because before accepting it, I had to write about 15 of its versions, actually sorting through all possible sharding strategies of freelists, their number, and other parameters, choosing one option that showed the best performance.  For example, instead of the 32 spin locks used in the final implementation, one could use one RW Lock, captured for reading, if we want to take the memory from “our” freelist, and for the record — if we borrow from others.  Plus, the spinlock can be arranged in different ways in memory, with or without alignment to the size of the cacheline, and so on. <br><br>  Commit: <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dcommitdiff%3Bh%3D44ca4022f3f9297bab5cbffdd97973dbba1879ed%3Bhp%3Dea4b8bd6188ecb17ba37d">44ca4022f3f9297bab5cbffdd97973dbba1879ed</a> <br>  Discussion: <a href="https://www.postgresql.org/message-id/flat/20151211170001.78ded9d7%40fujitsu">20151211170001.78ded9d7@fujitsu</a> <br><br><h3>  8. Support for multiple iterators in RB trees </h3><br>  While working on the next feature, I noticed that the iteration interface on red-black trees (currently used exclusively in GIN indexes) in PostgreSQL looks like this: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">rb_begin_iterate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(RBTree *rb, RBOrderControl ctrl)</span></span></span></span>; <span class="hljs-function"><span class="hljs-function">RBNode *</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">rb_iterate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(RBTree *rb)</span></span></span></span>;</code> </pre><br>  You may notice that this interface does not allow you to create more than one iterator on the tree, which is rather inconvenient.  Moreover, the implementation was very strange.  For example, she kept the state of iteration in the nodes of the tree. <br><br>  Thinking a little, I rewrote all this economy, after which the interface was the following: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">rb_begin_iterate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(RBTree *rb, RBOrderControl ctrl, RBTreeIterator *iter)</span></span></span></span>; <span class="hljs-function"><span class="hljs-function">RBNode *</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">rb_iterate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(RBTreeIterator *iter)</span></span></span></span>;</code> </pre><br>  You can learn more about the various containers used in PostgreSQL from the article <a href="https://eax.me/c-lists-rbtree/">Not dull post about lists and search trees in the C language</a> .  In addition, you may be interested in the <a href="https://github.com/afiskon/c-algorithms">GitHub repository</a> that I created in the process of working on this task.  In it you will find the implementation of one- and two-linked lists, red-black trees and hash tables in C. The library is richly covered with tests and distributed under the MIT / BSD license. <br><br>  Commit: <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dcommitdiff%3Bh%3D9f85784cae4d057f307b83b0d33edede33434f04%3Bhp%3D76f9dd4fa82270899f7b5">9f85784cae4d057f307b83b0d33edede33434f04</a> <br>  Discussion: <a href="https://www.postgresql.org/message-id/flat/20160727172645.3180b2e0%40fujitsu">20160727172645.3180b2e0@fujitsu</a> <br><br><h3>  9. Correction of checksum validation in pg_filedump for tables with several segments </h3><br>  PostgreSQL stores table and index data in so-called pages.  The size of one page is 8 KB by default.  Pages are stored in files on disk called segments.  The size of one segment is by default equal to 1 GB.  Cutting relationships and indexes into segments allows PostgreSQL to work even on a file system that does not support files larger than 1 GB.  Using pages, caching of frequently used data in memory by the so-called buffer manager is implemented, which significantly reduces the number of disk accesses. <br><br>  The pg_filedump utility allows you to do various useful things with segments and pages.  For example, she can check the checksums of all pages in a segment.  Checksums are written to pages if the database was created by invoking initdb with the -k flag: <br><br><pre> <code class="hljs kotlin"> -k, --<span class="hljs-keyword"><span class="hljs-keyword">data</span></span>-checksums use <span class="hljs-keyword"><span class="hljs-keyword">data</span></span> page checksums</code> </pre><br>  Interestingly, the pg_checksum_page procedure, which calculates the page’s hash function, depends not only on the page content, but also on the block number: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">uint16 </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">pg_checksum_page</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *page, BlockNumber blkno)</span></span></span></span></code> </pre><br>  This allows you to make sure that the page not only stores the correct data, but is also recorded at the correct offset in the segment. <br><br>  So, recently in pg_filedump such a bug was discovered.  Cheksummas were correctly checked for the zero segment, but for the first, second, and so on segments of the cheksum, considered pg_filedump, did not agree with those that PostgreSQL itself counted.  As it turned out, for any segment pg_filedump started counting block numbers from scratch.  The correct way is to take into account all the previous segments, and use for this segment "absolute" numbers of blogs, not "relative". <br><br>  For obvious reasons, in the same patch, support for two previously missing flags was added to pg_filedump: <br><br><pre> <code class="hljs vhdl"> -s <span class="hljs-keyword"><span class="hljs-keyword">Force</span></span> segment size <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> [segsize] -n <span class="hljs-keyword"><span class="hljs-keyword">Force</span></span> segment number <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> [segnumber]</code> </pre><br>  Commit: <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpg_filedump.git%3Ba%3Dcommitdiff%3Bh%3D052ed0112967dd1e9b0e2cbe54821c04475f1a3a%3Bhp%3Db163cdaa53b651958cc8">052ed0112967dd1e9b0e2cbe54821c04475f1a3a</a> <br>  Discussion: <i>(only offlist)</i> <br><br><h3>  10. Checking the value returned by malloc (), realloc () and other procedures </h3><br>  Finally, I decided to leave a patch written not by me, but for which I acted as a reviewer.  In the process of code review, I suggested a lot of improvements for this patch. <br><br>  Michael Paquier noted that in some places, PostgreSQL does not check the return codes of the malloc (), realloc (), and strdup () procedures.  During the work on the patch, the list of procedures was supplemented with calloc (), as well as procedures for working with shared memory. <br><br>  As a result, where possible, the calls were replaced with similar secure PostgreSQL analogues - pg_strdup, pg_malloc and others: <br><br><pre> <code class="diff hljs"><span class="hljs-deletion"><span class="hljs-deletion">- steps = malloc(sizeof(Step *) * nsteps); + steps = pg_malloc(sizeof(Step *) * nsteps);</span></span></code> </pre><br>  In other places, checks were simply added: <br><br><pre> <code class="diff hljs"> new_environ = (char **) malloc((i + 1) * sizeof(char *)); + if (!new_environ) + { + write_stderr("out of memory\n"); + exit(1); + }</code> </pre><br>  See also the post of Michael himself - <a href="http://paquier.xyz/postgresql-2/postgres-10-highlight-shmem-alloc/">Postgres 10 highlight - ShmemAlloc and ShmemAllocNoError</a> . <br><br>  Commits: <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dcommitdiff%3Bh%3D052cc223d5ce1b727f62afff75797c88d82f880b%3Bhp%3D9daec77e165de461fca9d">052cc223</a> , <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dcommitdiff%3Bh%3D6c03d981a6b64ed8caaed4e94b54ef926202c9f3%3Bhp%3D6f7c0ea32f808a7dad3ec">6c03d981</a> <br>  Discussion: <a href="">CAB7nPqRu07Ot6iht9i9KRfYLpDaF2ZuUv5y_+72uP23ZAGysRg@mail.gmail.com</a> <br><br><h3>  To be continued... </h3><br>  Of course, provided that such posts are of interest to someone :) Perhaps I will also be able to persuade some of my colleagues to light up the patches they have been working on lately.  After all, who can tell about the patch better than the developer of this patch? <br><br>  As always, I look forward to your questions, and I will be happy to answer them in the comments.  And in general, feel free to leave any comments and additions! <br><br>  Continued: <a href="https://habrahabr.ru/company/postgrespro/blog/325850/">Examples of real patches in PostgreSQL: part 3 of N</a> </div><p>Source: <a href="https://habr.com/ru/post/310372/">https://habr.com/ru/post/310372/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../310360/index.html">Screen Space Ambient Occlusion</a></li>
+<li><a href="../310362/index.html">Simultaneous translation: how it works</a></li>
+<li><a href="../310366/index.html">How we made even load balancing on the frontend cluster</a></li>
+<li><a href="../310368/index.html">Jigsaw project in Java 9. A modular future that cannot be avoided</a></li>
+<li><a href="../310370/index.html">TEST Labs 2016. Online conference for testers. September 24</a></li>
+<li><a href="../310376/index.html">Review of the tasks of the final round of the RCC 2016</a></li>
+<li><a href="../310378/index.html">Monetization OpenStack. From private cloud to ready-made business in 72 hours</a></li>
+<li><a href="../310380/index.html">The complete guide to web consoles 2016: cPanel, Plesk, ISPmanager and others</a></li>
+<li><a href="../310382/index.html">Creating a project in Adobe Captivate in stages using the example of an on-board computer model for a live-action role-playing game.</a></li>
+<li><a href="../310384/index.html">The Macro: Corporate Commerce Guide for Y Combinator Residents</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

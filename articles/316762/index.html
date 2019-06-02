@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>MemC3 - compact Memcache with increased parallelism - due to more stupid caching and smarter hashing</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This is a translation of the review of the article “MemC3: Compact and Concurrent MemCache with Dumber Caching and Smarter Hashing” by Fan et al. in P...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>MemC3 - compact Memcache with increased parallelism - due to more stupid caching and smarter hashing</h1><div class="post__text post__text-html js-mediator-article"><p>  <em>This is a translation of the review of the article “MemC3: Compact and Concurrent MemCache with Dumber Caching and Smarter Hashing” by Fan et al.</em>  <em>in Proceedings of the 10th USENIX Symposium on Networked Systems Design and Implementation (NSDI'13), <a href="https://www.cs.cmu.edu/~binfan/papers/nsdi13_memc3.pdf">pdf here</a></em> </p><br><p>  <em>The dudes (a former googlovets, a dude from Carnegie Mellon University and another one from Intel Labs) made an improved Memcached-compatible cache (in fact they just finished memksh), and they have great performance results.</em>  <em>I really liked the review of this article in the blog "The morning paper" - a description of the algorithms and so on.</em> </p><br><a name="habracut"></a><br><p>  <em>Italics are my comments as a translator.</em> </p><br><p>  At the heart of MemC3, the hashing algorithm is different than the usual hash algorithm - the optimistic cuckoo hashing (cuckoo), and in addition, the special “CLOCK” algorithm of crowding out.  Combined together, they give up to 30% more efficient use of memory and an increase in performance in requests per second up to 3 times compared to your usual Memcached (with loads with a predominant reading of small objects, which is typical of Facebook memoshes). <br>  At the end of the original article there is an excellent analysis of the results obtained from the point of view of the contribution of the applied optimizations.  It looks like this: <br><img src="https://habrastorage.org/files/cf4/bc5/a63/cf4bc5a6396648e69a00686d76ff0d1c.png" alt="image"><br>  <strong>Full bandwidth (over the network) depending on the number of threads</strong> </p><br><h4 id="v-etom-razbore-my-prosto-zacenim-algoritmy-a-detali-ih-vkryachivaniya-v-memkesh-i-metodiki-performans-testirovaniya-pozhaluysta-chitayte-v-originalnoy-state">  In this analysis, we just check out the algorithms, and the details of their insertion into the memokes and testing performance techniques, please read the original article. </h4><br><h2 id="kukushechnoe-heshirovanie">  Maw hashing </h2><br><p>  First, let's deal with the usual cuckoo hashing.  How does the most common hash table work?  You hash the key and for this hash you select a table cell <em>(bucket or bucket :)</em> in which you want to insert or in which you can find the value corresponding to the key.  Cucu hashing uses two hash functions, it turns out two possible cells to insert or search for a value. </p><br><p>  Consider the following table, in which each row represents a cell, each of which has four slots for data.  A slot is a pointer to the data itself, a key-value pair object. <br><img src="https://habrastorage.org/files/0dd/a1e/e27/0dda1ee271604dc69814d99cfab52e7c.png" alt="image"><br>  Having the key to search, we count two hashes for it and get two possible cells.  That is, you need to check 2 cells × 4 slots = 8 slots to find or not to find the key you need. <br>  <em>That is, when searching in such a hash table, you need a lot of operations compared to the "normal" hash table.</em> </p><br><p>  Mapping hashing got its name because of how the insert operation is handled.  First, we hash the key <em>X</em> , which we are going to insert using both hash functions, and we get two possible cells.  If any of these cells has an empty slot, then save <em>X</em> there.  If all the slots are occupied, then it is time for some key to move.  Randomly select one slot in one of these two cells and move (or resettle) the key from it (let's call it <em>Y</em> ), thus freeing up space for writing <em>X.</em>  Now we have hashed <em>Y</em> with two hash functions and we find the second cell where it could be, and we are trying to insert <em>Y</em> into it.  If all the slots of this cell are also filled, then move some key from these slots to make room for <em>Y</em> , and continue to do so until an empty slot is found (or until we reach some maximum number of movements, for example, 500). <br>  <em>Here the algorithm behaves like a cuckoo - pulls out someone else's key from an already used place and puts its own one, hence the name.</em> <br><img src="https://habrastorage.org/files/cbf/968/b8d/cbf968b8da014ca695100eb9e5727c0c.png" alt="image"></p><br><p>  If it is not possible to find a free slot, then it is time to expand this hash table - to increase the memory allocated for it. </p><br><blockquote>  Although such an algorithm for insertion seems to require the execution of an entire sequence, a chain of displacements, an estimate of the time complexity of the insertion operation for cookie hashing is O (1). <br>  <em>Quote from the original work</em> </blockquote><br><h2 id="ispolzovanie-tegov-dlya-uluchsheniya-operaciy-poiska">  Using tags to improve search operations </h2><br><p>  From the above, it is clear that there are many key samples and many comparisons, and all this is not very good from the point of view of data locality.  <em>(Apparently, the author has in mind that since neither keys, nor even key hashes are stored directly in the slots of the table cells, but are stored in separately allocated key-value structures, there are many random memory accesses and full key comparisons that allows processor caches to work well)</em> The first thing we did to optimize cookie hashing was the introduction of tags.  A tag is a 1-byte key hash value, and we will store it directly in the hash table slot next to the key pointer.  Such tags allow you very quickly (just comparing one byte) to understand whether the stored key can match the desired one or not, without having to extract it by the pointer and completely compare it. </p><br><blockquote>  Extra extraction can occur for two different keys that have the same tag, so the key must still be extracted and compared completely to make sure that it matches the desired one.  With single-byte tags, the collision rate will be only 1/2 ^ 8 = 0.39%.  In the case of checking all 8 slots (for example, when searching for the missing key - miss), an average of 8 × 0.39% = 0.03 pointer dereferencing will occur.  Since each cell is placed in one processor processor cache block (usually 64 bytes), on average each search will turn into only reading two blocks to check two cells plus either 0.03 pointer dereferencing if the missing key is found - miss, or 1.03 in case of a successful search - hit'e. <br>  <em>Quote from the original work</em> </blockquote><br><h2 id="ispolzovanie-tegov-dlya-uluchsheniya-operacii-vstavki">  Using tags to improve inserts </h2><br><p>  When defining two possible cells for a key instead of using two hash functions, we will use only one hash, as well as an additional tag: let cell_1 = hash (X), and we have tag (X), then cell_2 = cell_1 ⊕ tag ( X).  This construction has the following useful property - you can define cell_1, knowing the tag and cell_2.  That is, in the operations of moving the key, it does not matter to us which cell the key was in, we can calculate the alternative cell without referring to the full key. </p><br><h2 id="podderzhka-parallelnosti-dostupa">  Parallel access support </h2><br><blockquote>  Our hashing scheme, as far as we know, is the first implementation with support for parallel access (multi-reader, single writer), which has high memory efficiency (even if&gt; 90% of the table is full). <br>  <em>Quote from the original work</em> </blockquote><p>  To add parallelism to such an algorithm, you need to solve two problems: </p><br><ol><li>  avoid grandfathers when getting lock on cells for writing, because we cannot know in advance which cells will be affected by our operation </li><li>  avoid false cache-misses, when in the process of moving some key has already been removed from one cell, but has not yet been inserted into a new one, and at that moment reading has occurred. </li></ol><br><p>  Of course, strictly speaking, the authors did not solve the first problem, they simply scored on it, since they allow only one write operation to be performed simultaneously.  In the real world, reading often dominates the load profile, so this is a reasonable compromise. <br>  Cache-misses (false negatives) can be avoided by first determining the full chain of cookie movements, but still not moving anything, and then performing these movements in the reverse order - from the last empty slot to the desired initial insert.  Combined with the fact that write operations go in one stream, it turns out that every single exchange is guaranteed not to cause any additional movements and can be performed without the need to block the entire chain beforehand. </p><br><p>  The most straightforward implementation is to take a lock on each of the two cells participating in the exchange (carefully with the order), and unblock them after the exchange.  Here you need two locks / releases for each exchange. </p><br><blockquote>  We tried to optimize performance for the most common use and took advantage of having only one write thread to build all the insert'y and lookup'y in one stream of successive operations with a small overhead.  Instead of locking the cells, we have a key-counter on each version.  Increase the counter when moving the key when insert'e and monitor the version change during the lookup for the detection of simultaneously moving movements. <br>  <em>Quote from the original work</em> </blockquote><p>  But where do you keep these counters ??  If you add them to each key-value object, then a lot of memory will be used with hundreds of millions of keys.  There is also an opportunity for race-condition, since these objects are key-value, stored outside the hash table itself and, thus, are not protected by locks. </p><br><p>  The solution is to use a fixed-size array of counters — much smaller than the number of keys.  An array of 8192 counters fit into the 32KB cache, and each counter is used for several keys, due to the use of our old friend - hashing.  Such a compromise, the use of such counters, still gives a good degree of parallelization of access, while maintaining the likelihood of an “extra retry” (the version counter increased by one for some other key that has a hash collision in the version counter table) low, approximately 0.01%. </p><br><p>  These counters are inscribed in the general algorithm as follows: </p><br><ul><li>  If it is necessary to move a key, the insertion process increases the version counter of this key by one to indicate the moving process in progress.  After the key is moved, the counter is incremented by one again.  The counting starts from zero, so the odd values ​​of the counter correspond to the locked keys, and the even numbers correspond to the unlocked keys. </li><li>  A search process that sees an odd value at the counter waits and then retries.  If the counter was even, then you need to remember this value, read both cells, and then compare the value of the counter with the memorized one.  If the counter value has changed, then you need to repeat the operation again. </li></ul><br><p>  An additional trick to optimizing cookie hash is to parallelly search for several possible insertion paths.  This increases the chances of finding an empty slot faster.  According to the tests it turned out that it is optimal to check in parallel two possible ways. </p><br><h2 id="vytesnenie-po-chasam">  The displacement of "HOURS" </h2><br><p>  So far we have been talking about inserts and searches.  And although optimized cookie-hashing also uses memory very efficiently, you can still expect that at some point our cache will fill up to the limit (or almost to the limit), and then you need to worry about repression. </p><br><p>  The usual Memcached uses the preemption policy of the most recently used keys — LRU, but it requires 18 bytes per key (two pointers and a 2-byte reference counter) to ensure safe preemption is strictly in the order of LRU.  This also introduces significant synchronization overhead. </p><br><p>  In contrast, MemC3 uses only 1 bit per key with the ability to parallelize operations.  This is achieved by abandoning strict LRU in favor of the approximate LRU based on the CLOCK algorithm. </p><br><blockquote>  Since in our target case small objects predominate, memory usage decreases when using LRU displacement, which is close to that, which allows the cache to store significantly more records, which, in turn, improves the overall hit rate.  As will be shown in section 5, such preemption control gives an increase in throughput from 3 to 10 times compared to conventional Memcached, and all this with the best hit rate. <br>  <em>Quote from the original work</em> </blockquote><p> Provide a circular bit buffer and a virtual hour hand pointing to a specific place in the buffer. </p><br><p><img src="https://adriancolyer.files.wordpress.com/2016/10/clock.png?w=600" alt="image"></p><br><p>  Each bit represents the "age" (age of use) of an object of a key-value pair.  The bit is '1' if the corresponding key has been used recently, and '0' otherwise.  Any key operation simply sets the corresponding old bit to '1'.  When displacing, check the bit indicated by the clock hand.  If it is '0', then you can push the corresponding key from the cache.  If it is '1', then write there '0' and move the clock hand forward to the next bit.  This process is repeated until a zero bit is found. </p><br><p>  The extrusion process is integrated with an optimistic locking scheme as follows: </p><br><blockquote>  When the preemptive process selects the victim key <em>X</em> using the CLOCK algorithm, it first increments the key counter version of the <em>X</em> key to tell the other threads that are currently reading <em>X</em> that they need to try again later;  then it deletes <em>X</em> , making it inaccessible for later reading, including for those retries from other threads;  and finally increments the version counter of the <em>X</em> key again to complete the change cycle.  Note that all pushes and inserts are serialized using locks, so that when the counters are updated they do not affect each other. <br>  <em>Quote from the original work</em> </blockquote><p>  <em>That's all.</em>  <em>Hope you enjoyed it just like me.</em> <br>  <em>Subscribe to the okmeter.io habr blog!</em> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/316762/">https://habr.com/ru/post/316762/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../316752/index.html">The story of a single plugin</a></li>
+<li><a href="../316754/index.html">Death transit traffic?</a></li>
+<li><a href="../316756/index.html">Creating and testing a firewall in Linux, Part 2.2. Firewall tables. Access to TCP / IP structures</a></li>
+<li><a href="../316758/index.html">Linux kernel documentation goes to Python Sphinx</a></li>
+<li><a href="../316760/index.html">Enhance your video surveillance system using OpenCV and Telegram bot</a></li>
+<li><a href="../316766/index.html">How Ionic 2 helps me to understand angular 2</a></li>
+<li><a href="../316768/index.html">Ludum Dare translation</a></li>
+<li><a href="../316770/index.html">Connection of peripheral modules to MIPSfpga, for example, ultrasonic distance sensors</a></li>
+<li><a href="../316772/index.html">November digest of product design: Profstandard, algorithmic design, Adobe XD and technical proficiency</a></li>
+<li><a href="../316776/index.html">I spent 3 months trying to get a job after a programming camp, and this is what I learned</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

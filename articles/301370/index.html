@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Unkillable Postgresql cluster inside Kubernetes cluster</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="If you have ever thought about trust and hope, then most likely you have not experienced this to anything as much as to database management systems. W...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Unkillable Postgresql cluster inside Kubernetes cluster</h1><div class="post__text post__text-html js-mediator-article"><p>  If you have ever thought about trust and hope, then most likely you have not experienced this to anything as much as to database management systems.  Well, really, it's the same Database!  The title contains the whole meaning - the place where the data is stored, the main task is to STORE.  And what is the saddest thing, as always, once, these beliefs are broken against the remains of such a single dead database on the 'Prod'. </p><br><div style="text-align:center;"><img src="https://habrastorage.org/files/d62/332/729/d623327292574df092061ab96c012b10.png" width="700"></div><br><p>  And what to do?  - you ask.  Do not deploy anything to the servers, we answer.  Nothing that does not know how to repair itself, at least temporarily, but safely and quickly! </p><br><p>  In this article I will try to talk about my customization experience. <del>  nearly </del>  Immortal Postgresql Cluster Inside Another Google Failsafe Solution - Kubernetes (aka k8s) </p><a name="habracut"></a><br><h2>  Content </h2><br><p>  The article was published a little more than expected, and therefore in the code there are many links, mainly to the code in the context in which it is discussed. <br>  I also enclose a table of contents, including for the impatient, in order to go directly to the results: </p><br><ul><li>  <a href="https://habr.com/ru/post/301370/">Task</a> </li><li>  <a href="https://habr.com/ru/post/301370/">Solution by "googling"</a> <br><ul><li>  <a href="https://habr.com/ru/post/301370/">Bad and inevitable solutions</a> </li></ul></li><li>  <a href="https://habr.com/ru/post/301370/">Consolidation and build solutions</a> <br><ul><li>  <a href="https://habr.com/ru/post/301370/">Primary and Standby instead of Master and Slave</a> </li><li>  <a href="https://habr.com/ru/post/301370/">Split-brain and the election of a new leader in the cluster</a> </li><li>  <a href="https://habr.com/ru/post/301370/">Pgpool-II -</a> <del>  swiming </del>  pool of connections </li></ul></li><li>  <a href="https://habr.com/ru/post/301370/">Result</a> </li><li>  <a href="https://habr.com/ru/post/301370/">Documentation and material used</a> </li></ul><br><a name="task"></a><br><h2>  Task </h2><br><p>  The need to have data storage for almost any application is a must.  And to have this repository resistant to adversity on the network or on physical servers is a good tone for a competent architect.  Another aspect is the high availability of the service even with large competing service requests, which means easy scaling if necessary. </p><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6a5/772/c66/6a5772c66829bcdac66ab6f30896625a.jpg"></div><br><p>  Total we get problems to solve: </p><br><ul><li>  <strong>Physically distributed</strong> service </li><li>  <strong>Balancing</strong> </li><li>  Unlimited <strong>scaling</strong> by adding new nodes </li><li>  <strong>Automatic recovery</strong> for failures, destruction and loss of communication nodes </li><li>  <strong>No single point of failure</strong> </li></ul><br><p>  Additional points due to the specifics of the author’s religious beliefs: </p><br><ul><li>  <strong>Postgres</strong> (the most academic and consistent solution for RDBMS available for free) </li><li>  <strong>Docker</strong> packaging </li><li>  <strong>Kubernetes</strong> infrastructure description </li></ul><br><p>  On the diagram, it will look something like this: </p><br><pre><code class="hljs ruby">master (primary node1) --\ <span class="hljs-params"><span class="hljs-params">|- slave1 (node2) ---\ / balancer \ |</span></span> <span class="hljs-params"><span class="hljs-params">|- slave2 (node3) ----|</span></span>---<span class="hljs-params"><span class="hljs-params">| |</span></span>----client <span class="hljs-params"><span class="hljs-params">|- slave3 (node4) ---/ \ balancer / |</span></span>- slave4 (node5) --<span class="hljs-regexp"><span class="hljs-regexp">/</span></span></code> </pre> <br><p>  Subject to input: </p><br><ul><li>  More read requests (in relation to the write) </li><li>  Linear increase in load at peaks to x2 from the average </li></ul><br><a name="solution_google"></a><br><h2>  Solution by "googling" </h2><br><p>  Being tempted to solve IT problems, I decided to ask the collective mind: "postgres cluster kubernetes" is a pile of garbage, "postgres cluster docker" is a pile of garbage, "postgres cluster" is a few options from which I had to wallow. </p><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a26/b38/ca1/a26b38ca1fdf8431911d1422cff19f87.jpg" width="600"></div><br><p>  What upset me is the lack of sane Docker builds and a description of any option for clustering.  Not to mention the Kubernetes.  By the way, there were not many options for Mysql, but there were some.  At least I liked the example in the official k8s repository <a href="https://github.com/kubernetes/kubernetes/tree/master/examples/mysql-galera">for Galera (Mysql cluster)</a> </p><br><p>  Google has made it clear that the problems will have to be solved by myself and in the manual mode ... "but at least with the help of scattered tips and articles," I breathed. </p><br><a name="solution_bad"></a><br><h3>  Bad and inevitable solutions </h3><br><p>  Immediately, I note that all the points in this paragraph may be subjective and, quite even, viable.  However, relying on my experience and flair, I had to cut them off. </p><br><div style="text-align:center;"><img width="600" src="https://habrastorage.org/getpro/habr/post_images/41a/cce/2cc/41acce2cc3776d7ff0d70852cf73e99a.png"></div><br><div class="spoiler">  <b class="spoiler_title">Pgpool.</b>  <b class="spoiler_title">Why is pgpool not always good?</b> <div class="spoiler_text"><p>  When someone makes a universal decision (for whatever), it always seems to me that such things are cumbersome, cumbersome and heavy to maintain.  It was the same with Pgpool, which can do almost everything: </p><br><ul><li>  <strong>Balancing</strong> </li><li>  <strong>Storage of connections</strong> for optimization of connection and speed of access to the database </li><li>  Support for different <strong>replication options</strong> (stream, slony) </li><li>  <strong>Auto detection of Primary</strong> server for writing, which is important when reorganizing roles in a cluster </li><li>  Failover / failback support </li><li>  Own master-master replication </li><li>  Coordinated work of several nodes Pgpool-ov to eradicate a single point of failure. </li></ul><br><p>  I found the first four points useful, and stopped at that, having understood and considered the problems of the others: </p><br><ul><li>  Recovery with Pgpool2 does not offer any decision system on the next master - all logic must be described in the failover / failback commands </li><li>  The recording time, with master-master replication, is reduced to the doubled variant without it, regardless of the number of nodes ... well, at least it does not grow linearly </li><li>  How to build a cascade cluster (when one slave reads from the previous slave) is not at all clear </li><li>  Of course, it’s good that Pgpool knows about its brothers and can quickly become an active link in case of problems at the neighboring node, but this problem is solved for me by Kubernetes, which guarantees similar behavior for, in general, any service installed in it. </li></ul></div></div><br><div class="spoiler">  <b class="spoiler_title">Slony.</b>  <b class="spoiler_title">How the elephant left us</b> <div class="spoiler_text"><p>  Actually, also reading and comparing what was <a href="http://www.slony.info/">found</a> with the streaming replication ( <a href="https://wiki.postgresql.org/wiki/Streaming_Replication">Streaming Replication</a> ) that was already familiar and working out of the box, it was easy to not even think about Elephants. </p><br><p>  And everything else, on the very first page of the project site, the guys write that, with postgres 9.0+, you do not need Slony, provided there are no specific system requirements: </p><br><ul><li>  partial replication </li><li>  integration with other solutions ("Londiste and Bucardo") </li><li>  additional replication behavior </li></ul><br><p>  In general, I think Slony is not a cake ... at least if you do not have these three specific tasks. </p></div></div><br><div class="spoiler">  <b class="spoiler_title">Master-master replication.</b>  <b class="spoiler_title">Not all replications are equally useful.</b> <div class="spoiler_text"><p>  <a href="https://wiki.postgresql.org/wiki/Replication,_Clustering,_and_Connection_Pooling">Looking around</a> and understanding the ideal two-way replication approach, it turned out that the victims are not compatible with the life of some applications.  Not to mention the speed, there are restrictions in working with transactions, complex queries ( <code>SELECT FOR UPDATE</code> and others). <br>  It is quite likely that I am not so tempted precisely in this matter, but it was enough for me to see what was also left behind.  And still brains, it seemed to me that for a system with an enhanced write operation, completely different technologies are needed, rather than relational databases. </p></div></div><br><a name="solution_my"></a><br><h2>  Consolidation and build solutions </h2><br><p>  In the examples I will talk about how the solution should look fundamentally, and in the code how it came out for me.  To create a cluster, it is not at all necessary to have Kubernetes (there is an example of docker-compose) or a Docker in principle.  Just then, everything described will be useful, not as a solution like CPM (Copy-Paste-Modify), but as a guide for installing with snippets. </p><br><a name="solution_my_streaming"></a><br><h3>  Primary and Standby instead of Master and Slave </h3><br><p>  Why did the colleagues from Postgresql reject the terms "Master" and "Slave"? .. hmm, I could be wrong, but there was a rumor that because of non-polit-correctness, <a href="https://youtu.be/0O5h4enjrHw%3Ft%3D140">they say that slavery is bad</a> .  Well, right. </p><br><div style="text-align:center;"><img width="600" src="https://habrastorage.org/files/cac/598/101/cac598101f46458bb43accb202c92721.png"></div><br><p>  The first thing to do is turn on the Primary server, followed by the first Standby layer, and then the second one - all according to the task.  From here we get a simple procedure to enable the usual Postgresql server in Primary / Standby mode <a href="">with the configuration to enable Streaming Replication</a> </p><br><div class="spoiler">  <b class="spoiler_title">What to look for in the configuration file</b> <div class="spoiler_text"><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">wal_level</span></span> = hot_standby max_wal_senders = <span class="hljs-number"><span class="hljs-number">5</span></span> wal_keep_segments = <span class="hljs-number"><span class="hljs-number">5001</span></span> hot_standby = <span class="hljs-literal"><span class="hljs-literal">on</span></span></code> </pre> <br><p>  All the parameters in the comments have a brief description, but if in brief, this configuration makes the server understand that it is now part of a cluster and, in which case, it should be allowed to read the <a href="https://www.postgresql.org/docs/9.5/static/wal-intro.html">WAL logs to</a> other clients.  Plus allow requests during recovery.  An excellent description of the detailed configuration of this kind of replication can be found on the <a href="https://wiki.postgresql.org/wiki/Streaming_Replication">Postgresql Wiki</a> . </p></div></div><br><p>  Once we got the first server in the cluster, we can turn on Stanby, who knows where his Primary is located. </p><br><p>  My task here is to build a universal <a href="https://hub.docker.com/r/paunin/postgresql-cluster-pgsql/">Docker Image</a> image, which is included in the work, depending on the mode, something like this: </p><br><ul><li>  <a href="">For Primary</a> : <br><ul><li>  Configures Repmgr (more on that later) </li><li>  Creates a database and user application </li><li>  Creates a database and user to monitor and support replication </li><li>  Updates the config ( <code>postgresql.conf</code> ) and gives access to users from outside ( <code>pg_hba.conf</code> ) </li><li>  Launches Postgresql service in background </li><li>  Registered as Master in Repmgr </li><li>  Runs <code>repmgrd</code> - a <code>repmgrd</code> daemon to monitor replication (more about it later) </li></ul></li><li>  <a href="">For Standby</a> : <br><ul><li>  Clones the Primary server with Repmgr (by the way with all configs, since it simply copies the <code>$PGDATA</code> directory) </li><li>  Configures Repmgr </li><li>  Starts Postgresql service in the background - after cloning, the service is aware that it is standby and dutifully follows Primary </li><li>  Registered as Slave in Repmgr </li><li>  Run <code>repmgrd</code> </li></ul></li></ul><br><p>  For all these operations, the sequence is important, and therefore <a href="https://github.com/paunin/postgres-docker-cluster/tree/master/bin">the code</a> crammed in <code>sleep</code> .  I know - it’s not good, but it’s so convenient to configure delays through ENV variables, when you need to start all containers at once (for example, via <code>docker-compose up</code> ) <br>  All variables to this image are described in the <a href=""><code>docker-compose</code> file</a> . </p><br><p>  The only difference between the first and second layer of Standby services is that for the second master any service from the first layer, and not Primary, is the master.  Do not forget that the second echelon should start after the first with a delay in time. </p><br><a name="solution_my_repmgr"></a><br><h3>  Split-brain and the election of a new leader in the cluster </h3><br><p>  <a href="https://en.wikipedia.org/wiki/Split-brain_(computing)">Split brain</a> is a situation in which different segments of the cluster can create / elect a new Master and think that the problem is solved. </p><br><div style="text-align:center;"><img width="600" src="https://habrastorage.org/files/d46/9c9/911/d469c9911dd2444ab834f6a00e1d4b67.png"></div><br><p>  This is one, but far from the only problem that <a href="https://github.com/2ndQuadrant/repmgr">Repmgr</a> helped me to solve. </p><br><p>  In essence, this is a manager who can do the following: </p><br><ul><li>  <strong>Clone Master</strong> (master - in Repmgr terms) and automatically infuse a reborn Slave </li><li>  To help <strong>reanimate the cluster</strong> at the death of the Master. </li><li>  In automatic or manual mode, Repmgr can <strong>elect a new Master</strong> and reconfigure all Slave services to follow the new leader. </li><li>  <strong>Remove nodes from cluster</strong> </li><li>  <strong>Monitor</strong> cluster health </li><li>  <strong>Execute commands</strong> for <a href="https://github.com/2ndQuadrant/repmgr">events within the cluster</a> </li></ul><br><p>  In our case, <code>repmgrd</code> comes to the <code>repmgrd</code> and is started by the main process in the container and monitors the integrity of the cluster.  In a situation where access to the Master server is lost, Repmgr tries to analyze the current cluster structure and decide on who will be the next Master.  Naturally Repmgr is smart enough not to create a Split Brain situation and choose the only right Master. </p><br><a name="solution_my_pgpool"></a><br><h3>  Pgpool-II - <del>  swiming </del>  pool of connections </h3><br><p>  The last part of the system is Pgpool.  As I wrote in the bad decisions section, the service still does its job: </p><br><ul><li>  Balances the load between all the nodes of the cluster </li><li>  <strong>Stores connection descriptors</strong> to optimize database access speed </li><li>  In our case, Streaming Replication - automatically finds the Master and uses it for write requests. </li></ul><br><div style="text-align:center;"><img width="600" src="https://habrastorage.org/files/379/629/f23/379629f230c44086b427681c3727c908.png"></div><br><p>  As an outcome, I got a fairly simple <a href="https://hub.docker.com/r/paunin/postgresql-cluster-pgpool/">Docker Image</a> , which at startup configures itself to work with a set of nodes and users who will have the opportunity to pass md5 authorization through Pgpool ( <a href="http://www.pgpool.net/docs/latest/pgpool-en.html">with this, too, as it turned out, not everything is simple</a> ) </p><br><p>  Very often, the problem arises of getting rid of a single point of failure, and in our case, this point is the pgpool service, which proxies all requests and may become the weakest link in the data access path. <br>  Fortunately, in this case, our problem is solved by k8s and allows us to make as many replications of the service as needed. </p><br><p>  Unfortunately, this is not the <a href="https://github.com/paunin/postgres-docker-cluster/tree/master/k8s">case for Kubernetes</a> , but if you are familiar with how <a href="http://kubernetes.io/docs/user-guide/replication-controller/">Replication Controller</a> and / or <a href="http://kubernetes.io/docs/user-guide/deployments/">Deployment work</a> , then it’s easy to do the above. </p><br><a name="result"></a><br><h2>  Result </h2><br><p>  This article is not a retelling of the scripts for solving the problem, but a description of the structure of the solution to this very task.  That means - for a deeper understanding and optimization of the solution, you will have to read the code, at least <a href="https://github.com/paunin/postgres-docker-cluster">README.md in github</a> , which is step by step and meticulously telling how to start the cluster for docker-compose and Kubernetes.  Everything else, for those who like and decide to move on with this, I am ready to lend a <a href="">virtual helping hand</a> . </p><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/145/f27/ef2/145f27ef257488cec5209bbde4520900.jpg"></div><br><ul><li>  <a href="https://github.com/paunin/postgres-docker-cluster">Sources and documentation on GitHub</a> </li><li>  <a href="https://hub.docker.com/r/paunin/postgresql-cluster-pgsql/">Docker Image for cluster-ready Postgresql from example</a> </li><li>  <a href="https://hub.docker.com/r/paunin/postgresql-cluster-pgpool/">Docker Image for Pgpool with setting via ENV variables</a> </li></ul><br><a name="doc"></a><br><h2>  Documentation and material used </h2><br><ul><li>  <a href="https://wiki.postgresql.org/wiki/Streaming_Replication">Streaming replication in postgres</a> </li><li>  <a href="https://github.com/2ndQuadrant/repmgr">Repmgr</a> </li><li>  <a href="http://www.pgpool.net/docs/latest/pgpool-en.html">Pgpool2</a> </li><li>  <a href="http://kubernetes.io/">Kubernetes</a> </li></ul><br><h2>  PS: </h2><br><p>  I hope that the stated material will be useful and will give a little positive before the beginning of summer!  Good luck and good mood, colleagues;) </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/301370/">https://habr.com/ru/post/301370/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../301360/index.html">The digest of interesting materials for the mobile # 154 developer (May 16-22)</a></li>
+<li><a href="../301362/index.html">How a new phone helped to find a Vkontakte vulnerability</a></li>
+<li><a href="../301364/index.html">Mastering Android NDK</a></li>
+<li><a href="../301366/index.html">An honest story of launch, existence, and possibly failure</a></li>
+<li><a href="../301368/index.html">ASP.NET Identity Caché Provider - we work with Identity through InterSystems Caché</a></li>
+<li><a href="../301374/index.html">Paul Graham: A few words about resourcefulness (A Word to the Resourceful)</a></li>
+<li><a href="../301378/index.html">An easy way to organize requirements at the requirements gathering stage (or the first step to forming a comfortable backlog)</a></li>
+<li><a href="../301380/index.html">Swift 3.0, a lot of noise, but in practice?</a></li>
+<li><a href="../301384/index.html">Hibernate Developer Documentation - Chapter I. Database Access</a></li>
+<li><a href="../301390/index.html">Paul Graham. All articles in Russian. One year later</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

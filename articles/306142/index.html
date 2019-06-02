@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Screw to Nginx patch for dynamic size TLS records from Cloudflare</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="If you use Nginx to terminate TLS traffic, you can improve server response time with the help of patches from Cloudflare. Details under the cut. 
+
+
+
+ ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Screw to Nginx patch for dynamic size TLS records from Cloudflare</h1><div class="post__text post__text-html js-mediator-article">  If you use Nginx to terminate TLS traffic, you can improve server response time with the help of patches from Cloudflare.  Details under the cut. <br><br><img src="https://habrastorage.org/files/d87/a37/ae9/d87a37ae971a4e309d85311a059fb167.png"><br><a name="habracut"></a><br><h2>  TLS and TCP </h2><br>  As you know, data on the Internet is transmitted using a multi-layer protocol stack.  Now we are interested in the interaction of TCP and TLS.  The main task of TCP is reliable delivery of packets in their original order.  If we have a service that uses TLS (HTTPS site), then all the encrypted TLS data will be sent using TCP. <br><br>  At the TCP level: immediately after connecting, the server can send no more than <b>initcwd</b> packets (for old systems it is 3 packets, for new systems it is 10).  Then the server will wait for confirmation (ACK) from the client and gradually the number of packets in the send window will grow, and the connection will increase its throughput. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In the case of regular HTTP traffic, everything is fine: with each new packet, data arrives that the browser can use. <br><br><h2>  TLS problem </h2><br>  If we use TLS, then Nginx uses a special buffer (the size is specified by the <b><a href="http_ssl_module.html">ssl_buffer_size</a></b> directive), which controls the size of the TLS record size.  The browser (client) can use the data only after receiving the TLS record completely.  The maximum (and default in Nginx) size ssl_buffer_size is 16k. <br><br>  Since the initial window for sending packets = 10, we can get about 14k of traffic, which is less than <b>TLS record</b> (16k).  This can cause delays in getting useful content. <br><br>  And if you use HTTP / 2, then you should pay attention to the http2_chunk_size setting (default 8k) - it sets the maximum size of the part into which the response body is divided.  In this case, only one connection to the server is used; therefore, many resources are simultaneously transmitted on this TCP connection, which increases the probability of delays. <br><br><h2>  What can be done? </h2><br>  The simplest thing you can do is reduce <b>ssl_buffer_size</b> , for example, to 8k or 12k.  This can be done in the standard version of Nginx.  However, when sending large amounts of data, efficiency will be lower (higher overhead). <br><br>  It turns out that the perfect ssl_buffer_size does not exist. <br><br><h2>  Dynamic size TLS record </h2><br>  Here Cloudflare comes to the rescue with its own <a href="https://github.com/cloudflare/sslconfig/blob/master/patches/nginx__dynamic_tls_records.patch">set of patches</a> . <br><br>  Using these patches, we get support for the dynamic TLS record size. <br><br>  On fresh connections, the record size is set to no more than the size of one packet, after passing a certain number of records, the size can be increased to 3 TCP packets, and then to the maximum size (16k).  After the connection is idle, the process begins again.  All parameters of this process are configured. <br><br><h2>  Patch application </h2><br>  To get new functionality, you need to apply patches and build Nginx.  I already wrote about building Nginx with OpenSSL <a href="https://habrahabr.ru/post/301452/">earlier</a> , so let's focus on the process of applying patches. <br><br>  To apply the patches you need to go to <a href="https://github.com/cloudflare/sslconfig/blob/master/patches/nginx__dynamic_tls_records.patch">the github page</a> . <br><br>  On this page, you need to isolate individual patches for each file.  Writing the patch itself begins like this: <br><br><pre><code class="bash hljs">diff --git a/src/event/ngx_event_openssl.cb/src/event/ngx_event_openssl.c</code> </pre> <br>  From this record, it is clear what this patch refers to (in this case, <b>src / event / ngx_event_openssl.c</b> ). <br>  Copy the patch text to a file (for example, <b>openssl.c.patch</b> ) and put it next to the source file. <br><br>  Apply the patch with the following command: <br><br><pre> <code class="bash hljs">patch ngx_event_openssl.c &lt; openssl.c.patch</code> </pre><br>  So we go through all the patch files (there should be 4 files in total). <br>  Well and we collect Nginx as usual (I used 1.11.2, everything turned out). <br><br><h2>  Nginx setup </h2><br>  With the patch come new settings.  We get something like this: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   ,  1  ssl_dyn_rec_size_lo 1369; #   , 3  ssl_dyn_rec_size_hi 4229; #        ssl_dyn_rec_threshold 20; #        ssl_dyn_rec_timeout 10; #  ,    ssl_buffer_size 16k;</span></span></code> </pre><br>  Details can be read in the original <a href="https://blog.cloudflare.com/optimizing-tls-over-tcp-to-reduce-latency/">article</a> blog Cloudflare. <br><br>  On the very principle of optimizing TLS record size can be read in the <a href="https://hpbn.co/transport-layer-security-tls/">book HPBN</a> . <br>  On this, I have everything implemented so far, we are testing.  If you already have experience in customization, please share in the comments. </div><p>Source: <a href="https://habr.com/ru/post/306142/">https://habr.com/ru/post/306142/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../306128/index.html">Configuring Nginx with Let's Encrypt on CentOS 7</a></li>
+<li><a href="../306130/index.html">Yota on Sakhalin: how the bond comes to the island</a></li>
+<li><a href="../306132/index.html">The organization of the frequency divider with a fractional division factor in the volume of FPGA</a></li>
+<li><a href="../306134/index.html">UNetLab 1.0.0-12. Integration with Docker and Dynamic nodes connection</a></li>
+<li><a href="../306138/index.html">Registration for MBLTdev 16 is open - International Mobile Developers Conference</a></li>
+<li><a href="../306146/index.html">Notifications in the browser and an example of how they can be used with benefit</a></li>
+<li><a href="../306148/index.html">Gaming As A Service: Computing Clouds for the Gaming Industry</a></li>
+<li><a href="../306150/index.html">Poll. Why IT is boring</a></li>
+<li><a href="../306152/index.html">DataGrip release 2016.2: CSV import, JSON and XML support in rows, dynamic SQL, improvements for PostgreSQL</a></li>
+<li><a href="../306154/index.html">Metrics vs. Experience</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

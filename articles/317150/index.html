@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How to avoid jumps in response time and memory consumption when taking state snapshots in a DBMS in RAM</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Remember my recent article “What is a DBMS in RAM and how does it effectively store data” ? In it, I gave a brief overview of the mechanisms used in t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How to avoid jumps in response time and memory consumption when taking state snapshots in a DBMS in RAM</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/files/8d6/e80/7a6/8d6e807a667c4a448874c87a185cb187.jpg"></div><br>  Remember my recent article <a href="https://habrahabr.ru/company/mailru/blog/316634/">“What is a DBMS in RAM and how does it effectively store data”</a> ?  In it, I gave a brief overview of the mechanisms used in the in-memory DBMS to ensure data integrity.  It was about two main mechanisms: logging transactions and taking snapshots.  I gave a general description of the principles of working with the transaction log and only touched on the subject of images.  Therefore, in this article about the snapshots, I will tell you more thoroughly: I will start with the simplest way to take state snapshots in the DBMS in memory, highlight several problems associated with this method and <a href="https://en.wikipedia.org/wiki/Tarantool">dwell</a> in detail on how this mechanism is implemented in <a href="https://en.wikipedia.org/wiki/Tarantool">Tarantool</a> . <br><br>  So, we have a DBMS that stores all data in RAM.  As I mentioned in my previous article, to take a snapshot it is necessary to write all this data to disk.  This means that we need to go through all the tables and all the rows in each table and write it all to disk in one file via the <i>write</i> system call.  Pretty simple at first glance.  However, the problem is that the data in the database is constantly changing.  Even if you freeze data structures when taking a snapshot, you can end up with a non-consistent state of the database on the disk. <br><a name="habracut"></a><br>  How to achieve a consistent state?  The easiest (and coarsest) way is to pre-freeze the entire database, take a snapshot of the state and defreeze it again.  And it will work.  The database may remain frozen for quite some time.  For example, with a data size of 256 GB and a maximum hard disk performance of 100 MB / s, taking a snapshot will take 256 GB / (100 MB / s) - approximately 2560 seconds, or (again, approximately) 40 minutes.  The DBMS will still be able to process read requests, but will not be able to fulfill data change requests.  “What, seriously?” You exclaim.  Let's calculate: at 40 minutes of downtime, say, on a day, the DBMS is fully operational 97% of the time at best (in fact, of course, this percentage will be lower, because many other factors will affect the duration of downtime). <br><br>  What options can there be?  Let's take a closer look at what is happening.  We froze all the data just because it was necessary to copy it to a slow device.  And what if you sacrifice memory to increase speed?  The point is this: we copy all the data into a separate area of ​​RAM, and then write the copy to a slow disk.  This method seems to be better, but it entails at least three problems of different degrees of seriousness: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  We still need to freeze all data.  Suppose we copy data to the memory area at a speed of 1 GB / s (which is again too optimistic, because in reality the speed can be 200-500 MB / s for more or less advanced data structures).  256 GB / (1 GB / s) is 256 seconds, or about 4 minutes.  We get 4 minutes of downtime per day, or 99.7% of the time the system is available.  This, of course, is better than 97%, but not by much. </li><li>  As soon as we copied the data to a separate buffer in RAM, we need to write them to disk.  While the copy is being recorded, the original data in memory continues to change.  These changes need to be monitored somehow, for example, saving the transaction identifier with a snapshot so that it is clear which transaction got into the snapshot last.  There is nothing difficult in this, but nevertheless it is necessary to do it. </li><li>  Doubles the requirements for RAM.  In fact, we <b>constantly</b> need memory twice the size of the data;  I emphasize: not only to take snapshots, but <b>constantly</b> , because you can't just increase the amount of memory in the server, take a picture, and then pull out the memory bar again. </li></ol><br>  One way to solve this problem is to use the <i>copy-on-write</i> <a href="https://en.wikipedia.org/wiki/Copy-on-write">mechanism</a> (hereinafter, for brevity, I will use the English abbreviation <i>COW</i> , from <i>copy-on-write</i> ) provided by the <i><a href="https://en.wikipedia.org/wiki/Fork_%2528system_call%2529">fork</a></i> system call.  As a result of this call, a separate process is created with its own virtual address space and a read-only copy of all the data.  A read-only copy is used because all changes occur in the parent process.  So, we create a copy of the process and slowly write the data to disk.  The question remains: what is the difference from the previous copying algorithm?  The answer lies in the COW mechanism itself, which is used in Linux.  As mentioned a little above, COW is an abbreviation meaning copy-on-write, i.e.  copy on write.  The essence of the mechanism is that the child process initially uses <a href="https://en.wikipedia.org/wiki/Page_%2528computer_memory%2529">page memory in</a> conjunction with the parent process.  As soon as one of the processes changes any data in the RAM, a copy of the corresponding page is created. <br><br>  Naturally, copying the page leads to an increase in response time, because, in addition to the actual copy operation, a few more things happen.  Typically, the page size is 4 KB.  Suppose you change a small value in the database.  First, an <a href="https://en.wikipedia.org/wiki/Page_fault">interruption occurs due to the absence of a page</a> , since  after calling <i>fork,</i> all pages of the parent and child processes are read-only.  After that, the system switches to kernel mode, allocates a new page, copies 4 KB from the old page, and returns to user mode again.  This is a very simplified description, more information about what is actually happening can be read <a href="https://en.wikipedia.org/wiki/Kernel_same-page_merging">here</a> . <br><br>  If the change affects not one, but several pages (which is very likely with data structures such as trees), the above sequence of events will be repeated again and again, which can significantly degrade the performance of the DBMS.  With high loads, this can lead to a dramatic increase in response time and even short downtime;  In addition, a large number of pages will be arbitrarily updated in the parent process, as a result of which almost the entire database can be copied, which, in turn, can lead to a doubling of the required amount of RAM.  In general, if you are lucky, it will do without jumps in response time and database downtime, but if not, get ready for both;  Oh yes, and do not forget about the double consumption of RAM too. <br><br>  Another problem with <i>fork</i> is that this system call copies <a href="https://en.wikipedia.org/wiki/Page_table">the page descriptor table</a> .  Say, when using 256 GB of memory, the size of this table can reach hundreds of megabytes, so your process may hang for a second or two, which again will increase the response time. <br><br>  Using <i>fork</i> , of course, is not a panacea, but so far this is the best that we have.  In fact, some popular in-memory DBMSs still use <i>fork</i> to take snapshots — for example, <a href="http://redis.io/topics/persistence">Redis</a> . <br><br>  Is it possible to improve something here?  Let's take a closer look at the COW mechanism.  Copying takes place there at 4 KB.  If only one byte changes, the entire page is still copied (in the case of trees, there are many pages, even if rebalancing is not required).  But what if we implement our own COW mechanism, which will copy only the actually changed parts of the memory, more precisely, the changed values?  Naturally, such an implementation will not serve as a full-fledged replacement of the system mechanism, but will be used only for taking state snapshots. <br><br>  The essence of the improvement is as follows: to make so that all our data structures (trees, hash tables, table spaces) can store many versions of each element.  The idea is close to <a href="https://en.wikipedia.org/wiki/Multiversion_concurrency_control">multi-version control of parallel access</a> .  The difference is that here this improvement is not used for the actual management of parallel access, but only for taking snapshots of the state.  As soon as we started taking a snapshot, all data modification operations create a new version of the elements to be changed, while all old versions remain active and are used to create a snapshot.  Look at the pictures below.  This logic is valid for trees, hash tables and table spaces: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/files/c71/473/3f1/c714733f197d4bd497af883147202a4d.png"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/files/0e2/1d2/10c/0e21d210c1b4444a8444196853c598cb.png"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/files/62f/5fa/39a/62f5fa39a694469aa80a664847eb565a.png"></div><br>  As you can see, elements can have both old and new versions.  For example, in the last image in a tablespace, the values ​​3, 4, 5 and 8 have two versions (the old and the corresponding new one), while the rest (1, 2, 6, 7, 9) have one version. <br><br>  Changes occur only in newer versions.  Versions are more likely to be used for read operations when taking a snapshot.  The main difference between our implementation of the COW mechanism and the system mechanism is that we do not copy the entire 4-KB page, but only a small part of the data that has been changed.  Say, if you update a whole four-byte number, our mechanism will create a copy of this number, and only these 4 bytes will be copied (plus a few more bytes as a fee for maintaining two versions of one element).  And now, for comparison, look at how the system COW behaves: 4096 bytes are copied, the page is interrupted, the context is switched (each such switch is equivalent to copying approximately 1 KB of memory) - and all this is repeated several times.  Is it too much trouble to update just one whole four-byte number when taking a snapshot of the state? <br><br>  We use our own implementation of the COW mechanism for taking snapshots in Tarantool since version 1.6.6 (before that, we used <i>fork</i> ). <br><br>  New articles on this topic are coming up with interesting details and graphs from the working Mail.Ru Group servers.  Follow the news. <br><br>  All questions related to the content of the article can be addressed to the author of the original <a href="https://habrahabr.ru/users/danikin/" class="user_link">danikin</a> , technical director of mail and cloud services Mail.Ru Group. </div><p>Source: <a href="https://habr.com/ru/post/317150/">https://habr.com/ru/post/317150/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../317136/index.html">How to get maximum revenue from advertising systems on your site</a></li>
+<li><a href="../317138/index.html">Alcatel Lucent Service Router as an Access Domain Gateway</a></li>
+<li><a href="../317140/index.html">An inside look at OpenBMC for OpenPOWER systems</a></li>
+<li><a href="../317142/index.html">[St. Petersburg, Announcement] CodeFreeze meeting with Alexander Chepurny about the blockchain for developers</a></li>
+<li><a href="../317144/index.html">When Russian service is better than American, or the battle of humanities with evil calculators</a></li>
+<li><a href="../317152/index.html">A critical vulnerability was found in the AirDroid application that allows for MitM attacks.</a></li>
+<li><a href="../317154/index.html">Case: game development through the eyes of a designer</a></li>
+<li><a href="../317156/index.html">GitLab 8.14 released</a></li>
+<li><a href="../317158/index.html">Segment routing: how and why</a></li>
+<li><a href="../317160/index.html">Interactive landing or how to blow up conversion with the help of instant messengers</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
