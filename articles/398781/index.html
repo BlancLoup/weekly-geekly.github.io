@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Wireless debugging STM32</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I want to talk about the unusual use of ESP8266 as an intermediary between STM32 and openOCD. This method has quite a few shortcomings and its use can...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Wireless debugging STM32</h1><div class="post__text post__text-html js-mediator-article">  I want to talk about the unusual use of ESP8266 as an intermediary between STM32 and openOCD.  This method has quite a few shortcomings and its use can only be caused by the inability to use the usual (wired) debugging tool. <br><br>  Plus, this method is one and it is obvious, so I’ll go straight to the shortcomings: <br><br><ol><li>  OpenOCD patch required </li><li>  Need to change firmware in ESP8266 </li><li>  Low speed </li></ol><a name="habracut"></a><br>  How it works.  The openOCD supports the SWD protocol, besides there is a driver called remote_bitbang.  From the name it is clear that the logical levels are simply transmitted by the numbers 1 and 0 and then sent over the network. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The receiver (in our case, ESP8266) must, in accordance with these numbers, set the appropriate level on the outputs.  Unfortunately, there is no SWD support in remote_bitbang, but adding it there is not at all difficult: <br><br><div class="spoiler">  <b class="spoiler_title">Here is a small patch</b> <div class="spoiler_text"><pre><code class="diff hljs"><span class="hljs-comment"><span class="hljs-comment">--- remote_bitbang.c 2016-10-31 11:06:57.812267924 +0600 +++ remote_bitbang.c 2016-10-31 12:33:57.921692808 +0600 @@ -120,11 +120,25 @@ remote_bitbang_putc(c); } +static int remote_bitbang_swdio_read (void) +{ + remote_swd_putc ('R'); + return remote_bitbang_rread (); +} + +static void remote_bitbang_swdio_drive (bool is_output) +{ + char c = is_output ? 'o' : 'i'; + remote_bitbang_putc (c); +} + static struct bitbang_interface remote_bitbang_bitbang = { .read = &amp;remote_bitbang_read, .write = &amp;remote_bitbang_write, .reset = &amp;remote_bitbang_reset, .blink = &amp;remote_bitbang_blink, + .swdio_read = &amp;remote_bitbang_swdio_read, + .swdio_drive = &amp;remote_bitbang_swdio_drive, }; static int remote_bitbang_init_tcp(void) @@ -271,10 +285,14 @@ COMMAND_REGISTRATION_DONE, }; +static const char * const remote_bitbang_transport[] = { "jtag", "swd", NULL }; + struct jtag_interface remote_bitbang_interface = { .name = "remote_bitbang", + .transports = remote_bitbang_transport, .execute_queue = &amp;bitbang_execute_queue, .commands = remote_bitbang_command_handlers, + .swd = &amp;bitbang_swd, .init = &amp;remote_bitbang_init, .quit = &amp;remote_bitbang_quit, };</span></span></code> </pre> <br></div></div><br>  Next, we need to change the ESP8266 firmware so that it understands the commands coming from openOCD.  For this purpose, I used the <a href="https://github.com/SuperHouse/esp-open-rtos">esp-open-rtos</a> open SDK.  I will not give all the firmware code - it is quite voluminous, I will give only its part concerning the processing of data received from openOCD. <br><br><div class="spoiler">  <b class="spoiler_title">Spoiler</b> <div class="spoiler_text"><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> SWCLK 0 #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> SWDIO 2 IRAM void openocd_handler (void *pvParameters) { struct netconn *nc = (struct netconn *) pvParameters; struct netbuf *rbuf = NULL; char *rx_buf; char d, r; err_t err; uint16_t len; uint16_t i; gpio_set_pullup (SWCLK, false, false); gpio_set_pullup (SWDIO, false, false); gpio_enable (SWCLK, GPIO_OUTPUT); gpio_enable (SWDIO, GPIO_OUTPUT); while (1) { </span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">if</span></span></span><span class="hljs-meta"> ((err = netconn_recv (nc, &amp;rbuf)) != ERR_OK) { printf (</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"R ERROR %d\n"</span></span></span><span class="hljs-meta">, err); return; } netbuf_data (rbuf, (void **) &amp;rx_buf, &amp;len); for (i = 0; i &lt; len; i++) { switch (rx_buf [i]) { case </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">'Q'</span></span></span><span class="hljs-meta">: </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">// Quit netconn_disconnect (nc); return; case '0'...'7': d = rx_buf [i] - '0'; gpio_write (SWDIO, (d &amp; 0x1)); gpio_write (SWCLK, !!(d &amp; 0x4)); break; case 'i': gpio_enable (SWDIO, GPIO_INPUT); break; case 'o': gpio_enable (SWDIO, GPIO_OUTPUT); break; case 'R': // Writeback r = ((char) gpio_read (SWDIO)) + '0'; netconn_write (nc, &amp;r, 1, NETCONN_COPY); break; } } netbuf_delete (rbuf); } }</span></span></span></span></code> </pre><br></div></div><br>  Full source code can be found <a href="https://github.com/rooi-oog/esplink">here.</a> <br><br>  I am using ESP-01.  She has two free legs GPIO-0 and GPIO-2, and when turned on, the 2nd leg should have a high level, otherwise the controller will go into bootloader mode.  Therefore, it is desirable to pull the leg to power through a 10k resistor. <br><br>  As for the low speed of work.  Yes, he walks along the steps rather sadly, but you can fill in the firmware, put an interrupt or read the variable. <br><br>  Theoretically, if you port openOCD to ESP8266, you can achieve a speed comparable to st-link, but I leave it to readers. <br><br>  I hope someone could be useful. </div><p>Source: <a href="https://habr.com/ru/post/398781/">https://habr.com/ru/post/398781/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../398771/index.html">Two-step authentication - bye-bye</a></li>
+<li><a href="../398773/index.html">City design based on data</a></li>
+<li><a href="../398775/index.html">Why do Bigfoot see people of different cultures</a></li>
+<li><a href="../398777/index.html">Space Housing, Part 3: How We Will Live on Mars</a></li>
+<li><a href="../398779/index.html">Development of a strong AI, by copying structures and processes of the human psyche</a></li>
+<li><a href="../398783/index.html">Network Security Services package and oidcalc utility</a></li>
+<li><a href="../398785/index.html">At the bottom of the Gulf of Mexico found a poisonous lake</a></li>
+<li><a href="../398787/index.html">In the suburbs of Moscow with the help of a 3D printer a residential building will be built in 20 hours</a></li>
+<li><a href="../398789/index.html">Neural network predicts the first impression of a person on his face</a></li>
+<li><a href="../398791/index.html">Data ballad</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
