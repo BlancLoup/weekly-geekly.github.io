@@ -1,0 +1,152 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>One little problem downloading files on slow connections</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Note: Once our colleagues in the workshop, specialists from another service to speed up and protect sites, were faced with the fact that some very slo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>One little problem downloading files on slow connections</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/f28/0ce/4a4/f280ce4a4a934009a1027f47b8e84a19.png"><br><br>  <i>Note: Once our colleagues in the workshop, specialists from another service to speed up and protect sites, were faced with the fact that some very slow file downloads by users were suddenly cut off.</i>  <i>Below we provide a translation of their story about the problem with our comments.</i> <br><br>  Problem: some users could not download a binary file of several megabytes.  The connection for some reason was broken, although the file was in the process of downloading.  Soon we were convinced that somewhere in our system there was a bug.  It was possible to reproduce the problem simply with a single curl command, but fixing it required an incredible amount of time and effort. <br><a name="habracut"></a><br><h2>  Problem downloads </h2><br>  Two things surprised us in this problem: first, only users of mobile devices were subject to the problem, and second, the file that caused the problems was still quite large - about 30 megabytes. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      After fruitful work with tcpdump, one of our engineers was able to reproduce the problem.  It turned out that it is enough to put a large file for download on the test domain, and use the <code>--limit rate</code> option in the <code>curl</code> command: <br><blockquote><pre>  $ curl -v http://example.com/large.bin --limit-rate 10k&gt; / dev / null
+ * Closing connection # 0
+ curl: (56) Recv failure: Connection reset by peer </pre></blockquote><br>  Picking at tcpdump showed that there was always an RST packet that flew in from our server exactly 60 seconds after the connection was established: <br><br><blockquote><pre>  $ tcpdump -tttttni eth0 port 80
+ 00:00:00 IP 192.168.1.10.50112&gt; 1.2.3.4.80: Flags [S], seq 3193165162, win 43690, options [mss 65495, sackOK, TS val 143660119 ecr 0, nop, wscale 7], length 0  
+ ...
+ 00:01:00 IP 1.2.3.4.80&gt; 192.168.1.10.50112: Flags [R.], seq 1579198, ack 88, win 342, options [nop, nop, TS val 143675137 ecr 143675135], length 0 </pre></blockquote><br>  Our server was definitely doing something wrong.  The RST packet leaving our server is bad.  The client "behaves well", sends ACK-packets, consumes data at the speed with which it can, and we suddenly chop off the connection. <br><br><h2>  Not our problem? </h2><br>  To isolate the problem, we launched the basic NGINX server with standard settings, and the problem was easily reproducible locally: <br><br><blockquote><pre>  $ curl --limit-rate 10k localhost: 8080 / large.bin&gt; / dev / null
+ * Closing connection # 0
+ curl: (56) Recv failure: Connection reset by peer </pre></blockquote><br>  This showed that the problem is not specific to our installation; it was a broader problem with NGINX. <br><br>  After further study, we found out that we use the <code>reset_timedout_connection</code> setting.  This causes NGINX to terminate connections.  When NGINX wants to close a connection on a timeout, it sets <code>SO_LINGER</code> without a timeout on the socket, followed by <code>close()</code> . <br><br>  This starts the RST packet instead of the normal termination of the TCP connection.  Here is the NGINX <code>strace</code> log: <br><br><blockquote><pre>  04:20:22 setsockopt (5, SOL_SOCKET, SO_LINGER, {onoff = 1, linger = 0}, 8) = 0  
+ 04:20:22 close (5) = 0 </pre></blockquote><br><br>  We could just disable <code>reset_timedout_connection</code> , but that would not solve the problem.  The question was: why does NGINX close this connection at all? <br><br>  Next, we noticed the <code>send_timeout</code> parameter.  Its default value is 60 seconds, exactly as we observed in our case. <br><br><blockquote><pre>  http {  
+      send_timeout 60s;
+      ... </pre></blockquote><br>  The <code>send_timeout</code> parameter <code>send_timeout</code> used in NGINX to ensure that all connections will be terminated sooner or later.  This parameter controls the time allowed between consecutive <code>send</code> / <code>sendfile</code> calls on each connection.  In simple terms, it is wrong that one connection uses a server resource for too long.  If the download lasts too long, or stops altogether, it is normal if the http server disconnects. <br><br><h2>  Also non-NGINX problem </h2><br>  In the hands of C <code>strace</code> , we looked at what NGINX does: <br><br><pre>  04:54:05 accept4 (4, ...) = 5  
+ 04:54:05 sendfile (5, 9, [0], 51773484) = 5325752  
+ 04:55:05 close (5) = 0 </pre><br>  In the configuration, we told NGINX to use <code>sendfile</code> to transfer data.  The <code>sendfile</code> call succeeds and sends 5 megabytes of data to the send buffer.  What is interesting: this is almost the same size that we have set by default in the write buffer: <br><br><blockquote><pre>  $ sysctl net.ipv4.tcp_wmem
+ net.ipv4.tcp_wmem = 4096 5242880 33554432 </pre></blockquote><br>  One minute after the first call to <code>sendfile</code> socket is closed.  What will happen if we increase the value of <code>send_timeout</code> to some larger value, for example, 600 seconds: <br><br><blockquote><pre>  08:21:37 accept4 (4, ...) = 5  
+ 08:21:37 sendfile (5, 9, [0], 51773484) = 6024754  
+ 08:24:21 sendfile (5, 9, [6024754], 45748730) = 1768041  
+ 08:27:09 sendfile (5, 9, [7792795], 43980689) = 1768041  
+ 08:30:07 sendfile (5, 9, [9560836], 42212648) = 1768041  
+ ... </pre></blockquote><br>  After the first big “pulling out” of the data, <br>  sendfile is called several more times.  Between each successive call, it transfers approximately 1.7 megabytes.  Between these calls, approximately every 180 seconds, the socket was constantly empty because of the slow curl, so why didn't NGINX replenish it constantly? <br><br><h2>  Asymmetry </h2><br>  The motto of Unix is ​​“everything is a file.”  Otherwise, you can say "everything can be read or written using poll".  Let's look at the behavior of network sockets in Linux. <br><br>  The semantics of reading from a socket is simple: <br><ul><li>  The <code>read()</code> call will return the data available in the socket until it is empty. </li><li>  <code>poll</code> responds that the socket is readable when there is some data in it. </li></ul><br>  You might think that writing to a socket in a similar way looks like: <br><ul><li>  A <code>write()</code> call will copy the data to the buffer until the send buffer is full. </li><li>  <code>poll</code> responds that the socket is writable if it has at least some free space. </li></ul><br>  Surprisingly, this is NOT true. <br><br><h2>  Different "ways" of code </h2><br>  It is important to understand that the Linux kernel has two different mechanisms for running the executable code: the actual data is sent (sent) one at a time, and the second checks whether the socket is writable. <br><br>  For the <code>send()</code> command to succeed, two conditions must be met: <br><ul><li>  There should be free space in the send buffer. </li><li>  The amount of unsent data queued must be less than the <code>LOWAT</code> parameter.  <i>In this case, everything was fine, so we simply omit this condition</i> . </li></ul><br><br>  On the other hand, the conditions under which poll considers a socket available for writing are somewhat stricter: <br><ul><li>  There should be free space in the send buffer. </li><li>  The amount of unsent data queued must be less than the <code>LOWAT</code> parameter. </li><li>  The free space in the send buffer must be more than half the occupied space in the buffer. </li></ul><br>  The last condition is critical.  After the send buffer is 100% full, it will be available for writing again not earlier than its fill level drops to at least 66%. <br><br>  If we go back to tracking the behavior of NGINX, then in the second case, with c sendfile, we saw this: <br><br><blockquote><pre>  08:24:21 sendfile (5, 9, [6024754], 45748730) = 1768041 </pre></blockquote><br>  We successfully sent 1.7 megabytes of data, which is close to 33% of 5 megabytes, our default value for the send buffer size wmem. <br><br>  This threshold was probably set in Linux to avoid buffer replenishment too often.  There is no need to "kick" the sending program after each sent byte. <br><br><h2>  Decision </h2><br>  Now we can say for sure when the problem happens: <br><ol><li>  The send dispatch buffer is at least 66% full. </li><li>  The user download speed is low, and the buffer does not empty to 66% in 60 seconds. </li><li>  When this happens, the send buffer is not replenished, it is not considered writable, and the connection is timed out. </li></ol><br><br>  There are several ways to solve a problem. <br><br>  One is to increase the <code>send_timeout</code> to, say, 280 seconds.  Then, given the size of the send buffer, users whose speed is greater than 50Kb / s will not be disconnected due to a timeout. <br><br>  Another option is to reduce the size of the send buffer <code>tcp_wmem</code> . <br><br>  Well, the last option is to patch NGINX so that it reacts differently to the timeout.  Instead of closing the connection immediately, you can look at the amount of data in the send buffer.  This can be done using <code>ioctl(TIOCOUTQ)</code> .  Then we can understand how quickly the buffer is emptied, and maybe give the connection a little more time. <br><br>  <a href="https://github.com/cloudflare/cloudflare-blog/blob/master/2016-03-slow-downloads/nginx_send_minimum_rate.patch" rel="nofollow">Chris Branch prepared a patch for NGINX</a> , which implements the option with the <code>send_minimum_rate</code> option, which allows you to determine how slow the download is allowed to the client. <br><br><h2>  findings </h2><br>  The Linux network stack is very complex.  Although it usually works well, sometimes you can find surprises in it. <br><br>  Not all even experienced programmers know all its insides.  While we were dealing with this error, we realized that the assignment of timeouts for data recording requires special attention, it is impossible to just take and set timeouts for recording the same as for reading. <br><br>  And now we know that due to the wmem values, unexpected timeouts can be obtained when sending data. </div><p>Source: <a href="https://habr.com/ru/post/282465/">https://habr.com/ru/post/282465/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../282455/index.html">Why security experts prefer outdated email clients</a></li>
+<li><a href="../282457/index.html">How to integrate TeamCity and Bitbucket Server</a></li>
+<li><a href="../282459/index.html">Connect to the online broadcast! Opening conference Xamarin Evolve April 27</a></li>
+<li><a href="../282461/index.html">Free selection of 40 CSS effects</a></li>
+<li><a href="../282463/index.html">The first update of the stable branch Vivaldi 1.1</a></li>
+<li><a href="../282467/index.html">How to connect the Internet in one day and set up telephony in the office?</a></li>
+<li><a href="../282471/index.html">Yandex has developed a corporate font</a></li>
+<li><a href="../282473/index.html">Integration of PVS-Studio into the CI process</a></li>
+<li><a href="../282475/index.html">The implementation of the simulator of the mathematical game "Life"</a></li>
+<li><a href="../282477/index.html">Async / Await in javascript. View from the outside</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

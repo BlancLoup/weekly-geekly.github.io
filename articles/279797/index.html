@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How to use parquet and not slip</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="There is not a lot of information on Habré in storing data in the Parquet files , so we hope the story about the experience of Wrike in its implementa...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How to use parquet and not slip</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/97a/412/4aa/97a4124aacce42e894985c6c4f6207cf.jpg"><br><br>  There is not a lot of information on Habré in storing data in the <a href="https://parquet.apache.org/">Parquet files</a> , so we hope the story about the experience of <a href="https://www.wrike.com/ru%3Futm_source%3Dhabrahabr%26utm_medium%3Dblogposts%26utm_campaign%3Dparquet">Wrike</a> in its implementation in conjunction with Spark comes in handy. <br>  In particular, in this article you will learn: <br><br>  - why do we need “parquet”; <br>  - how it works; <br>  - when to use it; <br>  - in which cases it is not very convenient. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <a name="habracut"></a><br><br>  Perhaps we should start with the question: why did we even begin to look for a new way of storing data instead of preliminary aggregation and saving the result in the database, and what criteria were we guided by when deciding? <br><br>  In the analytics department of Wrike, we use <a href="http://spark.apache.org/">Apache Spark</a> , a scalable and increasingly popular tool for working with big data (we have various logs and other incoming data streams and events).  We <a href="https://habrahabr.ru/company/wrike/blog/275567/">described earlier</a> more about how Spark works with us. <br><br>  Initially, we wanted to deploy the system quickly and without special infrastructural refinements, so we decided to limit ourselves to Standalone by the cluster manager Spark and the text files that Json was recorded to.  At that time, we did not have a large input data stream, so we had to deploy <a href="http://hadoop.apache.org/">hadoop</a> , etc.  there was no point. <br><br>  <b>About what picture we had at the initial stage:</b> <br><ul><li>  We tried to get by with the minimal technology stack and make the system as simple as possible, so we immediately discarded Spark over hadoop, <a href="http://cassandra.apache.org/">Cassandra</a> , MongoDB, and other storage methods that require special management.  Our disks are quite smart and coped well with the data flow. In addition, the machines in the cluster are located close to each other and are connected by a powerful network interface. </li><li>  Our input data were poorly structured, so it was difficult to isolate a universal scheme. </li><li>  The scheme quickly evolved due to the fact that we constantly added new events and improved tracking of user activity, so we chose json as the data format and put them into ordinary text files. </li><li>  We aimed to approach event-based analytics.  And in this case, each event should be maximally enriched with information in order to keep the number of join operations to a minimum.  In practice, data enrichment spawned more and more columns in the schema (this is an important point, we will come back to it).  In addition, due to the large number of events of completely different kinds, but interconnected and characterized by different parameters, the scheme also acquired a large number of columns and the information was rather sparse. </li><li>  We worked with immutable data: we recorded, and then we only read. </li></ul><br><br>  After several weeks of work, we realized that it was inconvenient and time-consuming to work with json data: slow reading, moreover, with numerous test requests each time Spark had to first read the file, determine the schema, and only then pick up directly on the execution of the request itself.  Of course, the way Spark can be shortened by specifying the scheme in advance, but we did not want to do this additional work each time. <br>  Having rummaged in Spark, we found that he himself actively uses parquet-format inside. <br><br><h4>  What is parquet </h4><br>  <a href="https://parquet.apache.org/">Parquet</a> is a binary, column-oriented data storage format, originally created for the hadoop ecosystem.  The developers claim that this storage format is ideal for big data (immutable). <br>  The first impression was hurray, with Spark it finally became comfortable to work, it just came to life, but, oddly enough, threw us some unexpected problems.  The fact is that parquet behaves like an immutable table or database.  This means that the type is defined for the columns, and if you suddenly combine a complex data type (say, nested json) with a simple (normal string value), then the whole system will collapse.  For example, take two events and write them in Json format: <br> <code>{ <br> “event_name”: “event 1”, <br> “value”: “this is first value”, <br> } <br> <br> { <br> “event_name”: “event 2”, <br> “value”: {“reason”: “Ok”} <br> } <br></code> <br><br>  You cannot write them in the parquet-file, since in the first case you have a string, and in the second a complex type.  Worse, if the system writes the input data stream to a file, say, every hour.  Events with string values ​​can come in the first hour, and in the second hour - in the form of a complex type.  As a result, of course, it will turn out to write parquet files, but with the merge schema operation, you will come across an error of type incompatibility. <br><br>  To solve this problem, we had to make a small compromise.  We defined the exact scheme known by the data supplier for a part of the information, but for the rest, we took only the high-level keys.  At the same time, the data itself was recorded as text (often it was json), which we stored in a cell (later using simple map-reduce operations, this turned into a convenient DataFrame) in the case of the example above, ““ value ”: {“ reason ”:“ Ok ”} 'turns into“ “value”: “{\” reason \ ”: \” Ok \ ”}”'.  We also encountered some features of splitting data into Spark. <br><br><h4>  <b>How does the parquet file structure look like?</b> </h4><br>  Parquet is a rather complicated format compared to the same text file with json inside. <br>  It is noteworthy that this format has even taken root in Google’s development, namely in their project called Dremel - this was already <a href="https://habrahabr.ru/post/207234/">mentioned on Habré</a> , but we will not go deeper into the wilds of Dremel, those who wish can read about it here: <a href="http://research.google.com/pubs/pub36632.html">research.google.com /pubs/pub36632.html</a> . <br><br>  In short, Parquet uses an architecture based on <i>“definition levels”</i> (definition levels) and <i>“repetition levels”</i> (repetition levels), which makes it possible to code data rather efficiently, and information about the scheme is put into separate metadata. <br>  At the same time, null values ​​are optimally stored. <br><br>  The structure of the parquet file is well illustrated <a href="https://parquet.apache.org/documentation/latest/">in the documentation</a> : <br><br><img src="https://habrastorage.org/files/00c/814/4e6/00c8144e68f14eb388f8636717a7667a.gif"><br><br>  Files have several levels of splitting into parts, due to which a rather effective parallel execution of operations on top of them is possible: <br><br>  <b>Row-group</b> is a partition that allows you to work in parallel with data at the Map-Reduce level. <br>  <b>Column chunk</b> - split at the column level, allowing you to distribute IO operations <br>  <b>Page</b> - Split columns into pages, allowing you to distribute the work of coding and compression <br><br>  If you save the data in the parquet file to disk using the file system we are used to, you will find that instead of a file, a directory is created that contains a whole collection of files.  Some of them are meta-information, in it is a diagram, as well as various service information, including a partial index, which allows reading only the necessary data blocks upon request.  The remaining parts, or partitions, are our Row group. <br><br>  For an intuitive understanding, we will consider <b>Row groups as a</b> set of files united by common information.  By the way, this partitioning is used by HDFS to implement data locality, when each node in the cluster can read the data that is directly located on the disk.  Moreover, the row group is a Map Reduce unit, and each map-reduce task in Spark works with its own row-group.  Therefore, a worker must place a group of lines in memory, and when setting the size of a group, you must take into account the minimum amount of memory allocated to the task on the weakest node, otherwise you might stumble upon OOM. <br>  In our case, we were faced with the fact that in certain conditions Spark, reading a text file, formed only one partition, and because of this, data conversion was performed on only one core, although much more resources were available.  With the help of the repartition operation in rdd, we split the input data, in the end we got several row groups, and the problem was gone. <br><br>  <b>Column chunk</b> (split at the column level) - optimizes the work with the disk (s).  If we present the data as a table, they are not written line by line, but by columns. <br><br>  <b>Imagine a table:</b> <br><img src="https://habrastorage.org/files/469/897/dae/469897dae11f4b159afd1f2bef6d5d6d.png"><br>  Then in a text file, say, csv, we would store data on a disk like this: <br><img src="https://habrastorage.org/files/b4f/916/6d3/b4f9166d324a41f395406d52feec5d7b.png"><br>  In the case of Parquet: <br><img src="https://habrastorage.org/files/b45/9aa/ce8/b459aace83f5497aa7dbd37a9e50b493.png"><br>  Thanks to this we can read only the columns we need. <br><br>  Of all the variety of columns, in fact, the analyst at a particular moment needs only a few, and most of the columns remain empty.  Parquet speeds up the process of working with data, moreover - such information structuring simplifies data compression and coding due to their homogeneity and similarity. <br><br>  Each column is divided into pages ( <b>Pages</b> ), which, in turn, contain meta-information and data encoded according to the principle of architecture from the Dremel project.  Due to this, quite effective and fast coding is achieved.  In addition, compression is performed at this level (if configured).  Currently available codecs <i>snappy, gzip, lzo</i> . <br><br><h4>  <b>Are there any pitfalls?</b> </h4><br>  Due to the “parquet” organization of data, it is difficult to configure their streaming - if you transfer data, then the entire group is complete.  Also, if you have lost the meta information or changed the checksum for the Data Page, then the whole page will be lost (if for the Column chank, then the chank is lost, similarly for the row group).  At each of the splitting levels, checksums are built, so you can turn off their calculations at the file system level to improve performance. <br><br><h4>  Findings: </h4><br><br>  <b>Advantages of data storage in Parquet:</b> <br><br><ul><li>  Despite the fact that they are created for hdfs, data can be stored in other file systems, such as GlusterFs or over NFS. </li><li>  In essence, these are just files, which means that it is easy to work with them, move, backup and replicate. </li><li>  The columnar view allows you to significantly speed up the work of the analyst, if he does not need all the columns at once. </li><li>  Native support in Spark out of the box provides the ability to simply take and save the file to your favorite repository. </li><li>  Efficient storage in terms of space occupied. </li><li>  Practice shows that it is this method that provides the fastest reading performance compared to using other file formats. </li></ul><br><br>  <b>Disadvantages:</b> <br><br><ul><li>  Column view makes you think about the schema and data types. </li><li>  Except in Spark, Parquet does not always have native support in other products. </li><li>  Does not support data modification and schematic evolution.  Of course, Spark knows how to merge the scheme, if you change it over time (you need to specify a special option when reading), but to change something in an already existing file, you cannot do without overwriting, except that you can add a new column. </li><li>  Transactions are not supported, as these are regular files and not DB. </li></ul><br><br>  In Wrike, we have been using parquet files for quite a long time as storing enriched event data, our analysts drive quite a lot of requests to them every day, we have developed a special technique for working with this technology, so we’ll be happy to share our experience with those who want to try parquet in business, and answer all questions in the comments. <br><br>  <b>PS</b> Of course, later we repeatedly revised our views on the form of data storage, for example, we were advised by the more popular Avro format, but so far there is no urgent need to change something. <br><br>  For those who still do not understand the difference between string-oriented data and column-oriented data, there is an <a href="https://www.youtube.com/watch%3Fv%3DAY1dEfyFeHc">excellent video from Cloudera</a> , <br>  as well as a rather entertaining <a href="http://www.slideshare.net/StampedeCon/choosing-an-hdfs-data-storage-format-avro-vs-parquet-and-more-stampedecon-2015">presentation</a> about data storage formats for analytics. </div><p>Source: <a href="https://habr.com/ru/post/279797/">https://habr.com/ru/post/279797/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../279785/index.html">Make an autonomous photo booth on raspberry pi</a></li>
+<li><a href="../279787/index.html">The main threats to site security</a></li>
+<li><a href="../279789/index.html">Game development digest</a></li>
+<li><a href="../279791/index.html">We go around the antivirus with ten lines of code</a></li>
+<li><a href="../279793/index.html">April 8 - learn everything about the Microsoft Azure cloud in one cloudy day</a></li>
+<li><a href="../279799/index.html">Building Android applications step by step, part three</a></li>
+<li><a href="../279801/index.html">IBM transferred almost 44,000 lines of code to the open-source blockchain project to the Hyperledger Project</a></li>
+<li><a href="../279803/index.html">We select valid mobile numbers of VK friends in Python</a></li>
+<li><a href="../279805/index.html">Checking the source code of the game engine Serious Engine v.1.10 for the anniversary of the shooter Serious Sam</a></li>
+<li><a href="../279807/index.html">Record of the webinar "Managing Server and Personal Security in Kerio Connect"</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

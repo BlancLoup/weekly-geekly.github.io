@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL in Azure. Part 1</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article, we begin a series of notes on using PostgreSQL in Microsoft Azure. 
+
+
+ The first article will be about installing and configuring a P...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL in Azure. Part 1</h1><div class="post__text post__text-html js-mediator-article"><p>  In this article, we begin a series of notes on using PostgreSQL in Microsoft Azure. </p><br><p>  The first article will be about installing and configuring a PostgreSQL cluster: </p><br><ul><li>  Discover Azure Resources </li><li>  Control through azure cli </li><li>  Choosing the right storage </li><li>  Build a classic master-slave bundle in the same availability group </li></ul><a name="habracut"></a><br><p>  The goal of this part is to implement a schema that includes the following components, Azure resources: <br><img src="https://habrastorage.org/files/182/60c/811/18260c811dd14dc99ed77e269fed2abf.png" alt="Schematic diagram"></p><br><p>  We will do this with the help of azure cli.  You can not install azure-cli and do everything through the <a href="https://portal.azure.com/">portal.azure.com</a> web interface, but it seemed to me that the management and creation through cli was more visual. </p><br><p>  The azure cli utility is cross-platform and works wherever nodejs works.  Install it under linux as follows: </p><br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># dnf install npm || apt-get install npm NPM_CONFIG_PREFIX=~/.npm-global npm install -g 'git://github.com/Azure/azure-xplat-cli.git#v0.9.20-April2016' echo 'NPM_PACKAGES="$HOME/.npm-global"' &gt;&gt; ~/.bash_profile echo 'export PATH="$PATH:$NPM_PACKAGES/bin"' &gt;&gt; ~/.bash_profile</span></span></code> </pre> <br><p>  You can familiarize yourself with the basic commands of the <a href="https://azure.microsoft.com/ru-ru/documentation/articles/azure-cli-arm-commands/">azure cli here</a> .  All subsequent azure cli commands run from your work computer.  Let's start with the fact that we need to introduce ourselves to the system and get a token: </p><br><pre> <code class="bash hljs">azure login</code> </pre> <br><p>  Read more about authorization methods <a href="https://azure.microsoft.com/ru-ru/documentation/articles/xplat-cli-connect/">here</a> . </p><br><p>  Create a resource group (resource container) in Northern Europe: </p><br><pre> <code class="bash hljs">azure group create --name pg-resource-group --location northeurope</code> </pre> <br><p>  Create a virtual local network 10.0.0.0/8 and subnet 10.0.0.0/24: </p><br><pre> <code class="bash hljs">azure network vnet create -g pg-resource-group -l northeurope --address-prefixes 10.0.0.0/8 --name pg-vnet azure network vnet subnet create -g pg-resource-group --vnet-name pg-vnet --address-prefix 10.0.0.0/24 --name pg-vnet-subnet</code> </pre> <br><p>  Since we are going to manage via ssh via an external ip-address, we create firewall rules and allow connections from outside to port 22 only: </p><br><pre> <code class="bash hljs">azure network nsg create -g pg-resource-group -l northeurope --name pg-nsg azure network nsg rule create -g pg-resource-group --nsg-name pg-nsg --name AllowSSH --protocol Tcp --access Allow --destination-port-range 22 --priority 200 --direction Inbound</code> </pre> <br><p>  We configure the external ip-address (public-ip), the network adapter with a private network and a subnet for the leader: </p><br><pre> <code class="bash hljs">azure network public-ip create -g pg-resource-group -l northeurope --allocation-method Static --name pg-public-1 azure network nic create -g pg-resource-group -l northeurope --subnet-name pg-vnet-subnet --subnet-vnet-name pg-vnet --private-ip-address 10.0.0.101 --network-security-group-name pg-nsg --name pg-nic-1</code> </pre> <br><p>  We create accessibility group.  In short, this is a cluster of machines divided into groups (domains) that cannot be available at the same time: </p><br><pre> <code class="bash hljs">azure availset create -g pg-resource-group -l northeurope --name pg-availability-set</code> </pre> <br><p>  Read more about accessibility groups <a href="https://azure.microsoft.com/en-us/documentation/articles/virtual-machines-windows-manage-availability/">here</a> . </p><br><p>  It is time to configure the virtual machine.  Available types of virtual machines and their limitations can be found through the command: </p><br><pre> <code class="bash hljs">azure vm sizes -l northeurope</code> </pre> <br><p>  The list will have more than 50 types of cars, prices can be found <a href="https://azure.microsoft.com/ru-ru/pricing/calculator/">here</a> .  Fewer disks can be connected to cheaper ones (the total number of disks can be from 1 to 40).  For testing the wizard, Standard_DS4_v2 is selected: 8 CPU, 28GB RAM, to which you can connect up to 16 premium storage disks. </p><br><p>  The command to create a virtual machine that implies the pg user with sudo-rights and allowed ssh login using the ssh key: </p><br><pre> <code class="bash hljs">azure vm create -g pg-resource-group -l northeurope --nic-name pg-nic-1 --os-type Linux --image-urn OpenLogic:CentOS:7.2:latest --admin-username pg --ssh-publickey-file ~/.ssh/id_rsa.pub --vm-size Standard_DS4_v2 --public-ip-name pg-public-1 --availset-name pg-availability-set --name pg-1</code> </pre> <br><p>  You can view the parameters of the created machine, as well as external ip, via the command: </p><br><pre> <code class="bash hljs">azure vm show -g pg-resource-group --name pg-1</code> </pre> <br><p>  Now we have a virtual machine with CentOS 7.2 installed, running in a private pg-vnet virtual network with an ip-address of 10.0.0.101 and a public pg-public-1, through which we can access ssh from the outside.  It is necessary to create a disk on which data of our PostgreSQL will be located.  You can read about various types of storage <a href="https://azure.microsoft.com/ru-ru/documentation/articles/storage-redundancy/">here</a> .  To begin with, we will present the results of our repository testing: </p><br><p><img src="https://habrastorage.org/files/bff/d6f/05e/bffd6f05e8c1448c9de6dfd7327462ef.png" alt="Performance of various types of storage"></p><br><p>  Create a Premium LRS storage account named pgplrs (it must be unique within azure): </p><br><pre> <code class="bash hljs">azure storage account create -g pg-resource-group -l northeurope --<span class="hljs-built_in"><span class="hljs-built_in">type</span></span> PLRS pgplrs</code> </pre> <br><p>  Create a disk and connect it to the virtual machine: </p><br><pre> <code class="bash hljs">azure vm disk attach-new -g pg-resource-group -l northeurope --vm-name pg-1 --lun 1 --size-in-gb 512 --vhd-name pgdata-1 --host-caching ReadOnly --storage-account-name pgplrs</code> </pre> <br><p>  Create and run the pg-2 virtual machine: </p><br><pre> <code class="bash hljs">azure network public-ip create -g pg-resource-group -l northeurope --allocation-method Static --name pg-public-2 azure network nic create -g pg-resource-group -l northeurope --subnet-name pg-vnet-subnet --subnet-vnet-name pg-vnet --private-ip-address 10.0.0.102 --network-security-group-name pg-nsg --name pg-nic-2 azure vm create -g pg-resource-group -l northeurope --nic-name pg-nic-2 --os-type Linux --image-urn OpenLogic:CentOS:7.2:latest --admin-username pg --ssh-publickey-file ~/.ssh/id_rsa.pub --vm-size Standard_DS4_v2 --public-ip-name pg-public-1 --availset-name pg-availability-set --name pg-2 azure vm disk attach-new -g pg-resource-group -l northeurope --vm-name pg-2 --lun 1 --size-in-gb 512 --vhd-name pgdata-2 --host-caching ReadOnly --storage-account-name pgplrs azure vm start -g pg-resource-group pg-2</code> </pre> <br><p>  Now we can connect via ssh to pg-1 as pg user: </p><br><pre> <code class="bash hljs">ssh pg-public-1 -l pg -i ~/.ssh/id_rsa</code> </pre> <br><p>  All further actions we will perform on the machine pg-1.  Immediately after connecting the drive, you need to match it with the physical block device available on the virtual machine.  To do this, run the command: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ dmesg | tail -n 10 [ 488.417024] Adjusting hyperv_clocksource more than 11% (1945964553 vs 1862270976) [ 525.969741] scsi 5:0:0:0: Direct-Access Msft Virtual Disk 1.0 PQ: 0 ANSI: 4 [ 526.001471] sd 5:0:0:0: Attached scsi generic sg3 <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> 0 [ 526.018792] sd 5:0:0:0: [sdc] 1073741824 512-byte logical blocks: (549 GB/512 GiB) [ 526.039690] sd 5:0:0:0: [sdc] 4096-byte physical blocks [ 526.053643] sd 5:0:0:0: [sdc] Write Protect is off [ 526.065818] sd 5:0:0:0: [sdc] Mode Sense: 0f 00 10 00 [ 526.065985] sd 5:0:0:0: [sdc] Write cache: enabled, <span class="hljs-built_in"><span class="hljs-built_in">read</span></span> cache: enabled, supports DPO and FUA [ 526.091754] sdc: unknown partition table [ 526.105263] sd 5:0:0:0: [sdc] Attached SCSI disk</code> </pre> <br><p>  From these messages it can be understood that the name of the block device assigned to the mounted disk is / dev / sdc.  Create a file system on it: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ mkfs.ext4 /dev/sdc mke2fs 1.42.9 (28-Dec-2013) /dev/sdc is entire device, not just one partition! Proceed anyway? (y,n) y</code> </pre> <br><p>  Now we have to create an entry in fstab.  Get the UUID of the device: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ blkid /dev/sdc /dev/sdc: UUID=<span class="hljs-string"><span class="hljs-string">"8cb25a32-175b-4c78-b557-8153327d48ba"</span></span> TYPE=<span class="hljs-string"><span class="hljs-string">"ext4"</span></span></code> </pre> <br><p>  And mount the disk, after creating the mount point and adding an entry in fstab: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ mkdir -p /var/lib/pgsql [root@pg-1 ~] $ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'UUID=8cb25a32-175b-4c78-b557-8153327d48ba /var/lib/pgsql ext4 defaults 0 0'</span></span> &gt;&gt; /etc/fstab [root@pg-1 ~] $ mount -a</code> </pre> <br><p>  It's time to install the software, connect the repository: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ rpm -ivh http://repo.postgrespro.ru/pgpro-9.5/keys/postgrespro-9.5.centos95.noarch.rpm</code> </pre> <br><p>  Install the software: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ yum install postgrespro95-server postgrespro95-contrib</code> </pre> <br><p>  We turn on the service and initialize the DBMS instance: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ chkconfig postgresql-9.5 on [root@pg-1 ~] $ service postgresql-9.5 initdb [root@pg-1 ~] $ service postgresql-9.5 start</code> </pre> <br><p>  Further commands we will run under the user postgres: </p><br><pre> <code class="bash hljs">[root@pg-1 ~] $ su -l postgres</code> </pre> <br><p>  We allow connection to the server in pg_hba with ip 10.0.0.101-102 for replication: </p><br><pre> <code class="bash hljs">[postgres@pg-1 ~] $ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'host replication replication 10.0.0.101/30 md5'</span></span> &gt;&gt; /var/lib/pgsql/9.5/data/pg_hba.conf</code> </pre> <br><p>  Create a user for replication: </p><br><pre> <code class="bash hljs">[postgres@pg-1 ~] $ /usr/pgsql-9.5/bin/psql -U postgres postgres postgres=$ CREATE ROLE replication WITH REPLICATION PASSWORD <span class="hljs-string"><span class="hljs-string">'password'</span></span> LOGIN; CREATE ROLE</code> </pre> <br><p>  We set the parameters that allow using this machine as a leading server for replication: </p><br><pre> <code class="bash hljs">[postgres@pg-1 ~] $ /usr/pgsql-9.5/bin/psql -U postgres postgres postgres=$ alter system <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> listen_addresses to <span class="hljs-string"><span class="hljs-string">'*'</span></span>; ALTER SYSTEM postgres=$ alter system <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> wal_level to hot_standby; ALTER SYSTEM postgres=$ alter system <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> max_wal_senders to 3; ALTER SYSTEM postgres=$ alter system <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> wal_keep_segments to 128; ALTER SYSTEM</code> </pre> <br><p>  Check if the parameters are applied: </p><br><pre> <code class="bash hljs">postgres=$ select * from pg_file_settings <span class="hljs-built_in"><span class="hljs-built_in">where</span></span> not applied; sourcefile | sourceline | seqno | name | setting | applied ----------------------------------------------+------------+-------+------------------+-------------+--------- /var/lib/pgsql/9.5/data/postgresql.auto.conf | 3 | 20 | wal_level | hot_standby | f /var/lib/pgsql/9.5/data/postgresql.auto.conf | 4 | 21 | max_wal_senders | 3 | f /var/lib/pgsql/9.5/data/postgresql.auto.conf | 6 | 23 | listen_addresses | * | f (3 rows)</code> </pre> <br><p>  Restart the service: </p><br><pre> <code class="bash hljs">[postgres@pg-1 ~] $ /usr/pgsql-9.5/bin/pg_ctl restart -D /var/lib/pgsql/9.5/data -w</code> </pre> <br><p>  Now we can connect via ssh to pg-2 as pg user: </p><br><pre> <code class="bash hljs">ssh pg-public-2 -l pg -i ~/.ssh/id_rsa</code> </pre> <br><p>  All further commands we run on the machine pg-2.  It's time to do a replica: we similarly connect the disk and install postgrespro.  And we log in to pg-2 as a postgres user: </p><br><pre> <code class="bash hljs">[root@pg-2 ~] $ su -l postgres</code> </pre> <br><p>  After that, prepare a replica with one command: </p><br><pre> <code class="bash hljs">[postgres@pg-2 ~] $ /usr/pgsql-9.5/bin/pg_basebackup -U replication -D /var/lib/pgsql/9.5/data -R -x -P -c spread -h 10.0.0.101 -W Password: 38895/38895 kB (100%), 1/1 tablespace</code> </pre> <br><p>  Now we have a complete copy in <code>/var/lib/pgsql/9.5/data</code> and the specified <code>recovery.conf</code> file, in which I recommend adding information about the trigger file, during the creation of which this instance of the DBMS will turn from a slave into a full-fledged leading server.  Thus, the contents of the file will be as follows: </p><br><pre> <code class="bash hljs">[postgres@pg-2 ~] $ cat /var/lib/pgsql/9.5/data/recovery.conf standby_mode = <span class="hljs-string"><span class="hljs-string">'on'</span></span> primary_conninfo = <span class="hljs-string"><span class="hljs-string">'user=replication password=password host=10.0.0.101 port=5432 sslmode=prefer sslcompression=1 krbsrvname=postgres'</span></span> trigger_file = <span class="hljs-string"><span class="hljs-string">'/var/lib/pgsql/stop_replication_trigger'</span></span></code> </pre> <br><p>  We start an instance with a replica: </p><br><pre> <code class="bash hljs">[postgres@pg-2 ~] $ /usr/pgsql-9.5/bin/pg_ctl start -w -D /var/lib/pgsql/9.5/data</code> </pre> <br><p>  And check if the WAL receiver is running (process wal receiver): </p><br><pre> <code class="bash hljs">[postgres@pg-2 ~] $ ps axufwwww postgres 29423 0.1 0.2 372920 16564 ? S 09:07 0:00 /usr/pgsql-9.5/bin/postmaster -D /var/lib/pgsql/9.5/data postgres 29425 0.0 0.0 225568 1608 ? Ss 09:07 0:00 \_ postgres: logger process postgres 29426 0.1 0.0 372960 2464 ? Ss 09:07 0:00 \_ postgres: startup process recovering 0000010000000000000003 postgres 29427 0.0 0.0 372920 1964 ? Ss 09:07 0:00 \_ postgres: checkpointer process postgres 29428 0.0 0.0 372920 1976 ? Ss 09:07 0:00 \_ postgres: writer process postgres 29429 0.2 0.0 379640 3360 ? Ss 09:07 0:00 \_ postgres: wal receiver process streaming 0/3000060</code> </pre> <br><p>  In total, we have two virtual machines, between which streaming asynchronous replication is configured, running in the same availability group.  In the next part of the article we will discuss backup copies and client balancing. </p><br><p>  Wait for the continuation! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/283156/">https://habr.com/ru/post/283156/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../283146/index.html">How to enable Intel AMT, if the manufacturer forgot it</a></li>
+<li><a href="../283148/index.html">Why not use Backbone.js in 2016</a></li>
+<li><a href="../283150/index.html">IBM TrueNorth-based computer chip helps predict epileptic seizures</a></li>
+<li><a href="../283152/index.html">Meteor + MVVM =</a></li>
+<li><a href="../283154/index.html">The digest of interesting materials for the mobile # 152 developer (May 4-9)</a></li>
+<li><a href="../283158/index.html">MySQL is the best NoSQL system</a></li>
+<li><a href="../283160/index.html">Expectations of development directions in the field of data storage and processing until 2020. Key Trends</a></li>
+<li><a href="../283162/index.html">Composition of functions on F # and Scala</a></li>
+<li><a href="../283166/index.html">The easiest way to create a website</a></li>
+<li><a href="../283168/index.html">R: processing missing values</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

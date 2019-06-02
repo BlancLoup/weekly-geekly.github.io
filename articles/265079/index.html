@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Implementing V8 Sorted by Google</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr. 
+
+ The world of javascript is developing at an incredible speed: new language standards, new frameworks, both in the browser and on the serv...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Implementing V8 Sorted by Google</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/55b/c99/c47/55bc99c47029458e80fe886fdec184e4.png" alt="image"><br>  Hi, Habr. <br><br>  The world of javascript is developing at an incredible speed: new language standards, new frameworks, both in the browser and on the server and in desktop applications and so on ... But sometimes you want to dive into some more basic topic instead of learning new super-features.  And dive deep into the source code. <br><br>  And at this moment under my scrutiny there was an imperceptible line "native code", which somehow appears before the eyes of any JS developer in the Chrome or Node.js console: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <pre><code class="javascript hljs">[].sort.toString(); <span class="hljs-string"><span class="hljs-string">"function sort() { [native code] }"</span></span></code> </pre> <br>  So, who cares, what sorting implementation is hidden in V8 behind the [native code] inscription - welcome under cat. <a name="habracut"></a><br><br>  For the study we will use the <a href="https://github.com/v8/v8-git-mirror">v8-git-mirror</a> repository on github.  Hereinafter I will refer to the code from version 4.6.9, which was relevant at the time of this writing. <br><br>  The V8 repository is great, and I decided to start a search with a simple find command: <br><br><pre> <code class="bash hljs">find ./src -iname <span class="hljs-string"><span class="hljs-string">"*array*"</span></span> ./src/array-iterator.js ./src/array.js ./src/arraybuffer.js ./src/harmony-array-includes.js ./src/harmony-array.js ...</code> </pre><br>  The names of these files seem to be familiar.  It seems we need exactly <a href="">array.js</a> .  What is its content? <br><br>  In general, this is an ordinary code for js, with the exception of various macros and define-s, which are written in UPPERCASE and defined in the <a href="https://github.com/v8/v8-git-mirror/blob/950d2051a5ff065a5bc1d31f0e5d1bba850d0b3c/src/macros.py">macros.py</a> file, and function calls defined already somewhere in the depths of C ++ code, starting with% or $.  But you should not be afraid, everything that is not js-noye has a quite clear assignment based on the name, for example,% _CallFunction obviously calls a function, etc.  So let's continue searching for the sorting code. <br><br>  Let's start from the end, from the place where the sorting method is <a href="">added</a> to Array.prototype: <br><br><pre> <code class="javascript hljs"><span class="hljs-comment"><span class="hljs-comment">// Set up non-enumerable functions of the Array.prototype object and // set their names. // ... utils.InstallFunctions(GlobalArray.prototype, DONT_ENUM, [ // ... "sort", getFunction("sort", ArraySort), "filter", getFunction("filter", ArrayFilter, 1), "forEach", getFunction("forEach", ArrayForEach, 1), // ... ]);</span></span></code> </pre><br>  Yeah, we need the ArraySort function.  It is <a href="">defined</a> in the same file: <br><br><pre> <code class="javascript hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">ArraySort</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">comparefn</span></span></span><span class="hljs-function">) </span></span>{ CHECK_OBJECT_COERCIBLE(<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>, <span class="hljs-string"><span class="hljs-string">"Array.prototype.sort"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> array = $toObject(<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> length = TO_UINT32(array.length); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> %_CallFunction(array, length, comparefn, InnerArraySort); }</code> </pre><br>  It checks whether this can be converted to an object (in accordance with the <a href="http://www.ecma-international.org/ecma-262/5.1/">specification</a> ), and if not, a TypeError exception will be thrown.  This is then converted to an object, the length is converted to uint32 and called <a href="">InnerArraySort</a> .  In these 281 lines and implemented sorting in V8. <br><br>  As many guess, this quick quicksort is one of the most common unstable internal sorting algorithms with medium complexity O (nlog n).  There was a quick sort in V8 not immediately, but <a href="https://github.com/v8/v8-git-mirror/commit/69156911be239c20899837603c9d2b54c37e9639">on September 25, 2008</a> , replacing the <a href="https://ru.wikipedia.org/wiki/%25D0%259F%25D0%25B8%25D1%2580%25D0%25B0%25D0%25BC%25D0%25B8%25D0%25B4%25D0%25B0%25D0%25BB%25D1%258C%25D0%25BD%25D0%25B0%25D1%258F_%25D1%2581%25D0%25BE%25D1%2580%25D1%2582%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25BA%25D0%25B0">heapsort</a> , to improve performance. <br>  Not everywhere the choice of sorting stopped on quicksort;  for example, SpiderMonkey (js Firefox engine) uses <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25BE%25D1%2580%25D1%2582%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25BA%25D0%25B0_%25D1%2581%25D0%25BB%25D0%25B8%25D1%258F%25D0%25BD%25D0%25B8%25D0%25B5%25D0%25BC">merge sort</a> ( <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25BE%25D1%2580%25D1%2582%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25BA%25D0%25B0_%25D1%2581%25D0%25BB%25D0%25B8%25D1%258F%25D0%25BD%25D0%25B8%25D0%25B5%25D0%25BC">merge sort</a> ) - <a href="">source</a> . <br><br>  In order to study the implementation nuances further, it would be nice to remember what the quick sorting algorithm step is (simplified): <br><br><img src="https://habrastorage.org/files/7d7/1bd/1b7/7d71bd1b74e1458c9c4c23c718f2e80f.png"><br><br><ol><li>  Select the pivot element from the array; </li><li>  We reorganize the array, we reduce it to the form: the elements are smaller pivot, pivot, the elements are large pivot; </li><li>  We repeat recursively for the left and right parts of the array. </li></ol><br>  Over time, the implementation of sorting inside V8 has acquired many different optimizations.  First of all, optimization is associated with the method of selecting the support element, tail recursion, and the algorithm of operation on arrays of small size.  Let's look at them in order of appearance. <br><br>  <a href="https://github.com/v8/v8/commit/b4a40eb22f07ef1707d56a9dfa49c024127a5add">The first refinement</a> was the addition of sorting inserts ( <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25BE%25D1%2580%25D1%2582%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25BA%25D0%25B0_%25D0%25B2%25D1%2581%25D1%2582%25D0%25B0%25D0%25B2%25D0%25BA%25D0%25B0%25D0%25BC%25D0%25B8">Insertion sort</a> ) for arrays of small size.  Here is its source <a href="">code</a> : <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> InsertionSort = <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">InsertionSort</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">a, from, to</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> i = <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> + <span class="hljs-number"><span class="hljs-number">1</span></span>; i &lt; to; i++) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> element = a[i]; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> j = i - <span class="hljs-number"><span class="hljs-number">1</span></span>; j &gt;= <span class="hljs-keyword"><span class="hljs-keyword">from</span></span>; j--) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> tmp = a[j]; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> order = %_CallFunction(UNDEFINED, tmp, element, comparefn); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (order &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>) { a[j + <span class="hljs-number"><span class="hljs-number">1</span></span>] = tmp; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">break</span></span>; } } a[j + <span class="hljs-number"><span class="hljs-number">1</span></span>] = element; } };</code> </pre><br>  Developers for a long time could not come to an agreement on which array to be considered “small”.  Many commits over the past 7 years have reduced the barrier (it all started with <a href="https://github.com/v8/v8-git-mirror/commit/b4a40eb22f07ef1707d56a9dfa49c024127a5add">22 elements</a> ), and at the moment they have converged on a length of <a href="">10 elements</a> . <br><br>  Now about the method of selecting the reference element, which has also undergone a number of changes. <br><br>  The first implementation used a random index selection for the reference element ( <a href="">source</a> ): <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> pivot_index = $floor($random() * (to - <span class="hljs-keyword"><span class="hljs-keyword">from</span></span>)) + <span class="hljs-keyword"><span class="hljs-keyword">from</span></span>;</code> </pre><br>  Then, the <a href="https://github.com/v8/v8/commit/9f1bcdf8ac4f6a37b5fab555550e44944623360e">median of the three</a> (first, last, and middle element) was changed to choose. <br><br>  But in the end, a simple choice of the median of three was <a href="https://github.com/v8/v8-git-mirror/commit/f4f9e2c1e0795f1c829e3951bbb09dc6854a37ce">supplemented with a</a> very unusual method of determining the average element for the median over large arrays ( <a href="">over 1000 elements</a> ).  Elements are selected from the initial array (in increments of a little more than 200) and written to a new array.  Then this array is sorted, and its middle element becomes the middle element for finding the median.  This function is called <a href="">GetThirdIndex</a> : <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> GetThirdIndex = <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">a, from, to</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> t_array = []; <span class="hljs-comment"><span class="hljs-comment">// Use both 'from' and 'to' to determine the pivot candidates. var increment = 200 + ((to - from) &amp; 15); for (var i = from + 1, j = 0; i &lt; to - 1; i += increment, j++) { t_array[j] = [i, a[i]]; } %_CallFunction(t_array, function(a, b) { return %_CallFunction(UNDEFINED, a[1], b[1], comparefn); }, ArraySort); var third_index = t_array[t_array.length &gt;&gt; 1][0]; return third_index; }</span></span></code> </pre><br>  And finally, about recursion.  The problem of the basic algorithm with two recursive calls (on the left and right parts of the array) is that if the selection of the reference element is unsuccessful, the depth of the recursion will be commensurate with the size of the array.  This not only significantly impairs the execution speed, but also translates into a memory O (n) estimate for the worst case.  In the sorting implementation for V8, this problem was also <a href="https://github.com/v8/v8-git-mirror/commit/45c4cd26beb0b6ed627608ab0b9479836a15f5ab">eliminated</a> : the sorting is called recursively only for the smaller subarray, and the sorting of the larger continues in the main loop.  This optimization ensures an estimate of the memory consumption O (log n).  Usually, the compiler can perform such <a href="https://ru.wikipedia.org/wiki/%25D0%25A5%25D0%25B2%25D0%25BE%25D1%2581%25D1%2582%25D0%25BE%25D0%25B2%25D0%25B0%25D1%258F_%25D1%2580%25D0%25B5%25D0%25BA%25D1%2583%25D1%2580%25D1%2581%25D0%25B8%25D1%258F">tail recursion</a> optimization, and in our case it had to be done manually with JS. <br><br>  Here is such a quick sort now used in V8.  But the story about sorting in the js engine would be incomplete without some points that are easier to show with examples. <br><br>  Let's start with the well-known.  What happens if you do not pass the function comparator: <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> arr = [<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">11</span></span>]; arr.sort(); [<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">11</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>]</code> </pre><br>  In this case, the default <a href="">comparator is used</a> , which sorts in the lexicographical order: <br><br><pre> <code class="javascript hljs">comparefn = <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> (</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">x, y</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (x === y) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (%_IsSmi(x) &amp;&amp; %_IsSmi(y)) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> %SmiLexicographicCompare(x, y); } x = $toString(x); y = $toString(y); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (x == y) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> x &lt; y ? <span class="hljs-number"><span class="hljs-number">-1</span></span> : <span class="hljs-number"><span class="hljs-number">1</span></span>; };</code> </pre><br>  The next example is a mystery: <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> arr = [<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-literal"><span class="hljs-literal">undefined</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>]; arr.sort(<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> (</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>; });</code> </pre><br><div class="spoiler">  <b class="spoiler_title">Answer</b> <div class="spoiler_text"><pre> <code class="javascript hljs">[<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-literal"><span class="hljs-literal">undefined</span></span>]</code> </pre><br><img src="https://habrastorage.org/files/8f4/67d/1df/8f467d1dfe824a7093fb4f944254518d.jpg"><br></div></div><br>  Wat?  But there is logic.  This is because, before sorting, the array is reorganized by the <a href="">SafeRemoveArrayHoles</a> function, namely: all significant elements replace the undefined at the beginning of the array, thereby all the undefined are accumulated at the end. <br><br>  And finally, perhaps the most fun.  Array.prototype.sort not only sorts arrays and objects like arrays.  Even values ​​from the prototype can take part in sorting.  All missing properties (from zero to the value of the length property) will be copied (the <a href="">CopyFromPrototype</a> function) from the prototype into the object itself, and then sorted: <br><br><pre> <code class="javascript hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Arr</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>[<span class="hljs-number"><span class="hljs-number">1</span></span>] = <span class="hljs-number"><span class="hljs-number">1</span></span>; } Arr.prototype[<span class="hljs-number"><span class="hljs-number">0</span></span>] = <span class="hljs-number"><span class="hljs-number">2</span></span>; Arr.prototype.length = <span class="hljs-number"><span class="hljs-number">2</span></span> <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> arr = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Arr(); <span class="hljs-built_in"><span class="hljs-built_in">Array</span></span>.prototype.sort.call(arr, <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> (</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">a, b</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> a - b; }); Arr {<span class="hljs-number"><span class="hljs-number">0</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>: <span class="hljs-number"><span class="hljs-number">2</span></span>}</code> </pre><br>  This description of the sorting can be completed.  Now we know everything that is actually behind the inscription [native code], and we can draw a number of useful conclusions: <br><br><ul><li>  V8 write and improve ordinary people, the same as we are with you.  The same piece of code corresponded and supplemented over 7 years: not all optimizations were applied immediately, and perhaps this implementation can be somehow accelerated or rewritten again :) </li><li>  No matter how they improve the search methods for the reference element, this procedure still depends on the input data.  The case of the “unsuccessful” selection of the support element and the subsequent degradation of performance are possible.  In general, it is worth looking at your input data; it may be more profitable for them to use, for example, <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25BE%25D1%2580%25D1%2582%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25BA%25D0%25B0_%25D0%25BF%25D0%25BE%25D0%25B4%25D1%2581%25D1%2587%25D1%2591%25D1%2582%25D0%25BE%25D0%25BC">sorting by counting</a> ; </li><li>  Quick sorting is intermittent ( <a href="https://habrahabr.ru/users/waxer/" class="user_link">Waxer</a> <a href="http://habrahabr.ru/post/265079/">example</a> ).  But if you need sustainability, you can do it in different ways.  You can supplement the elements of the array with their initial index and change the comparator somewhat to take it into account.  Or, implement some sortable sorting in js, for example, <a href="https://ru.wikipedia.org/wiki/Timsort">Timsort</a> .  But this is all beyond the scope of this article. </li></ul><br>  I hope you were just as interested to read this study as I do it.  Good luck in learning the source! </div><p>Source: <a href="https://habr.com/ru/post/265079/">https://habr.com/ru/post/265079/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../265067/index.html">About really BIG numbers (part 1)</a></li>
+<li><a href="../265069/index.html">Tabrier - collective video greetings</a></li>
+<li><a href="../265073/index.html">IBM mainframe as an alternative to the cloud</a></li>
+<li><a href="../265075/index.html">IP blacklist do-it-yourself</a></li>
+<li><a href="../265077/index.html">Clustering graphs and searching for communities. Part 1: introduction, overview of tools and Hair Spheres</a></li>
+<li><a href="../265081/index.html">Implement StyleCop in MSBuild</a></li>
+<li><a href="../265083/index.html">How does the search for applications on Google Play. Abstract</a></li>
+<li><a href="../265089/index.html">How to choose a dress using the main component method</a></li>
+<li><a href="../265091/index.html">Migrating from 3CX v12 Cloud Server to 3CX v14 Virtual PBX Server</a></li>
+<li><a href="../265093/index.html">MOOC courses in robotics</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

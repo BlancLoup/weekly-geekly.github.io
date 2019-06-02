@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Lazy threads: optional parallelism</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Article hypothesis. Described anywhere was not implemented, although, in principle, nothing prevents to gash this in the Phantom. 
+
+ This idea occurre...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Lazy threads: optional parallelism</h1><div class="post__text post__text-html js-mediator-article">  Article hypothesis.  Described anywhere was not implemented, although, in principle, nothing prevents to gash this in the Phantom. <br><br>  This idea occurred to me a long time ago and even somewhere was described by me.  The trigger to describe it today is a discussion of Linux network drivers in the comments on the <a href="https://habrahabr.ru/post/282564/">driver's Anatomy</a> . <br><br>  I will formulate the problem described there, as I understand it: the Linux network driver works in a separate thread that reads the received packets from the device and processes them synchronously.  Runs through routing, firewall and, if the package is not us, sends it to the outgoing interface. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      It is clear that some packages are serviced quickly, while others can take a long time.  In such a situation, I would like to have a mechanism that dynamically generates serving threads as needed, and a cheap enough mechanism in a situation when extra threads are not needed. <br><br>  That is, I would like such a function call, which, if necessary, can be converted into a thread start.  But at the price of the function call, if the thread really was not needed. <br><br>  This idea came to me when I considered absolutely fantastic models for Phantom, including an actor model with the launching of a thread in general for any function / method call.  I dropped the model itself, but the idea of ​​lazy threads has remained and still seems interesting. <br><br>  Like this. <br><a name="habracut"></a><br>  Suppose we run the function void worker (packet), which should silently accomplish something.  We are not interested in the return code (or it is given to us asynchronously), and we would like to perform a function within our thread, if it is short, and within a separate thread, if it is long. <br><br>  The concept of “long” is open here, but it would be reasonable for him to apply a simple assessment point — if we met our own planning quantum — the function is short.  If during the life of the function there was a preemption and the processor was taken from us, it was a long one. <br><br>  To do this, run it through the proxy lazy_thread (worker, packet), which performs a very simple operation - fixes the link to the stack at the moment before calling the worker function in the special lazy_threads_queue queue, and replaces the stack with a new one: <br><br><pre><code class="cpp hljs">push( lazy_threads_queue, arch_get_stack_pointer() ); arch_set_stack_pointer(allocate_stack())</code> </pre> <br><br>  If worker returned, then cancel this operation: <br><br><pre> <code class="cpp hljs">tmp = arch_get_stack_pointer() arch_set_stack_pointer( pop( lazy_threads_queue ) ); deallocate_stack(tmp)</code> </pre><br><br>  And we continue as if nothing had happened.  Everything cost us a couple of lines of code. <br><br>  If considerable time has passed, and the worker is still working, we will perform a simple operation - at the point of the stack change we will split the threads after the fact: let's pretend that a full thread creation has occurred inside lazy_thread (): copy the properties of the old thread to the new, return address on the new stack (which we selected in lazy_thread) rearranged so that it points to the function thread_exit (void), and in the old thread we set the pointer of the following instruction to the exit point from the function lazy_thread. <br><br>  Now the old thread continues to work, and the new one will perform what has been begun, and will be destroyed where it would return from lazy_thread in the original script. <br><br>  That is: the actual decision to start a thread to process a particular request occurred after we started to fulfill it and were able to assess the actual severity of this request.  You can impose on the decision point on the launch of a lazy thread additional restrictions - for example, the average load average for 15 seconds is less than 1.5 / processor.  If it is higher - parallelization is unlikely to help, we will spend more resources on the start of meaningless threads. <br><br>  In the modern world, when a common thing is 4 processors in a pocket machine and 16 in a desktop, there are clearly needed mechanisms that help the code adapt to the load capacity of the hardware.  Maybe so? </div><p>Source: <a href="https://habr.com/ru/post/282652/">https://habr.com/ru/post/282652/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../282638/index.html">Google DNS no longer supports Round Robin DNS</a></li>
+<li><a href="../282640/index.html">Xamarin SDK in Open Source and more at Xamarin Evolve 2016</a></li>
+<li><a href="../282642/index.html">Announcement! DevCon 2016 participants will be available a master class from Intel</a></li>
+<li><a href="../282644/index.html">Web sites continue to use “dark patterns”: interfaces designed to deceive</a></li>
+<li><a href="../282648/index.html">Million and one day INotifyPropertyChanged</a></li>
+<li><a href="../282654/index.html">Record of the webinar "How easy it is to protect the company from encrypters and hidden threats"</a></li>
+<li><a href="../282656/index.html">Piter Py # 3 - Personal Impressions</a></li>
+<li><a href="../282658/index.html">Mobile application against fraudsters and paperwork in auto insurance</a></li>
+<li><a href="../282660/index.html">Another Reflection Library and ORM for C ++</a></li>
+<li><a href="../282662/index.html">How I left elma</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

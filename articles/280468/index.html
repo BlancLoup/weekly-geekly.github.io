@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Tale about how GOST-disk encryption in Android implemented</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction 
+
+ In the summer of 2015, we, the developers of the Security Code, were faced with the task of implementing secure storage for Android wi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Tale about how GOST-disk encryption in Android implemented</h1><div class="post__text post__text-html js-mediator-article"> <b>Introduction</b> <br><br>  In the summer of 2015, we, the developers of the Security Code, were faced with the task of implementing secure storage for Android with encryption according to standards recognized by Russian law.  Before that, we already had a solution on a tablet for which there were Android sources.  And it allowed us to release updated nuclear encryption (dm-crypt) under the support of GOST 89, add the GOST library to the / system / lib, patch the cryptofs subsystem of the vold daemon.  As a result, we had a solution that was only suitable for a specific tablet model, and was not universal.  Having learned that in Android version 4.4 (API level 19), an API appeared that allows accessing data after registering and implementing its custom DocumentsProvider, we decided to create a solution using GOST-encryption in userspace using this API, which would not depend on the model devices. <br>  For those who are interested, welcome under cat. <br><br><a name="habracut"></a><br>  <b>How Android data is encrypted</b> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      I will briefly describe the process of encrypting an Android device.  Encryption is activated as follows: Settings → Security → Encrypt tablet / phone, implemented by means of linux kernel → dev-mapper → dm-crypt.  When activating this functionality, the device will ask for a password, as well as ask to save and encrypt data from / data (or simply delete all data as desired by the user).  After the device is rebooted, a password entry window will appear, in the system settings the variable <b>ro.crypto.state</b> will be set to encrypted. <br><br>  Standard partition encryption in Android is based on the FDE (full-disk encryption) model.  The model is the usual Linux kernel subsystem - device mapper and provides transparent encryption.  Access to data (for example, to the / data section) is provided via the virtual block device / dev / block / dm-0, which each io-request encrypts or decrypts in AES-CBC mode on a 128-bit sector key, which is calculated from IV ( initialization vector). <br><br><img src="https://habrastorage.org/files/545/7f9/cf8/5457f9cf8e28417dbf957beb47e5ec2c.png" alt="image"><br>  <i>Fig.</i>  <i>1: Android encryption logic</i> <br><br>  The diagram shows the sequence of requesting a Pin from the key container and setting the master-key via syscall ioctl to the dm-crypt core. <br><br>  <b>Access framework (SAF)</b> <br><br>  To use the application in the java-space, we use the Storage Access Framework (SAF), or the storage access platform.  The site developer.android.com describes in some detail all the properties and nuances of using this platform, here we only mention the main points. <br><br>  So, SAF appeared in Android version 4.4 (API level 19) and it makes it easier for users to search and open documents, images and other files in the repositories of all suppliers.  We can become a supplier of these files by implementing the DocumentsProvider class and using several of its methods (see below). <br><br>  The entire SAF platform consists of the following elements: <br><br>  1) "Client" - an application that wants to access the file or create a new file.  For the entire Android system, this is possible using intents with the ACTION_OPEN_DOCUMENT and ACTION_CREATE_DOCUMENT flags, respectively. <br>  2) “Document Provider” is our application, which, as mentioned above, is a subclass of the DocumentsProvider class and implements access to files via the API (more on this later). <br>  3) “Element of choice” - a system user interface that provides users with access to the files of all providers that meet the search criteria. <br><br>  Now more.  The document provider provides one or more root directories that are starting points for traversing the document tree.  Each root directory has a unique identifier COLUMN_ROOT_ID and points to a document (directory) representing content at a level below the root.  Root directories are dynamic in their design, which provides support for various use cases: multiple accounts, temporary storage on USB drives, and login / logout / logout capabilities. <br><br>  Each storage server displays individual files and directories, referring to them using a unique identifier COLUMN_DOCUMENT_ID (in our case, this is the full path from the root of the file system to the file itself).  Document identifiers must be unique and not changed after assignment, since they are used to issue constant URIs that are not dependent on device reloads. <br><br>  A document is either a file being opened (having a specific MIME type) or a directory containing other documents (with the MIME_TYPE_DIR MIME type).  Each document may have different properties, described by the flags COLUMN_FLAGS, such as FLAG_SUPPORTS_WRITE, FLAG_SUPPORTS_DELETE and FLAG_SUPPORTS_THUMBNAIL. <br><br><img src="https://habrastorage.org/files/75b/33f/fbb/75b33ffbb17245789eaa8e7745c254ea.png" alt="image"><br>  <i>Fig.</i>  <i>2: Document provider data model</i> <br><br>  The document provider data model is based on the traditional file hierarchy.  However, the physical method of data storage is left to the discretion of the developer, provided that they can be accessed through the DocumentsProvider API.  For example, you can use tag-based cloud storage for data. <br><br>  Note the following figure: <br><img src="https://habrastorage.org/files/78f/fce/978/78ffce978fc64ec6899992e1385d2905.png" alt="image"><br>  <i>Fig.</i>  <i>3: Document provider and customer interaction model</i> <br><br>  On the SAF platform, suppliers and customers do not interact directly.  The client requests permission to interact with the files (to read, edit, create or delete them). <br><br>  The interaction begins when the application (in our example, the processing of the photo) activates the intention ACTION_OPEN_DOCUMENT or ACTION_CREATE_DOCUMENT.  The intention may include filters to refine the criteria, for example, “provide openable files with a MIME image type”. <br>  When the intent is triggered, the system selection item goes to each registered provider and shows the user the root directories with content matching the request.  The selection element provides the user with a standard interface, even if document providers vary widely. <br><br>  In Android version 4.3 and below, an application to activate a file from another application must activate the intent, for example, ACTION_PICK or ACTION_GET_CONTENT.  After that, the user must select one of the applications, and it must provide the user with an interface with which he can select and receive files. <br><br><img src="https://habrastorage.org/files/0ff/0cc/107/0ff0cc107f6a40c3af6b532db2ae0ba5.png" alt="image"><br>  <i>Fig.</i>  <i>4: Document provider selection dialog</i> <br><br><img src="https://habrastorage.org/files/4a0/56d/0be/4a056d0bef4b4c0b8c86adaa78c7d483.png" alt="image"><br>  <i>Fig.</i>  <i>5: Dialogue to choose the recipient of the document</i> <br><br>  <b>Register as a document provider</b> <br>  The next step in developing your own document provider is to create a subclass of the abstract DocumentsProvider class.  At a minimum, you must implement the following methods: <br><br>  queryRoots () <br>  queryChildDocuments () <br>  queryDocument () <br>  OpenDocument () <br><br>  The implementation of these methods is strictly required, however, to implement a full-featured application, you will have to implement others.  Details are provided in the description of the DocumentsProvider class. <br><br>  <b>Jni</b> <br>  The next logical part is the JNI implementation of the layer between our SAF implementation and the open file system library for FATFS embedded systems.  The latter was patched to read-write to a file (in our case, it is a volume) block by block.  Thus, for an IO request, we get the sector number and the number of sectors, from here we can calculate the IV and sector key, and then encrypt and decrypt a specific block on the file.  As a result, we have an analogue of dm-crypt in userspace. <br><br><img src="https://habrastorage.org/files/aa9/293/9d4/aa92939d41d248998cb277c4f9629cc3.jpg" alt="image"><br>  <i>Fig.</i>  <i>6: Forwarding SAF methods to the native part and back</i> <br><br>  Next, we implemented methods for working with volumes and files.  To work with volumes we use the following functions: <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_createVolume (...);</b> <br>  Creates a volume file through the file system library and creates an empty encrypted FS inside this file. <br><br><img src="https://habrastorage.org/files/a70/14e/f18/a7014ef18938489a9b24469fd673faa1.png" alt="image"><br>  <i>Fig.</i>  <i>7: Creating Secure Storage</i> <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_getVolumeFreeSpace (...);</b> <br>  Passing a specific volume to the function, we get the amount of free space in this volume. <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_mount (...);</b> <br>  When mounting the volume, we install the master key with which the encryption-decryption of the FS blocks will occur. <br><br><img src="https://habrastorage.org/files/26b/ff8/852/26bff8852c5f4a3eac1307829616b2ee.png" alt="image"><br>  <i>Figure 8: Mounting secure storage</i> <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_unMount (...);</b> <br>  Cleaning up resources and completing I / O operations. <br><br>  To work with files: <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_createFile (...);</b> <br>  An empty file object is created on our file system with the specified size and type (required for SAF). <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_getFile (...);</b> <br>  This function is required for the SAF method queryDocument (...). <br>  In the function, we return the file id, its type, the root node containing the current file and the file name. <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_readFile (...);</b> <br>  This function creates a Java stream, which is used in SAF and passed as a URI to the consumer. <br><br>  <b>Java_com_securitycode_fatfslib_FatFs_writeFile (...);</b> <br>  Similar to the previous function, only in this case we become the consumer. <br><br><img src="https://habrastorage.org/files/f13/248/25d/f1324825d5284e56b111f485bd5bae12.png" alt="image"><br>  <i>Figure 9: Application General Screen</i> <br><br><img src="https://habrastorage.org/files/d8c/106/bfa/d8c106bfac894b698451ffee19b36ae9.png" alt="image"><br>  <i>Figure 10: Storage Content</i> <br><br>  <b>Conclusion</b> <br>  As a result of all the above actions, we received a cryptodisk with support for GOST encryption and electronic signatures in userspace. <br>  We will be happy to answer your questions and tell you in more detail about all the stages of the project. <br><br>  <b>Sources:</b> <br><br>  1) Nikolay Elenkov.  Android Security Internals, Chapter 10: Device Security. <br><br>  2) Disk Encryption in Android <br>  <a href="https://source.android.com/security/encryption/">source.android.com/security/encryption</a> <br><br>  3) Documents Provider and SAF <br>  <a href="http://developer.android.com/intl/ru/guide/topics/providers/document-provider.html">developer.android.com/intl/ru/guide/topics/providers/document-provider.html</a> <br><br>  4) FatFs - Generic FAT File System Module <br>  <a href="http://elm-chan.org/fsw/ff/00index_e.html">elm-chan.org/fsw/ff/00index_e.html</a> <br></div><p>Source: <a href="https://habr.com/ru/post/280468/">https://habr.com/ru/post/280468/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../280456/index.html">New at PHDays: Hardware Village Playground</a></li>
+<li><a href="../280460/index.html">Again about IDS or ELK for suricata</a></li>
+<li><a href="../280462/index.html">JBreak Java Conference: The Conquest of Siberia</a></li>
+<li><a href="../280464/index.html">Check your site from Mars? Nothing is impossible</a></li>
+<li><a href="../280466/index.html">PowerWare new extortionist using PowerShell</a></li>
+<li><a href="../280470/index.html">Frequency dictionary banned sites</a></li>
+<li><a href="../280472/index.html">Video tutorials running computational tasks in Python, R, C ++, Octave and Blender in FlyElephant</a></li>
+<li><a href="../280474/index.html">Glitter and poverty Big Data</a></li>
+<li><a href="../280476/index.html">Automation of paperwork</a></li>
+<li><a href="../280480/index.html">Birth Chargeback</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

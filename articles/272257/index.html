@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Access tables from C extensions for Postgres</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! 
+ This time I’ll tell you not about using Python or another CSS / HTML trick and, alas, not about how I ported Wangers for 5 years, but about o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Access tables from C extensions for Postgres</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/2a6/2dd/a49/2a62dda4945046da953fb7a63baa5cb6.png" align="left"><h1>  <font color="#77b7df">Hello!</font> </h1><br>  This time I’ll tell you not about using Python or another CSS / HTML trick and, alas, not about how I ported <font color="#070">Wangers for</font> 5 years, but about one important aspect of writing extensions for the great PostgresSQL database. <br><br>  In fact, there are already quite a few articles on how to write an extension for Postgres in C (for example, <a href="http://www.postgresql.org/docs/devel/static/xfunc-c.html">this one</a> ), including in <a href="http://www.sai.msu.su/~megera/postgres/talks/gist_tutorial.html">Russian</a> .  But, as a rule, they describe fairly simple cases.  In these articles and instructions, the authors implement the functions that receive input data, somehow process them, and then return a single number, string, or user-defined type.  They do not have explanations of what to do if you need to run from the C code using a regular table that exists in the database or an index. <br><br>  Tables from C can be accessed through a well-described but slow <a href="http://www.postgresql.org/docs/9.4/static/spi.html">SPI (Server Programming Interface)</a> , there is also a very complicated way, through buffers, and I will tell you about a compromise version.  Under the cut, I tried to give code examples with detailed explanations. <br><a name="habracut"></a><br><br clear="left"><h1>  <font color="#77b7df">The basics</font> </h1><br>  I assume that you have already written your unpretentious functions, and have seen that they are declared in a clever way: <br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">Datum </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">to_regclass</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(PG_FUNCTION_ARGS)</span></span></span></span>;</code> </pre> <br>  and just so you can not call such a function.  Let's <b>take a closer look</b> at the example of the function <b>to_regclass</b> : <br><pre> <code class="cpp hljs">Datum my_index_oid_datum = DirectFunctionCall1(to_regclass, CStringGetDatum(<span class="hljs-string"><span class="hljs-string">"my_index"</span></span>)); Oid my_index_oid = DatumGetObjectId(my_index_oid_datum);</code> </pre><br>  In this code, I call the function <b>to_regclass</b> , using a macro, to convert the name of the database object (index, table, etc.) to its <b>Oid</b> (unique number in the directory).  This function has only one argument, so the macro with the speaking name <b>DirectFunctionCall1 has a one</b> at the end.  In the <font color="a27516">include / fmgr.h file</font> , such macros are declared with up to 9 arguments.  The arguments themselves are always represented by the generic type <b>Datum</b> , which is why the C string “my_index” is cast to <b>Datum</b> through the function <b>CStringGetDatum</b> .  Postgresovye functions in principle communicate through <b>Datum</b> , so the result of our macro will be a value of type <b>Datum</b> .  After that, you need to convert it to the <b>Oid</b> type using the <b>DatumGetObjectId</b> macro.  All possible conversion options need to look here: <font color="a27516">include / postgres.h</font> . <br>  I will also clarify one more thing: in C, it is customary to declare variables at the beginning of a block, but for clarity, I declare them where I begin to use them.  In practice, do not write. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h1>  <font color="#77b7df">Access to the table</font> </h1><br>  Immediately explain why SPI is slow.  The fact is that a request made using SPI goes through all the stages of parsing and planning.  In addition, it seems uninteresting to me to go in a simple way, where there is no magic. <br>  The next thing I want to say is that these names are confused in Postgres!  Due to the long history of the project, there are many strange names in the code for the types, methods and functions. <br>  Before reading further, it is advisable to have a basic understanding of MVCC Postgres.  All the examples below work only as part of an already created transaction, and if you suddenly climbed to where it is not yet, you will need much more magic. <br><br>  So, suppose we want to just run through the table, which contains two fields: int id and text nickname, and output them to the log.  First we need to open the heap (table) with a certain lock: <br><pre> <code class="cpp hljs">RangeVar *table_rv = makeRangeVar(<span class="hljs-string"><span class="hljs-string">"public"</span></span>, <span class="hljs-string"><span class="hljs-string">"my_table"</span></span>, <span class="hljs-number"><span class="hljs-number">-1</span></span>); Relation table_heap = heap_openrv(table_rv, AccessShareLock);</code> </pre><br>  Instead of the <b>heap_openrv</b> function, <b>you</b> can use <b>heap_open</b> , in which the first argument is the table <b>Oid</b> (can be obtained using the function in the first part of the article).  I think the assignment of <b>RangeVar is</b> intuitive, but we <b>’ll dwell</b> on locks.  The types of locks are declared in the <font color="a27516">include / storage / lockdefs.h file</font> with fairly clear comments.  You can see this information in the table: <br><table><tbody><tr><td>  AccessShareLock </td><td>  SELECT </td></tr><tr><td>  RowShareLock </td><td>  SELECT FOR UPDATE / FOR SHARE </td></tr><tr><td>  RowExclusiveLock </td><td>  INSERT, UPDATE, DELETE </td></tr><tr><td>  ShareUpdateExclusiveLock </td><td>  VACUUM (non-FULL), ANALYZE, CREATE INDEX CONCURRENTLY </td></tr><tr><td>  Share lock </td><td>  CREATE INDEX (WITHOUT CONCURRENTLY) </td></tr><tr><td>  ShareRowExclusiveLock </td><td>  like EXCLUSIVE MODE, but allows ROW SHARE </td></tr><tr><td>  ExclusiveLock </td><td>  blocks ROW SHARE / SELECT ... FOR UPDATE </td></tr><tr><td>  AccessExclusiveLock </td><td>  ALTER TABLE, DROP TABLE, VACUUM FULL, and unqualified LOCK TABLE </td></tr></tbody></table><br>  Since we only wanted to go over the plate, that is, execute, <b>SeqScan</b> , select <b>AccessShareLock</b> .  After we opened the heap, we need to initialize the table scan process: <br><pre> <code class="cpp hljs">HeapScanDesc heapScan = heap_beginscan(sr_plans_heap, SnapshotSelf, <span class="hljs-number"><span class="hljs-number">0</span></span>, (ScanKey) <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>);</code> </pre><br>  As expected, our heap is the first argument of this function, but the <b>SnapshotSelf</b> requires clarification.  The MVCC job in Postgres assumes that at any given time there can be several versions of one row of the table, and it is in the snapshot (transaction snapshot) that we can see and which we cannot see.  In addition to <b>SnapshotSelf</b> , i.e.  current snapshot transactions, for example, there are <b>SnapshotAny</b> , substituting which, we would be able to see also all deleted and modified tuples (rows of the table).  Other types can look at <font color="a27516">include / utils / tqual.h</font> .  The following arguments for heap_beginscan are the number of search keys (ScanKey) and the keys themselves.  The search keys (ScanKey) are essentially conditions, i.e.  what you write in <b>WHERE</b> .  To work with heap search keys are not very necessary, because  You can always check the conditions yourself in your code.  But when searching by index, we are not going away from their initialization and use. <br><br>  And now the most important thing is to be a cycle: <br><pre> <code class="cpp hljs">Datum values[<span class="hljs-number"><span class="hljs-number">2</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> nulls[<span class="hljs-number"><span class="hljs-number">2</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (;;) { HeapTuple local_tuple; local_tuple = heap_getnext(heapScan, ForwardScanDirection); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (local_tuple == <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">break</span></span>; heap_deform_tuple(local_tuple, table_heap-&gt;rd_att, values, nulls); elog(WARNING, <span class="hljs-string"><span class="hljs-string">"Test id:%i nick:%s"</span></span>, DatumGetInt32(values[<span class="hljs-number"><span class="hljs-number">0</span></span>]), TextDatumGetCString(values[<span class="hljs-number"><span class="hljs-number">1</span></span>]) ); }</code> </pre><br>  In this loop, we call the function <b>heap_getnext</b> , with which we get the next tuple until we return a null pointer.  The <b>heap_getnext</b> function receives our <b>HeapScanDesc</b> and scanning directions, for us it will be relevant two: direct scanning - <b>ForwardScanDirection</b> and reverse - <b>BackwardScanDirection</b> .  Now we have to unpack the tuple and get access to its fields, for this we call <b>heap_deform_tuple</b> , where we transfer our tuple, after which its description (which we take from heap) and two arrays (one for values ​​and the other for determining <b>NULL</b> values).  Next, using the functions already familiar to us, we transform the elements of the values ​​array (consisting of <b>Datum</b> ) to ordinary C types. <br><br>  And now let's not forget to close our heap scan (tables) and close the heap itself: <br><pre> <code class="cpp hljs">heap_endscan(heapScan); heap_close(sr_plans_heap, AccessShareLock);</code> </pre><br>  We close the heap with the same type of blocking that we opened it with. <br><br><h1>  <font color="#77b7df">Work with an index</font> </h1><br>  The index search API will be similar to the heap search, but will only require more lines of code to initialize.  In the code, we will try to display messages only for strings, where the first argument answers the main question of life, the universe and all that.  As for heap, to begin with, we give a piece of code with all the preparatory work: <br><pre> <code class="cpp hljs">RangeVar *table_rv = makeRangeVar(<span class="hljs-string"><span class="hljs-string">"public"</span></span>, <span class="hljs-string"><span class="hljs-string">"my_table"</span></span>, <span class="hljs-number"><span class="hljs-number">-1</span></span>); Relation table_heap = heap_openrv(table_rv, AccessShareLock); table_idx_oid = DatumGetObjectId(DirectFunctionCall1( to_regclass, StringGetDatum(<span class="hljs-string"><span class="hljs-string">"my_table_idx"</span></span>) )); Relation table_idx_rel = index_open(table_idx_oid, AccessShareLock); indexScan = index_beginscan(table_heap, table_idx_rel, SnapshotSelf, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>); ScanKeyData key; ScanKeyInit(&amp;key, <span class="hljs-number"><span class="hljs-number">1</span></span>, BTEqualStrategyNumber, F_INT4EQ, Int32GetDatum(<span class="hljs-number"><span class="hljs-number">42</span></span>)); index_rescan(indexScan, &amp;key, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>);</code> </pre><br>  So, to search by index, we are the same as in the previous example, we need to open the heap (table) with which this index is associated.  With the help of <b>to_regclass</b> we find the oid for our index my_table_idx, then open it with the help of <b>index_open</b> , finding the <b>Relation</b> we need.  After that, we initialize the <b>index_beginscan</b> index scanning process, here the main difference from <b>heap_beginscan</b> is that we will have 1 search key (ScanKey). <br>  <b>ScanKeyInit</b> , as the name implies, initializes the key for the search.  The first argument is the key itself (type <b>ScanKeyData</b> ), then we specify the sequence number of the argument that will be searched (numbered 1), then the search strategy goes.  In fact, this is similar to the operator in the condition (other strategies can be found here <font color="a27516">include / access / startnum.h</font> ), then we specify the oid directly of the function that will perform our comparison operation (these oid are declared in the <font color="a27516">include / utils / fmgroids.h file</font> ) .  And finally, our last argument is the <b>Datum</b> , which should contain the value that should be searched. <br><br>  Next comes another new <b>index_rescan</b> function, and it serves to start a search by index.  The <b>index_beginscan alone is</b> not enough here.  At the input, this function receives a list of keys (we have only one), the number of these keys, after which the keys to sort and the number of keys to sort (they are used for the <b>ORDER BY</b> condition, which is not in this example).  It seems that all the preparations have passed, and you can show the main loop, however, it will be very similar to what happened with heap: <br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (;;) { HeapTuple local_tuple; ItemPointer tid = index_getnext_tid(indexScan, ForwardScanDirection); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (tid == <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">break</span></span>; local_tuple = index_fetch_heap(indexScan); heap_deform_tuple(local_tuple, table_heap-&gt;rd_att, values, nulls); elog(WARNING, <span class="hljs-string"><span class="hljs-string">"Test id:%i nick:%s"</span></span>, DatumGetInt32(values[<span class="hljs-number"><span class="hljs-number">0</span></span>]), DatumGetCString(PG_DETOAST_DATUM(values[<span class="hljs-number"><span class="hljs-number">1</span></span>])) ); }</code> </pre><br>  Since now we are running on the index, rather than the heap itself, we get ItemPointer, a special pointer to the entry in the index (if you are interested in the details, refer to the relevant documentation <a href="http://www.postgresql.org/docs/9.5/static/storage-page-layout.html">www.postgresql.org/docs/9.5/static/storage-page -layout.html</a> or directly to the <font color="a27516">include / storage / bufpage.h file</font> using which we still need to get the tuple from heap.  In this loop, <b>index_getnext_tid is</b> functionally similar to <b>heap_getnext</b> and only index_fetch_heap is added, and the rest is completely analogous. <br><br>  To finish our operation, as you can guess, we will need to close the search by index, the index itself and the open heap: <br><pre> <code class="cpp hljs">index_endscan(indexScan); index_close(table_idx_rel, heap_lock); heap_close(table_heap, heap_lock);</code> </pre><br><h1>  <font color="#77b7df">Data change</font> </h1><br>  So, we learned how to do SeqScan and IndexScan, i.e.  Search our table and even use an index for this, but how can we add something to it now?  For this we need the functions <b>simple_heap_insert</b> and <b>index_insert</b> . <br><br>  Before changing something in the table and related indexes, they must be opened with the necessary locks, in the manner shown earlier, after which you can insert: <br><pre> <code class="cpp hljs">values[<span class="hljs-number"><span class="hljs-number">0</span></span>] = Int32GetDatum(<span class="hljs-number"><span class="hljs-number">42</span></span>); values[<span class="hljs-number"><span class="hljs-number">1</span></span>] = CStringGetDatum(<span class="hljs-string"><span class="hljs-string">"First q"</span></span>); tuple = heap_form_tuple(table_heap-&gt;rd_att, values, nulls); simple_heap_insert(table_heap, tuple); index_insert( table_idx_rel, values, nulls, &amp;(tuple-&gt;t_self), table_heap, UNIQUE_CHECK_NO );</code> </pre><br>  Here we do the reverse operation, i.e.  from the arrays of values ​​and nulls we form a tuple, <br>  after which we add it to the heap and then add the corresponding entry to the index.  After previous explanations, this code should be clear to you. <br>  To update tuple, do the following: <br><pre> <code class="cpp hljs">values[<span class="hljs-number"><span class="hljs-number">0</span></span>] = Int32GetDatum(<span class="hljs-number"><span class="hljs-number">42</span></span>); replaces[<span class="hljs-number"><span class="hljs-number">0</span></span>] = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; newtuple = heap_modify_tuple( local_tuple, RelationGetDescr(table_heap), values, nulls, replaces ); simple_heap_update(table_heap, &amp;newtuple-&gt;t_self, newtuple);</code> </pre><br>  We have an array of Boolean variables replaces, where information is stored, which field has changed.  After that, we create a new tuple based on the old one, but with our edits using <b>heap_modify_tuple</b> .  And at the very end we perform the update itself <b>simple_heap_update</b> .  Since we have a new tuple, and the old one is marked as deleted, we also need to add an entry to the index for the new tuple in the way that was shown earlier. <br><br>  Now remove the tuple is not difficult with the function <b>simple_heap_delete</b> , and it does not require explanation.  It should be noted that it is not necessary to delete the corresponding entry in the index, it will happen automatically when cleaning is performed by the VACUUM operation. <br><br><h1>  <font color="#77b7df">Total</font> </h1><br>  We learned how to access the table from C code, including the index.  I tried to describe each function and its purpose in as much detail as possible, but if something turned out to be incomprehensible, ask in the comments, I will try to answer and complete the article. </div><p>Source: <a href="https://habr.com/ru/post/272257/">https://habr.com/ru/post/272257/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../272245/index.html">Sparrow - perl framework for testing and monitoring web applications</a></li>
+<li><a href="../272249/index.html">Proxmox 4.0: Root partition on ZFS RAID1 or how to increase fault tolerance if the server has only 2 disks</a></li>
+<li><a href="../272251/index.html">Alternative to the IEEE754 standard</a></li>
+<li><a href="../272253/index.html">Let's Encrypt go public beta: HTTPS everywhere, to everyone, from now on and forever free</a></li>
+<li><a href="../272255/index.html">The news called for the road: a super-fast, energy-efficient optical coprocessor for big data</a></li>
+<li><a href="../272259/index.html">Law enforcement authorities dismantled the Dorkbot botnet</a></li>
+<li><a href="../272261/index.html">Do you still store 404backup.zip on the server? I'm on 200D</a></li>
+<li><a href="../272263/index.html">How to monitor all layers of infrastructure</a></li>
+<li><a href="../272265/index.html">History of one optimization: transmission and processing of the results of the battle</a></li>
+<li><a href="../272267/index.html">Kudu - a new data storage engine in the Hadoop ecosystem</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

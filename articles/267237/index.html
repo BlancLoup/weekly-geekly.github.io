@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>About UEFI security, part three</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="We continue to talk about security UEFI. 
+ This time we will talk about the serious vulnerability in the implementation of ACPI S3 (Sleep Mode), its o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>About UEFI security, part three</h1><div class="post__text post__text-html js-mediator-article"><img align="left" src="https://habrastorage.org/files/74f/d27/2f8/74fd272f8e3c4b4388bdf46813925981.jpg">  We continue to talk about security UEFI. <br>  This time we will talk about the serious vulnerability in the implementation of ACPI S3 (Sleep Mode), its operation and consequences, published at the end of 2014.  The main "trick" of this vulnerability is that it revealed a whole class of UEFI security problems that were not considered at all before, and therefore deserves a separate article. <br>  To those who have not read the previous articles of the cycle - <a href="http://habrahabr.ru/post/266935/">once</a> and <a href="http://habrahabr.ru/post/267197/">twice</a> , I suggest reading them first, waiting for the rest under the cut. <br><a name="habracut"></a><br><h4>  <b>Part Three</b>  <b>ACPI S3</b> </h4><br><h5>  <b>Another little educational program</b> </h5>  Unlike <abbr title="System Management Mode">SMM</abbr> , which the average user most often does not even suspect, is about ACPI S3, i.e.  sleep mode, knows any owner of a laptop or PC, released in the past 10 years. <br>  The <abbr title="Advanced Configuration and Power Interface">ACPI</abbr> standard, about changes in the latest version of which <a href="http://habrahabr.ru/post/259477/">I recently wrote</a> , defines a set of so-called.  <i>sleep states</i> , one of which may be a system, as follows: <br><ul><li>  <b>S0 - Working</b> , i.e.  normal operation, all devices included.  Inside this state, system manufacturers have the right to define a bunch of other states: <abbr title="Performance">P</abbr> -states, <abbr title="CPU idle">C</abbr> -states, <abbr title="Throttle">T</abbr> -states, etc., and I will tell about them some other time. </li><li>  <b>S1 - Sleeping with Processor Context Maintained</b> , it is Power on Suspend, i.e.  All the processor cores have executed the HLT command and are standing, but all the caches and RAMs are valid and updated, the power supply from all all S0-only lines has been removed.  The return from this state takes approximately 10 ms, of which ~ 90% is waiting for steady-state modes after powering up on the S0-only line.  No registers from either the CPU, or the chipset, or the devices in this state are reset, so we will not be interested in this article. </li><li>  <b>S2 / S3 - Suspend to RAM</b> , i.e.  the contents of the memory remain valid and updated, and the processor and part of the chipset are turned off completely with the loss of context and content of almost all registers.  The difference between S2 and S3 is minimal, and most often S2 is not altogether isolated into a separate state.  After waking up from S3, the processor starts to execute the code from the ResetVector, i.e.  in order to “wake up” correctly, it needs to restore the entire context for itself and the chipset.  It is at this stage of the developers of the firmware and it lurks several underwater rakes, which we will discuss in this article. </li><li>  <b>S4 - Suspend to Disk</b> , i.e.  the contents of the memory are flushed to disk and the system shuts down all devices and power supply.  After switching on, the system starts as usual, and from the point of view of UEFI, there is practically no difference between S4 and S5 (and if you disable FastBoot, not at all). </li><li>  <b>S5 - Soft-Off</b> , i.e.  The system is turned off, but the power on duty is present.  From S4 / S5, the system can be output by the <abbr title="Real time clock">RTC</abbr> signal, or by the Wake signal from the device, or by pressing the power button. </li></ul><br><h5>  <b>How S3 is implemented in UEFI</b> </h5>  To restore the context during waking up, you first need to save it somewhere.  At the same time, it is advisable not to become too attached to specific features of the processor and chipset architecture, and also to make the storage and restoration of the context as transparent as possible so as not to die later in debugging.  Since  S3 performance is a very important feature of almost any modern PC, with the exception of servers over the years uptime, the technology of preserving and restoring context was developed by Intel engineers very early, in 2004, and was named <a href="http://www.intel.com/content/www/us/en/architecture-and-technology/unified-extensible-firmware-interface/efi-boot-script-specification-v091.html">EFI S3 BootScript</a> .  Since then, the specification has been revised several times, the latest version is now in Volume 6 of the UEFI <abbr title="Platform Interface">PI</abbr> specification. <br>  Its essence is as follows: after the execution of the <abbr title="Pre-EFI Initialization">PEI</abbr> phase, in which the initialization of the basic devices takes place, i.e.  processor, caches and RAM, the system determines the current boot mode. <br>  <b>1.</b> If this mode is different from S3 Resume, the download continues as usual, PEI ends with running <abbr title="Driver Execution Environment">DXE</abbr> Manager, which creates a new empty S3 BootScript and runs all available DXE drivers.  Each such driver performs the final initialization of the device for which it is responsible, and then adds the commands to S3 BootScript that must be executed in order to re-initialize the device when returning from S3.  The commands may be approximately the same (the list is taken from the PI 1.4 specification, but in specific implementations there may be non-standard ones): <br><ul><li>  <b>IO_WRITE</b> - write the specified value to the specified CPU IO-port </li><li>  <b>IO_READ_WRITE</b> - change the value in the specified CPU IO port according to the specified mask </li><li>  <b>IO_POLL</b> - read from the specified IO port until the specified condition is met, but not longer than the specified timeout </li><li>  <b>MEM_WRITE</b> - write the specified value to the specified physical address </li><li>  <b>MEM_READ_WRITE</b> - change the value to the specified physical address according to the specified mask </li><li>  <b>MEM_POLL</b> - read at the specified address until the specified condition is met, but not longer than the specified timeout </li><li>  <b>PCI_CONFIG_WRITE</b> — write the specified value to the specified address in the configuration space of the specified PCI device </li><li>  <b>PCI_CONFIG_READ_WRITE</b> - change the value to the specified address in the configuration space of the specified PCI device according to the specified mask </li><li>  <b>PCI_CONFIG_POLL</b> - read at the specified address in the configuration space of the specified PCI device until the specified condition is met, but not longer than the specified waiting time </li><li>  <b>SMBUS_EXECUTE</b> - send the specified command to the specified device on the SMBus bus </li><li>  <b>STALL</b> - wait for the specified number of microseconds </li><li>  <b>DISPATCH</b> - execute the code at the specified address </li></ul>  The above commands are quite enough to reinitialize any device, especially considering the last command, which simply transfers control to the PEI driver, which performs all the initialization, but this is necessary only for particularly difficult cases when the rest of the commands did not work. <br>  After the end of the DXE phase, the dispatcher stores the resulting S3 BootScript in AcpiNVS type <abbr title="ACPI Non-Volatile Storage">memory</abbr> , which contains ACPI tables and other data required by the OS for ACPI to work properly in it. <br>  <b>2.</b> If, when booting, it turned out that the system is in S3 Resume, instead of the DXE manager, a PEI module with the beautiful name BootScriptExecutor runs, which executes the BootScript that has been carefully stored in memory since the past normal boot, and then transfers control to the OS that successfully starts and pleases the user. <br>  Words, like, explained, now the same thing - a picture from the specification: <br><img src="https://habrastorage.org/files/8e4/75b/6d6/8e475b6d6f134ba388a7417a9d8d1224.png"><br><br><h5>  <b>Underwater rake</b> </h5>  It all worked successfully for about 10 years, and almost no one saw the catch until, at the end of 2014, the comrades Rafal Wojtczuk and Corey Kallenberg, well-known in narrow circles, did not present an <a href="https://frab.cccv.de/system/attachments/2566/original/venamis_whitepaper.pdf">attack</a> , which turned out to be obvious and extremely dangerous at the same time.  It turned out that the memory area (of the AcpiNVS type) that stores the S3 BootScript is not protected from modification.  Yes, the OS perceives it as a service one and will not spoil the content on its own, but the attacker with administrator rights does not. <br>  Modifications can be quite different, but because  Most of the defense mechanisms that protect against arbitrary code in the SPI chip, as well as from unauthorized access to the SMM, are configured through the registers of the processor and the chipset, then to successfully bypass these mechanisms, it is enough to find the BootScript in memory (it is easy) to find in it we need the register (also no difficulties) and change it so that with the next S3 Resume protection could not turn on.  We change, fall asleep, wake up - oops, and the king is naked!  What threatens to remove the protection from the SPI chip and from the SMM - I already wrote in the last parts, I will not repeat, but it certainly will not end with anything good. <br>  Interestingly, Intel engineers foresaw this attack and pre-implemented protection against it - the so-called.  <i>SmmLockBox</i> .  The protection is very simple - after the creation of the script is completed, it is copied entirely into SMRAM, while the original BootScript is not deleted.  When restoring from S3, an SMI handler is called, which checks that the original BootScript matches the copy in SMRAM, and if it does not, either rewrites the modified BootScript copy or restarts the machine (this is safer, but the user loses all data from RAM).  The problem turned out to be that SmmLockBox simply did not have time to implement it in time, and when Rafal and Corey tested the found vulnerability, it turned out that the only invulnerable to attack board was the Intel UOVI Development Kit. <br>  After the publication of the attack, <abbr title="Independent BIOS Vendor">IBV</abbr> began in a rush to introduce either the original SmmLockBox, or their counterparts based on the same idea, but this introduction often stalled for various reasons.  For example, on systems with an AMD processor, SMM initialization was performed in the DXE phase, and therefore the call to the SMI handler from PEI with S3 Resume failed and S3 stopped working altogether. <br>  However, at the moment, all vendors who have heard about security even with the edge of their ears have already solved this problem in some way, and if your firmware is newer than June 2015, and the manufacturer of your system is not an asshole - most likely your system will directly attack Changing S3 BootScript is no longer affected. <br><br><h5>  <b>Pig from platform makers</b> </h5> After the panic subsided a bit, and BootScript was successfully shoved into SMRAM (it is clear that now it is necessary to keep it as the apple of one's eye, but I already wrote about this in the last part), it suddenly turned out that Intel and AMD engineers, without knowing it , put a decent pig in the face of their platforms on behalf of several PEI modules that were <b>a</b> ) copied into memory right next to BootScript, <b>b</b> ) were called from it by the DISPATCH command dozens of times and <b>c</b> ) were large enough for SMRAM to copy them not enough. <br>  Thus, the execution of arbitrary code could be organized without modifying the BootScript itself in general, instead of modifying the entry point of one of these modules.  It did not work to remove such modules without disrupting S3, but a solution was found - instead of copying to memory, they were transferred to the unpacked part of the DXE volume, and the DISPATCH commands were fixed so that the code was called directly from the SPI chip.  This turned out to be a little slower than from RAM, but they managed to expel the pig.  I do not know how many systems are now capable of attacking in this way, but I suspect that there are a lot of them. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h5>  <b>Forgetful gentlemen</b> </h5>  A person is not immune from errors, and the developers of DXE drivers are also human, and sometimes they can simply forget to write the addition of some important register in BootScript, and after S3 in this register will be its original value.  Most often, such forgetfulness leads only to minor glitches after S3, but Murphy's laws tell us that if any important register can be forgotten, it will be surely forgotten, which is what happens.  The last loud example of forgetfulness is a vulnerability in Apple laptop firmware <a href="https://reverse.put.as/2015/05/29/the-empire-strikes-back-apple-how-your-mac-firmware-security-is-completely-broken/">published</a> at the end of May this year, where engineers forgot to add an entry to PR registers in S3 BootScript, and after S3 the protection of the SPI chip from the firmware was removed by itself.  It's very convenient, because I closed and opened the cover - and you can get the flashrom and write your code in the BIOS, Apple is happy again with simple and usability.  If you think that there is a single case, I advise you to run the <a href="https://github.com/chipsec/chipsec">Chipsec</a> utility on your PC and compare the reports made before and after S3.  At the same time, a surprise can come out. <br><br><h5>  <b>Disable S3 and the grass does not grow</b> </h5>  Something like this, just more expressive and a bit more obscene, I exclaimed when I ran into a problem for the first time.  Unfortunately, this option is not always possible (although S4 on the SSD differs little in speed, but it differs greatly in reliability, no dancing with scripts and executors is needed), moreover, if you did not turn off S3 tightly by modifying the firmware, the attacker can run on your system UEFI Shell, trite turn on S3 back.  In the next part I will try to tell you how to avoid such an unenviable fate, but briefly - turn on and use SecureBoot, it is not at all evil, if you know how to cook it. <br><br><h5>  <b>Trust crisis</b> </h5>  The whole story with S3 BootScript revealed one interesting problem that after 10 carefree years of development at UEFI seriously began to solve just now.  The problem is that the “secure” firmware can not trust anything that the OS has or had access to.  Devices should be reset and initialized independently, memory should be cleared and no one should be used from it (do not let the code call the random from there!), Your Runtime services after the ReadyToBoot event cannot be used by the firmware components (they are already attacked by the attacker, sometimes several times), Generally, a solid minefield, a bit stumbled - and now you have a complete BIOS of someone else's code, there is no backdoor on the backdoor, there is no place for honest drivers in SMRAM.  Therefore, platform manufacturers are looking for salvation in hardware solutions, someone is implementing a validated boot, someone is storing S3 BootScript in the Security Coprocessor, someone is developing his own cryptochip, someone is just scoring and is waiting for him to take the UEFI Forum solution from above will lower <br>  Intel has also added an interesting <abbr title="Sotware Guard Extensions">SGX</abbr> technology to Skylake, which can be used to isolate individual pieces of code and data from everything else in the system, an SMM analogue of its own, just for nothing, so that no one will leave offended.  The technology looks quite tasty, but, firstly, it is difficult to program, and secondly - only Intel has it and only on Skylake. <br>  From the side of the “safe” OS - the same level of mistrust to the firmware, and here the <abbr title="SMM transaction Monitor">STM</abbr> technology, which was discussed since 2009, can be useful, but <a href="https://firmware.intel.com/sites/default/files/A_Tour_Beyond_BIOS_Launching_STM_to_Monitor_SMM_in_EFI_Developer_Kit_II.pdf">it was officially presented</a> only recently, and it has not been tested in “battle”.  When hands reach both, I will try to write about it. <br><br><h4>  <b>Conclusion</b> </h4><br>  Well, the problems with S3 BootScript are behind, in the next part we will talk about attacks on NVRAM and SecureBoot, as well as why the BIOS password is from honest people. <br>  According to a good tradition, I advise connoisseurs of English <a href="http://blog.cr4.sh/2015/02/exploiting-uefi-boot-script-table.html">here this article</a> Comrade.  <a href="https://habr.com/users/d_olex/" class="user_link">d_olex</a> on the same topic.  There is seriousness, depth, code, and pictures, not like my verbiage here. <br>  Thank you for your attention, reader, safe for you firmware. </div><p>Source: <a href="https://habr.com/ru/post/267237/">https://habr.com/ru/post/267237/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../267227/index.html">My work on the Mail.Ru contest</a></li>
+<li><a href="../267229/index.html">DoS exploit Chrome and some other browsers</a></li>
+<li><a href="../267231/index.html">Functional C #: work with errors</a></li>
+<li><a href="../267233/index.html">Managing complexity in ruby ​​on rails projects. Part 2</a></li>
+<li><a href="../267235/index.html">RailsClub 2015: Competition from Vexor'a and the story of the CI-service in a large project</a></li>
+<li><a href="../267239/index.html">In the wake of C ++ Siberia: a dragon in a bag</a></li>
+<li><a href="../267241/index.html">Maintenance code. How to “sell” refactoring to business</a></li>
+<li><a href="../267243/index.html">RxJava. Fighting the challenges of harsh reality</a></li>
+<li><a href="../267245/index.html">RailsClub 2015: Interview with Nikolai Ryzhikov</a></li>
+<li><a href="../267247/index.html">How many tweets do you need to know your character?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

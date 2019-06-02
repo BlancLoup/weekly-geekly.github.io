@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Under the hood Redis: Strings</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="If you know why the simple string `strings` in Redis will take in memory 56 bytes - you, I think, the article will not be interesting. For everyone el...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Under the hood Redis: Strings</h1><div class="post__text post__text-html js-mediator-article">  If you know why the simple string `strings` in Redis will take in memory 56 bytes - you, I think, the article will not be interesting.  For everyone else, I will try to tell you what strings are in Redis and why it is important for a developer using this database to understand how they work and how they work.  This knowledge is especially important if you are trying to calculate the actual memory consumption by your application or are planning to build highly loaded systems of statistics or data accounting.  Or, as often happens, you are trying to urgently understand why suddenly your copy of redis began to consume unexpectedly a lot of memory. <a name="habracut"></a><br><br>  What I will talk about - how lines are stored in Redis, what internal structures are used to store lines, what types of optimizations Redis uses under the hood.  How to efficiently store large structures and in what situations you should not use lines or structures built on their basis.  Strings - a key structure Redis, HSET / ZSET / LIST are built on their base, adding a small overhead to the presentation of their internal structures.  Why do I need this article - more than a year I read and actively respond to stackoverflow in the redis tag.  Over the course of this time, I constantly see a steady stream of questions somehow related to the fact that developers do not understand the features of Redis working with RAM and what you have to pay for high performance. <br><br>  The answer to the question how much memory will be used actually depends on the operating system, compiler, type of your process and the shared processor used (in redis, by default, jemalloc).  All further calculations I cite for redis 3.0.5 compiled on a 64 bit server running centos 7. <br><blockquote>  It seems to me that a small interlude is absolutely necessary for those who do not write in c / c ++ or are not very well acquainted with how everything works at a low level.  Let's monstrously greatly simplify a few concepts, so that it is easier for you to understand the calculations.  When in a program with s / s ++ you declare a structure, and in it you have unsigned int fields (without signed integers of 4 bytes) the compiler will carefully align their size to 8 bytes in real RAM (for x64 architecture).  This article will periodically talk about the memory allocator - this is the kind of thing that allocates memory "clever".  For example, jemalloc tries to optimize for you the speed of searching for new blocks of memory, relying on the alignment of the allocated fragments.  The memory allocation and alignment strategy in jemallo is <a href="https://www.daemon-systems.org/man/jemalloc.3.html">well described</a> , but I think we should use the simplification that any selected fragment size will be rounded to the nearest degree 2. You ask 24 bytes - allocate 32. Ask 61 - allocate 64. I greatly simplify and I hope you will be a little clearer.  These are the things that in the interpreted languages, logically, you should not worry, but here I beg you to draw your attention to them. <br></blockquote><br>  The concept and implementation of the lines written by Salvatore Sanfillipo (aka antirez) lies in one of the radish projects called SDS (Simple Dynamic String, <a href="https://github.com/antirez/sds">github.com/antirez/sds</a> ): <br><pre><code class="bash hljs">+--------+-------------------------------+-----------+ | Header | Binary safe C alike string... | Null term | +--------+-------------------------------+-----------+ | `-&gt; Pointer returned to the user.</code> </pre> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      This is a simple structure with `s`, the header of which stores the current size and free space in the already allocated memory, the string itself and the required trailing zero, which the radish itself adds.  In sds strings, we are most interested in the cost of heading, the strategy for changing their size and penalties for aligning the structures during memory allocation. <br><br>  July 4, 2015 ended a <a href="https://github.com/antirez/redis/pull/2509">long story with line optimization</a> , which should get into radish 3.1.  This optimization will bring more memory savings in line headers (from 16% to 200% on synthetic tests).  Remove the limit of 512MB on the maximum line length in radish.  All this will be possible due to the dynamic change in the length of the header when the length of the string changes.  So the header will occupy only 3 bytes for lines up to 256 bytes in length, 5 bytes for lines less than 65 kb, 9 bytes (as it is now) for lines up to 512 mb and 17 bytes for lines whose size “holds” in uint64_t (64 bit without signed integer).  By the way, with this change, our real farm saves about 19.3% of the memory (~ 42 GB).  However, the last at the current moment 3.0.x with the header is simple - 8 bytes + 1 byte for the terminating zero.  Let's estimate how much memory the “strings” line will take: 16 (header) + 7 (string length) + 1 (terminating zero) = 24 bytes (16 bytes per header, because the compiler aligns 2 unsigned int for you).  At the same time, jemalloc will allocate 32 bytes for you.  Let's skip it for now (I hope it will be clear later why). <br><br>  What happens when the string is resized?  Whenever you increase the size of a line and there is not enough allocated memory, the radish checks the new length with the SDS_MAX_PREALLOC constant (defined in sds.h and is 1,048,576 bytes).  If the new length is less than this value, memory twice the requested one will be allocated.  If the length of the string already exceeds SDS_MAX_PREALLOC, the value of this constant will be added to the new requested length.  This feature will be important in the history of "about disappearing memory when using bitmap".  By the way, when allocating memory under a bitmap, it will always be allocated 2 times the requested value, due to the implementation features of the setbit command (see setbitCommand in bitops.c). <br><br>  Now we could say that our string takes 32 bytes in RAM (including alignment).  Those who read the tips from the guys from <a href="http://hashedin.com/">hashedin.com</a> ( <a href="https://github.com/sripathikrishnan/redis-rdb-tools/wiki/Redis-Memory-Optimization">redis memory optimization guide</a> ) may recall that they strongly recommend not to use strings with a length of less than 100 bytes, because  to store a short string, say when using the command `set foo bar` you spend ~ 96 bytes of which 90 bytes is an overhead (on a 64 bit machine).  Cunning?  Let's understand further. <br><br>  All values ​​in radishes are stored in the structure of the redisObject type.  This allows radishes to know the type of value, its internal representation (in radish, this is called encoding), the data for LRU, the number of objects referring to the value, and the value itself: <br><pre> <code class="bash hljs">+------+----------+-----+----------+-------------------------+ | Type | Encoding | LRU | RefCount | Pointer to data (ptr*) | +------+----------+-----+----------+-------------------------+</code> </pre><br><br>  A little later we will calculate its size for our line, taking into account the alignment of the compiler and the features of jemalloc.  In the context of strings, it is very important for us to know what encodings are used to store strings.  Radish uses three different storage strategies right now: <br><br><ol><li>  <b>REDIS_ENCODING_INT is</b> pretty simple.  Strings can be stored in this form, if the value <i>cast</i> to long is in the range <i>LONG_MIN</i> , <i>LONG_MAX</i> .  So, the string “dict” will be stored exactly in the form of this encoding and will be the number 1952672100 (0x74636964).  The same encoding is used for a previously selected range of special values ​​in the <i>REDIS_SHARED_INTEGERS</i> range (defined in redis.h and equal to 1000 by default).  The values ​​of this range are allocated immediately when starting radish. </li><li>  <b>REDIS_ENCODING_EMBSTR is</b> used for strings with a length of up to 39 bytes (the value of the constant <i>REDIS_ENCODING_EMBSTR_SIZE_LIMIT</i> from object.c).  This means that the redisObject and the structure with the sds string will be placed in a single memory area allocated by the allocator.  With this in mind, we can correctly calculate the alignment.  However, it is no less important for understanding the problem of memory fragmentation in radishes and how to live with it. </li><li>  <b>REDIS_ENCODING_RAW is</b> used for all rows whose length exceeds <i>REDIS_ENCODING_EMBSTR_SIZE_LIMIT</i> .  In this case, our ptr * stores the usual pointer to the memory area with the sds string. </li></ol><br><blockquote>  EMBSTR appeared in 2012 and brought a 60-70% increase in performance when working with short strings, but there is still no serious research on the effect on memory and its fragmentation. </blockquote><br>  The length of our string “strings” is only 7 bytes, i.e.  The type of its internal representation is EMBSTR.  The string thus created is located in memory like this: <br><pre> <code class="bash hljs">+--------------+--------------+------------+--------+----+ | robj data... | robj-&gt;ptr | sds header | string | \0 | +--------------+-----+--------+------------+--------+----+ | ^ +-----------------------+</code> </pre><br>  Now we are ready to calculate how much RAM redis is needed to store our string “strings”. <br><blockquote>  (4 + 4) <sup>*</sup> + 8 (encoding) + 8 (lru) + 8 (refcount) + 8 (ptr) + 16 (sds header) + 7 (the line itself) + 1 (the final zero) = 56 bytes. <br></blockquote><br>  The type and value in redisObject use only 4 low and high bits of the same number, therefore these two fields will take 8 bytes after alignment. <br><br>  Let's check that I do not lead you by the nose.  Let's look at the coding and value.  We use one little-known command for debugging lines - DEBUG SDSLEN.  By the way, the command is <a href="http://redis.io/commands/debug-object">not in the official documentation</a> , it was <a href="https://raw.githubusercontent.com/antirez/redis/2.6/00-RELEASENOTES">added in redis 2.6</a> and can be very useful: <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">set</span></span> key strings +OK debug object key +Value at:0x7fa037c35dc0 refcount:1 encoding:embstr serializedlength:8 lru:3802212 lru_seconds_idle:14 debug sdslen key +key_sds_len:3, key_sds_avail:0, val_sds_len:7, val_sds_avail:0</code> </pre><br>  The encoding used is embstr, the length of the string is 7 bytes (val_sds_len).  What about those 96 bytes that the guys from hashedin.com were talking about?  In my understanding, they were slightly mistaken; their example with `set foo bar` would require the allocation of 112 bytes of RAM (56 bytes for the value and the same for the key), of which 106 is the overhead. <br><br>  A little higher, I promised a story about disappearing memory when using BITMAP.  The feature about which I want to tell is constantly flowing away from the attention of some of the developers who use it.  Guys, this is what the memory optimization consultants regularly earn.  Such as redis-labs or datadog.  The family team “Bit and byte level operations” appeared in redis 2.2 and immediately positioned themselves as a magic wand for real-time counters (for example, <a href="http://blog.getspool.com/2011/11/29/fast-easy-realtime-metrics-using-redis-bitmaps/">an article from Spool</a> ) that save memory.  The official memory optimization guide also has an advertising slogan about using this family of data for online storage “For 100 million users, this data will take up only 12 megabytes of RAM”.  In the description of <a href="http://redis.io/commands/setbit">SETBIT</a> and <a href="http://redis.io/commands/setrange">SETRANGE</a> warn about possible lags of the server when allocating memory, omitting the important, I think, section "When you should not use BITMAP" or "When it is better to use SET instead of BITMAP". <br><br>  Armed with an understanding of how the lines grow in radish, you can see that bitmap: <br><ul><li>  Do not use for sparse data. </li><li>  understand the ratio of useful and real load (about this in the example below). </li><li>  take into account the dynamics of filling your bitmap. </li></ul><br>  Consider an example.  Suppose you have registered up to 10 million people and your ten millionth user went online: <br><pre> <code class="bash hljs">setbit online 10000000 1 :0 debug sdslen online +key_sds_len:6, key_sds_avail:0, val_sds_len:1250001, val_sds_avail:1048576</code> </pre><br>  Your actual memory consumption was 2,298,577 bytes, with 1,250,001 bytes “useful” to you.  Storage of one of your users cost you ~ 2.3 MB.  Using SET you would need ~ 64 bytes (with 4 bytes of payload).  You need to correctly select the aggregation intervals so as to reduce the sparsity of the data and try to fill the bitmap in the range of 30% - in this case, you will actually use the memory for this data structure effectively.  I say this to the fact that if you have a multimillion audience, and an hour online say 10,000 - 100,000 people, then using a bitmap for this purpose can be a memory overhead. <br><br>  Finally, resizing lines in radishes is a permanent redistribution of blocks of memory.  Memory fragmentation is another specificity of radishes, about which developers think a little. <br><pre> <code class="bash hljs">info memory <span class="hljs-variable"><span class="hljs-variable">$222</span></span> <span class="hljs-comment"><span class="hljs-comment"># Memory used_memory:506920 used_memory_human:495.04K used_memory_rss:7565312 used_memory_peak:2810024 used_memory_peak_human:2.68M used_memory_lua:36864 mem_fragmentation_ratio:14.92 mem_allocator:jemalloc-3.6.0</span></span></code> </pre><br>  The <i>mem_fragmentation_ratio</i> metric shows the ratio of the operating system allocated memory ( <i>used_memory_rss</i> ) and the memory used by radish ( <i>used_memory</i> ).  In this case, <i>used_memory</i> and <i>used_memory_rss</i> already include both the data itself and the cost of storing the internal structures of radish for their storage and presentation.  Radish considers RSS (Resident Set Size) as the amount of memory allocated by the operating system, in which, in addition to user data (and expenses for their internal representation), the costs of fragmentation are taken into account when physically allocating memory by the operating system itself. <br><br>  How to understand mem_fragmentation_ratio?  A value of 2.1 tells us that we use 210% more memory for storing data than we need.  A value less than 1 indicates that the memory is over and the operating system swaps. <br><br>  In practice, if the values ​​for mem_fragmentation_ratio fall outside the bounds 1 - 1.5, it means that something is wrong with you.  Try: <br><ul><li>  Reload your radishes.  The longer the radish, in which you actively write worked without rebooting, the higher you will have mem_fragmentation_ratio.  In many ways, "thanks to" features of the allocator.  This is guaranteed to help, if you have a big difference between used_memory and used_memory_peak.  The last figure says what is the maximum amount of memory your copy of radish ever needed since its launch. </li><li>  See what the data is and how much you plan to store.  So, if 4 GB is enough to store your data - use 32-bit radish assemblies.  At least, if you use a 64-bit assembly, at least try to deploy your ladies to the 32-bit version (rdb does not depend on the radish bit size and you can easily run rdb created by a 64-bit instance on a 32-bit one).  Practically guaranteed, this reduces fragmentation (and the amount of memory used) by ~ 7% (due to savings on alignment). </li><li>  If you understand the difference and features, try changing the allocator.  Radishes can be collected from glibc malloc, jemalloc (read what <a href="https://www.facebook.com/notes/facebook-%25C2%25AD%25E2%2580%2590engineering/scalable-%25C2%25AD%25E2%2580%2590memory-%25C2%25AD%25E2%2580%2590allocation-%25C2%25AD%25E2%2580%2590using-%25C2%25AD%25E2%2580%2590jemalloc/480222803919">facebook engineers</a> think about this), tcmalloc. </li></ul><br><br>  In a conversation about fragmentation, I do not take into account the specifics of radish when LRU is turned on or if there are additional difficulties with a large number of regular string keys - all this pulls into a separate article.  I would be grateful if you share your suggestions, whether it is worth writing about it and what else seems important to you when working with radishes. <br><br>  The <a href="http://habrahabr.ru/users/pansa/" class="user_link">pansa</a> user correctly notes that in the situation with the swap radish will not recalculate the value of <i>used_memory_rss</i> after the operating system returns part of the RAM to the process.  Radish will recalculate this value when accessing data. <br><br>  Table of contents: <br><ul><li>  Under the hood Redis: Strings <br></li><li>  <a href="http://habrahabr.ru/post/271205/">Under the hood Redis: Hash table (part 1)</a> <br></li><li>  <a href="http://habrahabr.ru/post/272089/">Under the hood Redis: Hash table (part 2) and List</a> <br></li></ul><br>  Additional reading materials: <br><ul><li>  <a href="http://redis.io/topics/memory-optimization">redis.io/topics/memory-optimization</a> </li><li>  <a href="http://redis.io/topics/internals-sds">redis.io/topics/internals-sds</a> </li><li>  <a href="https://redislabs.com/blog/redis-ram-ramifications">redislabs.com/blog/redis-ram-ramifications</a> </li><li>  <a href="https://github.com/sripathikrishnan/redis-rdb-tools/wiki/Redis-Memory-Optimization">github.com/sripathikrishnan/redis-rdb-tools/wiki/Redis-Memory-Optimization</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/271487/">https://habr.com/ru/post/271487/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../271477/index.html">Cooking ASP.NET 5: Continuous Deployment with Docker and Tutum</a></li>
+<li><a href="../271479/index.html">Rabdological abacus Claude Perrot</a></li>
+<li><a href="../271481/index.html">Domestic server manufacturer = self-assembly?</a></li>
+<li><a href="../271483/index.html">C #, ways to store program settings</a></li>
+<li><a href="../271485/index.html">A way to quickly measure the performance of a random server</a></li>
+<li><a href="../271489/index.html">How do we live a year without sprockets and with react</a></li>
+<li><a href="../271491/index.html">Free Webinars at Startup Week - Connect</a></li>
+<li><a href="../271493/index.html">Infrastructure and trading robots: What programming languages ​​are used in finance</a></li>
+<li><a href="../271495/index.html">The tester is responsible for everything</a></li>
+<li><a href="../271499/index.html">Welcome to Moscow Data Science November 27</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

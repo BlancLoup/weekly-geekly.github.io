@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>The story of the damn doubles</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article was prepared by Dmitry Ovcharenko, the architect of the Applied Financial Systems Department of Jet Infosystems 
+
+ Let there be a unifica...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>The story of the damn doubles</h1><div class="post__text post__text-html js-mediator-article">  This article was prepared by Dmitry Ovcharenko, the architect of the Applied Financial Systems Department of Jet Infosystems <br><br>  Let there be a unification!  This decision was made when designing an integration architecture that links CRM with other external systems via the bus on the Oracle Service Bus.  In addition to online integration based on web services, it accepts files entering the system and calls web services on the CRM side, specifically designed for each type of incoming data. <br><br>  The file contains a lot of records, and for each you need to make a separate service call on the side of CRM.  File processing is performed in a loop of records.  Each call to the service takes 5 seconds - this is quite a lot, but it was quite enough to fulfill the set requirements.  The process of processing a web service call in CRM preliminarily checks the record for a double, then executes the required business logic and creates an entry in the database. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      But "surprise" may occur in unforeseen moments of "tire".  On industrial volumes of data in the database CRM began to appear duplicates.  We found out that the source can for some reason resend a large file (immediately after it is picked up by the file proxy service and placed in the Stage folder).  Moreover, the lag between calls to web services that create duplicates is so small that at the time of the second call, the data in the first one is not yet committed, and the verification on the CRM side does not have time to work. <br><a name="habracut"></a><br><br>  To hell with the unification!  We decided to implement a separate Java Statefull service, which stores in memory the names of files currently being processed.  When a file is received, the proxy service on the OSB calls the Java service, sends it the file name and finds out if it is being processed now.  At the end of the file processing (or in the case of an exception), the proxy service informs the Java service that it has finished processing the file with the given name.  Accordingly, this name from the current list must be removed.  Handling two files with the same name is not allowed by business requirements.  Restarting the server is also not terrible, since not only the Java process will be dropped, but the file being processed, if it happens during the reboot. <br><br>  In general, in Oracle SOA Suite Service Bus 11g there is no possibility to set a lock on a process with synchronization by any identifier - it is proposed to use this approach not only to restrict the launch when the file is received again, but in principle in any cases, passing to the Statefull service required identifier. <br><br>  It is important that the OSB file has a top-level Catch block in order to remove the name of the file being processed from the list, even if an exception has occurred. <br><br>  Service Code: <br><br><pre><code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@WebService</span></span>(serviceName = <span class="hljs-string"><span class="hljs-string">"TaskManager"</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TaskManager</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> HashMap&lt;String,String&gt; map; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">TaskManager</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">super</span></span>(); map = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HashMap&lt;String,String&gt;(); } <span class="hljs-meta"><span class="hljs-meta">@WebMethod</span></span> <span class="hljs-meta"><span class="hljs-meta">@WebResult</span></span>(name = <span class="hljs-string"><span class="hljs-string">"Result"</span></span>) <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> String </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">addTask</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(@WebParam(name = </span></span><span class="hljs-string"><span class="hljs-function"><span class="hljs-params"><span class="hljs-string">"ProcessName"</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> String name)</span></span>{ String result; <span class="hljs-keyword"><span class="hljs-keyword">try</span></span>{ result = map.get(name); <span class="hljs-comment"><span class="hljs-comment">// Try to get name from map }catch (Exception e){ // if there is no such name result = null; // we receive exception } if (result == null){ // if there is no such name map.put(name, "Is running"); // we add name result = "Task added"; } else{ result = "Task is running"; // else - inform caller } return result; } @WebMethod @WebResult(name = "Result") public String removeTask(@WebParam(name = "ProcessName") String name){ String result; try{ result = map.get(name); }catch (Exception e){ result = null; } if (result == null){ result = "There is no task"; } else{ map.remove(name); result = "Task removed"; } return result; } }</span></span></code> </pre> <br><br>  This method is very simple, but, unfortunately, will not work in a cluster deployment option.  It is also advisable to deploy it on the WebLogic OSB Managed Server, so that when rebooting, both OSB processing and the list of current processes are reset.  If OSB servers are in a cluster, the service must be deployed on a separate Managed server, and this will have to be remembered when rebooting. <br><br>  Finally.  With this protection against repeated processing, the solution worked for more than a year, but it was replaced by a new loading mechanism.  It is implemented on Oracle SOA Suite, and the processing of records in it is performed in parallel.  But this topic will open another article. <br><br>  We welcome your constructive comments. </div><p>Source: <a href="https://habr.com/ru/post/267067/">https://habr.com/ru/post/267067/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../267055/index.html">“Made and forgotten”: Why is it not so in the layout of email-letters</a></li>
+<li><a href="../267057/index.html">SYNful knock on the OS of Cisco Systems routers</a></li>
+<li><a href="../267059/index.html">Overview of the Intent Sender plugin for Android Studio and certain features of its development</a></li>
+<li><a href="../267061/index.html">Card game: we realize attack and we will find application of ShadowDOM</a></li>
+<li><a href="../267063/index.html">Functional C #: Non-nullable reference types (non-zero reference types)</a></li>
+<li><a href="../267069/index.html">A new way of MITM-attack on the TLS protocol makes the attacker invisible</a></li>
+<li><a href="../267071/index.html">Already a year we create an operator together</a></li>
+<li><a href="../267073/index.html">Vector Drawable API. Application possibilities</a></li>
+<li><a href="../267075/index.html">Parsing the Digit Recognizer Challenge Kaggle Competitions</a></li>
+<li><a href="../267079/index.html">Isn't it time for relational databases to fall into the dustbin of history?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Optimizing dynamic memory allocation performance in a multi-threaded library</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Foreword 
+ This article has grown out of a problem that I had to solve relatively recently: the speed of code designed to work simultaneously in sever...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Optimizing dynamic memory allocation performance in a multi-threaded library</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/d77/ff7/29a/d77ff729a2b743ba9f312ce22705bae8.jpg" alt="image"><br><br><h4>  Foreword </h4><br>  This article has grown out of a problem that I had to solve relatively recently: the speed of code designed to work simultaneously in several streams dropped sharply after another functional expansion, but only on Windows XP / 2003.  Using Process Explorer, I found out that only 1 stream is executed at most points in time, the rest are pending, and the TID of the active stream is constantly changing.  On the face of a clear competition for the resource, and this resource was a bunch of default (default heap).  The new code actively uses dynamic allocation / release of memory (copying lines, copying / modifying STL containers of large size), which actually led to this problem. <br><br><h4>  Some theory </h4><br>  As is known, the default allocator for STL containers and std :: basic_string (std :: allocator) allocates memory from the heap by default, and memory allocation / freeing operations in it are blocking ( <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa366597%2528v%3Dvs.85%2529.aspx">indirect confirmation</a> ).  Based on this, with frequent calls to HeapAlloc / HeapFree, we risk tightly blocking the heap for other threads.  Actually this happened in my case. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <a name="habracut"></a><h4>  A simple solution </h4><br>  The first solution to this problem is the inclusion of the so-called <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa366750%2528v%3Dvs.85%2529.aspx">low fragmentation heap</a> .  When a heap is switched to this mode, the memory consumption increases due to allocating more often a significantly larger fragment than was requested, but the overall speed of the heap increases.  This mode is enabled by default in Windows Vista and later (a plausible reason for the brakes on XP / 2003 and their absence on 2008/7 / 2008R2).  The default heap switching code for this mode is extremely simple: <br><br><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> HEAP_LFH 2 ULONG HeapInformation = HEAP_LFH; HeapSetInformation(GetProcessHeap(), HeapCompatibilityInformation, &amp;HeapInformation, sizeof(HeapInformation));</span></span></code> </pre> <br>  Corrected and compiled using visual studio 2013, the code did its job - the CPU is now 100% loaded, the time for passing the benchmark test has decreased N times!  However, when building on our (it hurts me to say this ...) visual studio 2003 (yes, she still enjoys) the effect of the fix 0 ... Houston, we have problems ... <br><br><h4>  Universal solution </h4><br>  The second possible solution to the problem is to create a separate heap for each thread.  Let's get started <br><br>  To store handles (handle) of different heaps, I suggest using <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms686749%2528v%3Dvs.85%2529.aspx">TLS slots</a> .  Since my code is only a part of the library that does not directly control the creation / termination of threads, I do not have information when it is necessary to remove a heap (with creation everything is trivial, with deletion is more difficult).  As a solution, I suggest using a pool of heaps of the following form: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">HeapPool</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">private</span></span>: <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">stack</span></span>&lt;HANDLE&gt; pool; CRITICAL_SECTION sync; <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> isOlderNt6; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span>: HeapPool() { InitializeCriticalSection(&amp;sync); DWORD dwMajorVersion = (DWORD)(GetVersion() &amp; <span class="hljs-number"><span class="hljs-number">0xFF</span></span>); isOlderNt6 = (dwMajorVersion &lt; <span class="hljs-number"><span class="hljs-number">6</span></span>); } ~HeapPool() { DeleteCriticalSection(&amp;sync); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (!pool.empty()) <span class="hljs-comment"><span class="hljs-comment">//       { HeapDestroy(pool.top()); pool.pop(); } } HANDLE GetHeap() { EnterCriticalSection(&amp;sync); HANDLE hHeap = NULL; if (pool.empty()) { hHeap = HeapCreate(0, 0x100000, 0); if (isOlderNt6) //  NT6.0+      { ULONG info = 2 /* HEAP_LFH */; HeapSetInformation(hHeap, HeapCompatibilityInformation, &amp;info, sizeof(info)); } } else { hHeap = pool.top(); pool.pop(); } LeaveCriticalSection(&amp;sync); return hHeap; } void PushHeap(HANDLE hHeap) { EnterCriticalSection(&amp;sync); pool.push(hHeap); LeaveCriticalSection(&amp;sync); } }; HeapPool heapPool; //  </span></span></code> </pre><br>  Now create a global slot variable: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">TlsHeapSlot</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">private</span></span>: DWORD index; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span>: TlsHeapSlot() { index = TlsAlloc(); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">set</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(HANDLE hHeap)</span></span></span><span class="hljs-function"> </span></span>{ TlsSetValue(index, hHeap); } <span class="hljs-function"><span class="hljs-function">HANDLE </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">get</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> (HANDLE)TlsGetValue(index); } }; <span class="hljs-comment"><span class="hljs-comment">/* ,    get()   ,     */</span></span> TlsHeapSlot heapSlot;</code> </pre><br>  Since our goal is to optimize the operation of std :: basic_string and STL containers, we will need a “self-made” allocator: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">template</span></span> &lt;<span class="hljs-keyword"><span class="hljs-keyword">typename</span></span> T&gt; <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">parallel_allocator</span></span></span><span class="hljs-class"> :</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::allocator&lt;T&gt; { <span class="hljs-keyword"><span class="hljs-keyword">public</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">typedef</span></span> <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> size_type; <span class="hljs-keyword"><span class="hljs-keyword">typedef</span></span> T* pointer; <span class="hljs-keyword"><span class="hljs-keyword">typedef</span></span> <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> T* const_pointer; <span class="hljs-keyword"><span class="hljs-keyword">template</span></span>&lt;<span class="hljs-keyword"><span class="hljs-keyword">typename</span></span> _Tp1&gt; <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">rebind</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">typedef</span></span> parallel_allocator&lt;_Tp1&gt; other; }; <span class="hljs-function"><span class="hljs-function">pointer </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">allocate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(size_type n, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *hint = </span></span><span class="hljs-number"><span class="hljs-function"><span class="hljs-params"><span class="hljs-number">0</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> (pointer)HeapAlloc(heapSlot.get(), <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">sizeof</span></span>(T) * n); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">deallocate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(pointer p, size_type n)</span></span></span><span class="hljs-function"> </span></span>{ HeapFree(heapSlot.get(), <span class="hljs-number"><span class="hljs-number">0</span></span>, p); } parallel_allocator() <span class="hljs-keyword"><span class="hljs-keyword">throw</span></span>() : <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::allocator&lt;T&gt;() {} parallel_allocator(<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> parallel_allocator &amp;a) <span class="hljs-keyword"><span class="hljs-keyword">throw</span></span>() : <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::allocator&lt;T&gt;(a) { } <span class="hljs-keyword"><span class="hljs-keyword">template</span></span> &lt;class U&gt; parallel_allocator(<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> parallel_allocator&lt;U&gt; &amp;a) <span class="hljs-keyword"><span class="hljs-keyword">throw</span></span>() : <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::allocator&lt;T&gt;(a) { } ~parallel_allocator() <span class="hljs-keyword"><span class="hljs-keyword">throw</span></span>() { } };</code> </pre><br>  And the final touch: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">HeapWatch</span></span></span><span class="hljs-class"> //          {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">private</span></span>: HANDLE hHeap; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span>: HeapWatch(HANDLE heap) : hHeap(heap) {} ~HeapWatch() { heapPool.PushHeap(hHeap); } }; <span class="hljs-keyword"><span class="hljs-keyword">extern</span></span> <span class="hljs-string"><span class="hljs-string">"C"</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">my_api</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> * arg)</span></span></span><span class="hljs-function"> </span><span class="hljs-comment"><span class="hljs-function"><span class="hljs-comment">// ,    { HANDLE hHeap = heapPool.GetHeap(); HeapWatch watch(hHeap); heapSlot.set(hHeap); /*      ,  / .       std::basic_string&lt;char, std::char_traits&lt;char&gt;, parallel_allocator&lt;char&gt; &gt; str  std::list&lt;int, parallel_allocator&lt;int&gt; &gt; lst,    ,      (  ) */ }</span></span></span></span></code> </pre><br><h4>  Results: </h4><br>  The main thing - the problem is solved, and, moreover, is not a crutch.  The second solution is more complicated, but it gives performance gains on all tested platforms (win xp - windows 10) when building the solution in both VS2013 and VS2003 (the maximum effect is achieved in XP / 2003 using VS 2003 - the test runtime has decreased by almost N times (where N is the number of CPU cores), on newer platforms - from 3 to 10 percent).  A simple solution is ideal for those who use the latest versions of compilers.  I hope this information will be useful not only for me. </div><p>Source: <a href="https://habr.com/ru/post/267155/">https://habr.com/ru/post/267155/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../267135/index.html">Testing sites using builds: what it is and how it works</a></li>
+<li><a href="../267141/index.html">SYNful Knock backdoor to attack routers: what's the problem and how to defend</a></li>
+<li><a href="../267149/index.html">Forwarding DLNA to a remote network</a></li>
+<li><a href="../267151/index.html">RailsClub 2015: Interview with Alexander Kirillov</a></li>
+<li><a href="../267153/index.html">Microsoft has updated the core of Windows</a></li>
+<li><a href="../267157/index.html">Configure SCST Target on CentOS 7 using FC QLogic adapter</a></li>
+<li><a href="../267159/index.html">Features Backup Exec 15, which you did not guess</a></li>
+<li><a href="../267161/index.html">What awaits the data center industry in the future</a></li>
+<li><a href="../267163/index.html">Hacker, cryptographer or psychic. Ordinary magic</a></li>
+<li><a href="../267165/index.html">ES6 in detail: proxy</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

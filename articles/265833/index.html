@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>GC in Go: priority on speed and simplicity</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Translation of the blog post of the main author of the garbage collector at Go, Richard Hudson, the inventor of many algorithms for GC in other langua...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>GC in Go: priority on speed and simplicity</h1><div class="post__text post__text-html js-mediator-article">  <i>Translation of the <a href="https://blog.golang.org/go15gc">blog post of the</a> main author of the garbage collector at Go, Richard Hudson, the inventor of many algorithms for GC in other languages, one of the leading engineers at Intel (currently working at Google).</i> <br><br>  Go plans its own garbage collector (GC) not only for 2015, but also for 2025 and beyond: it should be GC, which supports modern program development principles and scales well with the advent of new software and hardware in the next decades.  In this future, there is no place for GC to pause with “stop the world” (stop-the-world), which were an obstacle to the wider use of such safe and reliable languages ​​as Go. <br><br>  Go 1.5, the first glimpse of this future, reached the goal of reducing the top pause bar to 10ms, which we set for ourselves a year ago.  You can see some impressive figures in the <a href="https://talks.golang.org/2015/go-gc.pdf">report on GopherCon</a> .  These improvements in response time attracted a lot of attention;  Robin Verlangen <a href="https://medium.com/%40robin.verlangen/billions-of-request-per-day-meet-go-1-5-362bfefa0911">'s</a> blog post <a href="https://medium.com/%40robin.verlangen/billions-of-request-per-day-meet-go-1-5-362bfefa0911">“Billions of requests per day meet Go 1.5”</a> confirms our calculations with real results.  Separately, we liked the <a href="https://twitter.com/inconshreveable/status/620650786662555648">screenshots of the production server charts from Alan Shreve</a> and his commentary “Holy 85% reduction!”. <br><a name="habracut"></a><br>  Today, 16 gigabytes of memory cost $ 100 and all processors are multi-core, and support hyper-trading.  After 10 years, this hardware will look obsolete, but programs written on Go today will have to be able to scale to work on growing iron resources and be ready for the “next big thing”.  Considering that iron makes it possible to increase throughput, the Go garbage collector is designed so that responsiveness and small pauses are a priority, and tuning takes place with one slider.  Go 1.5 is the first big step in this direction, and these first steps will forever affect the further development of Go and the programs written in it.  This post gives an overview of what we did in the Go 1.5 collector. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Details </h4><br>  To create a garbage collector for the next decade, we turned to an algorithm written several decades ago.  The new garbage collector in Go is a competitive (concurrent), three-color (tri-color), mark-sweep collector, the idea of ​​which was first proposed by <a href="http://dl.acm.org/citation.cfm%3Fid%3D359655">Dijkstra in 1978</a> .  This approach is deliberately so inappropriate for most modern enterprise-level garbage collectors, and we believe that this is the best approach for modern iron and the requirements for pauses on the new hardware. <br><br>  In the tricolor garbage collector, each object can be labeled as white, gray or black, and we consider the heap as a graph of related objects.  At the beginning of each GC cycle, all objects are white.  GC passes all the <i>root nodes of the</i> graph, which are objects that are directly accessible to the program - these are global variables and variables in the stack - and marks them with gray.  GC then selects a gray object, turns it black, and then scans it for pointers and other objects.  If the scan detects a pointer to a white object, it makes it gray.  This process is repeated until there are gray objects.  At this point, all white objects will be considered unreachable and can be reused. <br><br>  This all happens in parallel with the work of the program, also called the mutator, which changes pointers as the collector works.  From this it follows that the mutator must maintain the invariant of the fact that no black object indicates white, so that the garbage collector does not lose the trail of the object in that part of the heap that it has already bypassed.  Supporting such an invariant is a task for the “write barrier” (write barrier), which is essentially a small function that starts every time a mutator changes the pointer on the heap.  The entry barrier in Go marks gray objects that were white, ensuring that the garbage collector will scan it sooner or later. <br><br>  Determining the moment when all objects are scanned is a delicate task and can be very expensive and difficult if we want to avoid mutator locks.  For simplicity, Go 1.5 makes the maximum possible in the background, and then suspends the program for a very short time to check all potentially gray objects.  Finding the ideal ratio for the time needed for this pause and for the entire work of the GC is one of the main tasks for Go 1.6. <br><br>  Of course, the devil is in the details.  When to start the next cycle of GC?  Which metric to use to make this decision?  How should the GC and the Go scheduler interact?  How to stop mutator threads so that they have enough time to scan their stacks?  How do we present white, gray and black objects in order to most effectively search and scan gray objects?  How do we know where their root nodes are?  How do we know where the pointers are in the object?  How do we minimize memory fragmentation?  How do we solve cache performance issues?  How big should a bunch be?  And so on, and so on, something related to allocations, something about finding reachable objects, something about planning, but the main issues affect performance.  Discussions about the lower-level details of each of these areas are beyond the scope of this post. <br><br>  At a higher level, one of the approaches for solving these problems for GC is to add to the GC sliders (knobs), one for each task.  The developer can then customize the GC for himself, setting many parameters.  The downside is that after 10 years with one or two new sliders each year, you end up with an Employment Contract for Using GC Switches.  Go will not go this way.  Instead, we give only one slider, called GOGC.  Its value controls the total heap size relative to the size of reachable objects.  The default value of “100” means that the total heap size is now 100% larger (that is, twice) the size of the actually accessible objects after the last GC cycle.  “200” means that the total heap size is 200% larger (that is, three times) than the size of the actually used objects.  If you want to reduce the total amount of time the GC runs, increase the GOGC.  If you want to give more time to GC, and win yourself a memory - reduce GOGC. <br><br>  It is important to understand that as the amount of memory doubles with the next generation of iron, a simple increase in GOGC will halve the number of GC cycles.  On the other hand, since the GOGC operates with the concept of reachable objects, the increase in load and the concomitant increase in the number of reachable objects do not need to be retuned.  The application simply scales.  Moreover, unburdened by the support of dozens of sliders, the command writing the language runtime can focus on improving runtime based on feedback from real production programs. <br><br><h4>  Conclusion </h4><br>  The Go 1.5 garbage collector introduces us to the future, where pauses to stop the world are no longer an obstacle to a safe and reliable language.  This is the future where applications scale out effortlessly with the new hardware, and as the hardware becomes more powerful, the garbage collector will not interfere with even better, and even more scalable software.  This is a good place for the next decade and what comes after it.  If you want to know the details of how we removed the problems with pauses, see the <a href="https://www.youtube.com/watch%3Fv%3Daiv1JOfMjm0">Go GC</a> report <a href="https://www.youtube.com/watch%3Fv%3Daiv1JOfMjm0">: Latency Problem Solved presentation</a> or <a href="https://talks.golang.org/2015/go-gc.pdf">report slides</a> . </div><p>Source: <a href="https://habr.com/ru/post/265833/">https://habr.com/ru/post/265833/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../265817/index.html">1C: Summer School 2015 - how to organize a "smart" vacation for young programmers - part 1. Who and what he studied, daily routine, carrot and carrot</a></li>
+<li><a href="../265819/index.html">RAD Studio 10 Seattle Release</a></li>
+<li><a href="../265823/index.html">Chameleon Launcher Open Clone</a></li>
+<li><a href="../265825/index.html">RailsClub 2015: Interview with Andrey Deryabin</a></li>
+<li><a href="../265831/index.html">Go to Basecamp (creators of RoR)</a></li>
+<li><a href="../265835/index.html">IBM Cognos BI and QlikView, where to start curious?</a></li>
+<li><a href="../265837/index.html">Urho3D Editor (Part 2)</a></li>
+<li><a href="../265841/index.html">Deliver voice to mobile network: step 2 - Analog Digital Conversion</a></li>
+<li><a href="../265843/index.html">Dagaz: Kicks to common sense (part 10)</a></li>
+<li><a href="../265845/index.html">RESTful API - big lie</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

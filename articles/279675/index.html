@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Track updates from MongoDB Oplog to Sharded Cluster using Scala and Akka Streams</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction 
+ This article is a continuation of the previous published article Tailing the MongoDB Replica Set Oplog with Scala and Akka Streams . 
+ ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Track updates from MongoDB Oplog to Sharded Cluster using Scala and Akka Streams</h1><div class="post__text post__text-html js-mediator-article"><h2>  Introduction </h2><br>  This article is a continuation of the previous published article <a href="http://khamrakulov.de/tailing_the_mongodb_replica_set_oplog_with_scala_and_akka_streams/">Tailing the MongoDB Replica Set Oplog with Scala and Akka Streams</a> . <br>  As we discussed before, tracking updates in MongoDB Sharded Cluster Oplog has its pitfalls compared to Replica Set.  This article will try to reveal some aspects of the topic. <br>  The MongoDB team blog has some very good articles covering the whole topic of tracking updates from MongoDB Oplog to Sharded Clusters.  You can find them at the following links: <br><ul><li>  <a href="https://www.mongodb.com/blog/post/tailing-mongodb-oplog-sharded-clusters">Tailing the MongoDB Oplog on Sharded Clusters</a> </li><li>  <a href="https://www.mongodb.com/blog/post/pitfalls-and-workarounds-for-tailing-the-oplog-on-a-mongodb-sharded-cluster">Pitfalls and Workarounds for Tailing the Oplog on a MongoDB Sharded Cluster</a> </li></ul><br>  You can also find information about MongoDB Sharded Cluster in the <a href="https://docs.mongodb.org/manual/core/sharding-introduction/">documentation</a> . <br>  The examples given in this article should not be considered and used in production environment.  The project with examples is available on <a href="https://github.com/htimur/mongo_oplog_akka_streams">github</a> . <br><br><br><h2>  MongoDB Sharded Cluster </h2><br>  From the MongoDB documentation: <br><blockquote>  <strong>Sharding</strong> , or horizontal scaling, separation and distribution of data across multiple servers or segments (shards).  Each segment is an independent database, and collectively, all segments constitute a single local database. </blockquote><br><img src="https://habrastorage.org/files/ddc/c53/bb2/ddcc53bb2ef64b39b15ec149e6c962a6.png" alt="Sharded collection"><br><br><br>  In the production environment, each node is a Replica Set: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <br><img src="https://habrastorage.org/files/4d6/3c2/902/4d63c29025f44f67b11da124225572eb.png" alt="Sharded Cluster Architecture"><a name="habracut"></a><br><h2>  MongoDB internal operations </h2><br>  Because of the distribution of data into several segments, MongoDB has intra-cluster operations that are reflected in the <code>oplog</code> .  These documents have an additional <code>fromMigrate</code> field, since  we are not interested in these operations, we will update our <code>oplog</code> request to exclude them from the result. <br><pre> <code class="scala hljs">client.getDatabase(<span class="hljs-string"><span class="hljs-string">"local"</span></span>) .getCollection(<span class="hljs-string"><span class="hljs-string">"oplog.rs"</span></span>) .find(and( in(<span class="hljs-type"><span class="hljs-type">MongoConstants</span></span>.<span class="hljs-type"><span class="hljs-type">OPLOG_OPERATION</span></span>, <span class="hljs-string"><span class="hljs-string">"i"</span></span>, <span class="hljs-string"><span class="hljs-string">"d"</span></span>, <span class="hljs-string"><span class="hljs-string">"u"</span></span>), exists(<span class="hljs-string"><span class="hljs-string">"fromMigrate"</span></span>, <span class="hljs-literal"><span class="hljs-literal">false</span></span>))) .cursorType(<span class="hljs-type"><span class="hljs-type">CursorType</span></span>.<span class="hljs-type"><span class="hljs-type">TailableAwait</span></span>) .noCursorTimeout(<span class="hljs-literal"><span class="hljs-literal">true</span></span>)</code> </pre> <br><br><br><h2>  Getting information about nodes </h2><br>  As you may have already guessed, in order to track updates from the <code>oplog</code> to the Sharded Cluster, we will need to monitor the <code>oplog</code> each node (Replica Set). <br>  For this, we can query from the <code>config</code> database for a list of all available segments.  Documents in the collection look like: <br><pre> <code class="hljs json">{ <span class="hljs-attr"><span class="hljs-attr">"_id"</span></span> : <span class="hljs-string"><span class="hljs-string">"shard01"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"host"</span></span> : <span class="hljs-string"><span class="hljs-string">"shard01/localhost:27018,localhost:27019,localhost:27020"</span></span> }</code> </pre> <br>  I prefer to use <code>case</code> classes instead of <code>Document</code> objects, so I will declare a class: <br><pre> <code class="scala hljs"><span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Shard</span></span></span><span class="hljs-class">(</span><span class="hljs-params"><span class="hljs-class"><span class="hljs-params">name: </span></span><span class="hljs-type"><span class="hljs-class"><span class="hljs-params"><span class="hljs-type">String</span></span></span></span><span class="hljs-class"><span class="hljs-params">, uri: </span></span><span class="hljs-type"><span class="hljs-class"><span class="hljs-params"><span class="hljs-type">String</span></span></span></span></span><span class="hljs-class">)</span></span></code> </pre> <br>  and the function to translate the <code>Document</code> to <code>Shard</code> : <br><pre> <code class="scala hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">parseShardInformation</span></span></span></span>(item: <span class="hljs-type"><span class="hljs-type">Document</span></span>): <span class="hljs-type"><span class="hljs-type">Shard</span></span> = { <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> document = item.toBsonDocument <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> shardId = document.getString(<span class="hljs-string"><span class="hljs-string">"_id"</span></span>).getValue <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> serversDefinition = document.getString(<span class="hljs-string"><span class="hljs-string">"host"</span></span>).getValue <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> servers = <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (serversDefinition.contains(<span class="hljs-string"><span class="hljs-string">"/"</span></span>)) serversDefinition.substring(serversDefinition.indexOf('/') + <span class="hljs-number"><span class="hljs-number">1</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> serversDefinition <span class="hljs-type"><span class="hljs-type">Shard</span></span>(shardId, <span class="hljs-string"><span class="hljs-string">"mongodb://"</span></span> + servers) }</code> </pre> <br>  Now we can make a request: <br><pre> <code class="scala hljs"><span class="hljs-keyword"><span class="hljs-keyword">val</span></span> shards = client.getDatabase(<span class="hljs-string"><span class="hljs-string">"config"</span></span>) .getCollection(<span class="hljs-string"><span class="hljs-string">"shards"</span></span>) .find() .map(parseShardInformation)</code> </pre> <br>  In the end, we will have a list of all segments from our MongoDB Sharded Cluster. <br><br><br><h2>  Source declaration for each node </h2><br>  To designate the <code>Source</code> , we can simply go through our list of segments and use the method from the previous article. <br><pre> <code class="scala hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">source</span></span></span></span>(client: <span class="hljs-type"><span class="hljs-type">MongoClient</span></span>): <span class="hljs-type"><span class="hljs-type">Source</span></span>[<span class="hljs-type"><span class="hljs-type">Document</span></span>, <span class="hljs-type"><span class="hljs-type">NotUsed</span></span>] = { <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> observable = client.getDatabase(<span class="hljs-string"><span class="hljs-string">"local"</span></span>) .getCollection(<span class="hljs-string"><span class="hljs-string">"oplog.rs"</span></span>) .find(and( in(<span class="hljs-string"><span class="hljs-string">"op"</span></span>, <span class="hljs-string"><span class="hljs-string">"i"</span></span>, <span class="hljs-string"><span class="hljs-string">"d"</span></span>, <span class="hljs-string"><span class="hljs-string">"u"</span></span>), exists(<span class="hljs-string"><span class="hljs-string">"fromMigrate"</span></span>, <span class="hljs-literal"><span class="hljs-literal">false</span></span>))) .cursorType(<span class="hljs-type"><span class="hljs-type">CursorType</span></span>.<span class="hljs-type"><span class="hljs-type">TailableAwait</span></span>) .noCursorTimeout(<span class="hljs-literal"><span class="hljs-literal">true</span></span>) <span class="hljs-type"><span class="hljs-type">Source</span></span>.fromPublisher(observable) } <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> sources = shards.map({ shard =&gt; <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> client = <span class="hljs-type"><span class="hljs-type">MongoClient</span></span>(shard.uri) source(client) })</code> </pre> <br><h3>  One Source to control them all </h3><br>  We could process each <code>Source</code> separately, but of course, it’s much easier and more convenient to work with them as one <code>Source</code> .  To do this, we must combine them. <br><br>  Akka Streams has several <a href="http://doc.akka.io/docs/akka/2.4.2/scala/stream/stream-graphs.html"><code>Fan-in</code> operations</a> : <br><blockquote><ul><li>  <strong>Merge [In]</strong> - (N incoming flows, 1 output stream) selects the elements in a random order from the incoming streams and sends them one by one to the output stream. </li><li>  <strong>MergePreferred [In]</strong> - similar to <strong>Merge,</strong> but if elements are available on the preferred stream, then select elements from it, otherwise choose according to the same principle as ** <em>Merge</em> </li><li>  <strong>ZipWith [A, B, ..., Out]</strong> - (N input streams, 1 output stream) receives a function from N input streams which returns 1 item to the output stream per item from each incoming stream. </li><li>  <strong>Zip [A, B]</strong> - (2 input streams, 1 output stream) is the same as <strong>ZipWith</strong> designed to connect elements from streams <strong>A</strong> and <strong>B</strong> into a stream of pairwise values <strong>(A, B)</strong> </li><li>  <strong>Concat [A]</strong> - (2 incoming streams, 1 outgoing stream) connects 2 streams (sends items from the first stream, and then from the second) </li></ul><br></blockquote><br>  We use the simplified API for <a href="http://doc.akka.io/docs/akka/2.4.2/scala/stream/stream-graphs.html">Merge</a> and then output all the elements of the stream to <code>STDOUT</code> : <br><pre> <code class="scala hljs"><span class="hljs-keyword"><span class="hljs-keyword">val</span></span> allShards: <span class="hljs-type"><span class="hljs-type">Source</span></span>[<span class="hljs-type"><span class="hljs-type">Document</span></span>, <span class="hljs-type"><span class="hljs-type">NotUsed</span></span>] = sources.foldLeft(<span class="hljs-type"><span class="hljs-type">Source</span></span>.empty[<span class="hljs-type"><span class="hljs-type">Document</span></span>]) { (prev, current) =&gt; <span class="hljs-type"><span class="hljs-type">Source</span></span>.combine(prev, current)(<span class="hljs-type"><span class="hljs-type">Merge</span></span>(_)) } allShards.runForeach(println)</code> </pre> <br><h2>  Error Handling - Switching and Emergency Rollbacks </h2><br><br>  Akka Streams uses <a href="http://doc.akka.io/docs/akka/2.4.2/scala/stream/stream-error.html">Supervision Strategies</a> to handle errors.  In general, there are 3 different ways to handle errors: <br><blockquote><ul><li>  <strong>Stop</strong> - The thread ends with an error. </li><li>  <strong>Resume</strong> - The erroneous item is skipped and the thread processing continues. </li><li>  <strong>Restart</strong> - The erroneous item is skipped and stream processing will continue after the current stage is reloaded.  Rebooting a stage means that all accumulated data is cleared.  This is usually achieved by creating a new stage pattern. </li></ul><br></blockquote><br>  The default is always <strong>Stop</strong> . <br><br>  But unfortunately, all of the above does not apply to the <code>ActorPublisher</code> and <code>ActorSubscriber</code> , so that in the event of any error in our <code>Source</code> we will not be able to correctly recover the stream processing. <br><br>  This <a href="https://github.com/akka/akka/issues/16916">issue</a> has already been described on <a href="https://github.com/akka/akka/issues/16916">Github # 16916</a> , and I hope that this will be fixed soon. <br><br>  Alternatively, you can consider the option suggested in the <a href="https://www.mongodb.com/blog/post/pitfalls-and-workarounds-for-tailing-the-oplog-on-a-mongodb-sharded-cluster">Pitfalls and Workarounds article for Tailing the Oplog on a MongoDB Sharded Cluster</a> : <br><blockquote>  Finally, a completely different approach would be if we follow the updates of most or even all the nodes in the replica set.  Since a pair of <code>ts &amp; h</code> field values ​​uniquely identifies each transaction, you can easily combine the results from each <code>oplog</code> on the application side, so the result of the flow will be the events that were returned by most MongoDB nodes.  With this approach, you do not need to worry about whether the node is primary or secondary, you simply follow the <code>oplog</code> all the nodes, and all events that are returned by most of the <code>oplog</code> are considered valid.  If you receive events that do not exist in most <code>oplog</code> , such events are skipped and discarded. </blockquote><br><br>  I will try to use this option in one of the following articles. <br><br><br><h2>  Conclusion </h2><br><br>  We did not cover the topic of updates of <code>orphan</code> documents in MongoDB Sharded Cluster, since  in my case, I am interested in all operations from <code>oplog</code> and consider them idempotent across the <code>_id</code> field, so this does not interfere. <br><br>  As you can see, there are many aspects that are quite easily solved with the help of Akka Streams, but there are also difficult ones to solve.  In general, I have a double impression about this library.  The library is full of good ideas that bring Akka Actors ideas to a new level, but it still feels unfinished.  Personally, I will stick with Akka Actors for now. <br></div><p>Source: <a href="https://habr.com/ru/post/279675/">https://habr.com/ru/post/279675/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../279663/index.html">How ITMO students create robots</a></li>
+<li><a href="../279665/index.html">Simpson's Paradox and Little Pandas</a></li>
+<li><a href="../279667/index.html">Andrey Breslav and Dmitry Zhemerov on Kotlin 1.0 on jug.msk.ru</a></li>
+<li><a href="../279669/index.html">Evaluation and optimization of computing performance on multi-core systems. Part 2</a></li>
+<li><a href="../279671/index.html">Angular is a design pattern.</a></li>
+<li><a href="../279679/index.html">QNX RTOS: Qnet - transparent inter-tasking network interaction</a></li>
+<li><a href="../279681/index.html">New home for repository or history of moving to GitLab</a></li>
+<li><a href="../279685/index.html">The digest of interesting materials for the mobile # 145 developer (March 14-20)</a></li>
+<li><a href="../279687/index.html">Distribution of applications. Part 1: Creating a Formula for Homebrew</a></li>
+<li><a href="../279689/index.html">2.3 Working with custom data streams</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

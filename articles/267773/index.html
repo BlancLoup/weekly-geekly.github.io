@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Modification of the system call. Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the previous section, we agreed to the fact that non-exported Linux kernel names can be used in the code of native kernel modules with the same suc...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Modification of the system call. Part 2</h1><div class="post__text post__text-html js-mediator-article">  In the <a href="http://habrahabr.ru/post/267535/">previous section,</a> we agreed to the fact that non-exported Linux kernel names can be used in the code of native kernel modules with the same success as exported ones.  One of these kernel names is the selector table of all Linux system calls.  Actually, this is the main interface of any applications to kernel services.  Now we will look at how to modify the original handler of any system call, replace it, or add variety to its execution in accordance with our own vision. <br><a name="habracut"></a><br><h1>  Technique modification </h1><br>  The technique of modifying the system calls of the operating system has been known for a long time and has been used in a variety of operating systems.  This is a favorite technique of virus writers since the MS-DOS system, a system that simply provoked such experiments.  But we will use this technique for peaceful purposes ... (In various publications, such actions are called differently: modification, embedding, implementation, substitution, interception - they have their own nuances, but in our discussion can be used as synonyms.) <br><br>  If any system call in the Linux operating system kernel is called indirectly through the address in the table (array) of the sys_call_table system calls, then replacing the address in this selector table with our own handler function, we will also change the system call handler.  This, in fact, is the technique of modification.  In practice, radicalism is never required to such an extent; in reality, we sometimes need to perform the original system call, but having done some of our own actions either before it (preprocessing) or after finishing (post-processing) it (or a combination of both). <br><br>  In the previous part, we made sure that we can find the location and use any kernel symbols, including those not exported.  All that is required, in principle, for the purpose of modifying system calls is to find the base address of the sys_call_table array, and by offsetting the number of the required system call, write down the address of your own processing function. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In reality, the scheme will be a little more complicated - you must first save the old (original) value of the system handler: <br>  - To call the original handler from its own processing function before or / and after executing the modified code; <br>  - To restore the original handler when unloading the module. <br><br><h1>  Implementation </h1><br>  Implementation, as always happens, is somewhat more complicated than theory.  The first, insignificant, complexity is how to write a prototype of the own function of processing a particular system call.  The slightest incorrectness of the prototype is likely to simply lead to the collapse of the operating system.  The solution is to simply peep and write off (as a Losers) the prototype of the function to handle this system call from the kernel header file &lt;linux / syscalls.h&gt;. <br><br>  The next, much more significant, difficulty here is that the selector table sys_call_table, in processor architectures that allow it (and I386 and X86_64 among them), is placed in memory pages that are allowed only for reading (readonly).  This is controlled by hardware (using the MMU - Memory Management Unit) and an exception is thrown when an access violation occurs.  Therefore, we need to uncheck the no-write flag at the time of modifying the sys_call_table element and restore it after. <br><br>  In the I386 and X86_64 architectures, the write resolution flag is determined by the bit flag in the hidden CR0 processor status register.  To perform the actions we need, we use functions appropriately, for 32-bit architectures, for example, they will look like this (CR0.c file, this code is written in inline assembler inserts — the GCC compiler extension): <br><pre><code class="hljs pgsql">// page <span class="hljs-keyword"><span class="hljs-keyword">write</span></span> protect - <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> #define rw_enable() \ asm( "cli \n" \ "pushl %eax \n" \ "movl %cr0, %eax \n" \ "andl $0xfffeffff, %eax \n" \ "movl %eax, %cr0 \n" \ "popl %eax" ); // page <span class="hljs-keyword"><span class="hljs-keyword">write</span></span> protect - <span class="hljs-keyword"><span class="hljs-keyword">off</span></span> #define rw_disable() \ asm( "pushl %eax \n" \ "movl %cr0, %eax \n" \ "orl $0x00010000, %eax \n" \ "movl %eax, %cr0 \n" \ "popl %eax \n" \ "sti " );</code> </pre> <br>  PS Various options for recording techniques in write-protected pages were discussed, for example, in <a href="http://vulnfactory.org/blog/2011/08/12/wp-safe-or-not/">WP: Safe or Not?</a>  and the <a href="http://habrahabr.ru/post/207122/">Kosher method of modifying the write-protected areas of the Linux kernel</a> . <br><br>  Now we are ready to replace any Linux system call (man (2)) with our own handler function — and this is what we were aiming for.  To illustrate the efficiency of the method, we replace (expand) the write (1, ...) system call - output to the terminal, dub the output stream into the system log (similar to what the tee command does): <br><pre> <code class="hljs lua">#define PREFIX <span class="hljs-string"><span class="hljs-string">"! "</span></span> #define DEB2(...) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( <span class="hljs-built_in"><span class="hljs-built_in">debug</span></span> &gt; <span class="hljs-number"><span class="hljs-number">1</span></span> ) printk( KERN_INFO PREFIX <span class="hljs-string"><span class="hljs-string">" ---- "</span></span> __VA_ARGS__ ) #define LOG(...) printk( KERN_INFO PREFIX __VA_ARGS__ ) #define ERR(...) printk( KERN_ERR PREFIX __VA_ARGS__ ) static int <span class="hljs-built_in"><span class="hljs-built_in">debug</span></span> = <span class="hljs-number"><span class="hljs-number">0</span></span>; // <span class="hljs-built_in"><span class="hljs-built_in">debug</span></span> <span class="hljs-built_in"><span class="hljs-built_in">output</span></span> level: <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span> module_param( <span class="hljs-built_in"><span class="hljs-built_in">debug</span></span>, uint, <span class="hljs-number"><span class="hljs-number">0</span></span> ); asmlinkage long (*old_sys_write) ( unsigned int fd, const <span class="hljs-built_in"><span class="hljs-built_in">char</span></span> __user *buf, size_t count ); #define LEN <span class="hljs-number"><span class="hljs-number">250</span></span> asmlinkage long new_sys_write ( unsigned int fd, const <span class="hljs-built_in"><span class="hljs-built_in">char</span></span> __user *buf, size_t count ) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( <span class="hljs-number"><span class="hljs-number">1</span></span> == fd ) { <span class="hljs-built_in"><span class="hljs-built_in">char</span></span> msg[ LEN + <span class="hljs-number"><span class="hljs-number">1</span></span> ]; int n = count &lt; LEN ? count : LEN, r; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( ( r = copy_from_user( msg, (void*)buf, n ) ) != <span class="hljs-number"><span class="hljs-number">0</span></span> ) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> -EINVAL; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( <span class="hljs-string"><span class="hljs-string">'\n'</span></span> == msg[ n - <span class="hljs-number"><span class="hljs-number">1</span></span> ] ) msg[ n - <span class="hljs-number"><span class="hljs-number">1</span></span> ] = <span class="hljs-string"><span class="hljs-string">'\0'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> msg[ n ] = <span class="hljs-string"><span class="hljs-string">'\0'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( strchr( msg, <span class="hljs-string"><span class="hljs-string">'!'</span></span> ) != NULL ) <span class="hljs-keyword"><span class="hljs-keyword">goto</span></span> rec; // to prevent recursion LOG( <span class="hljs-string"><span class="hljs-string">"{%04d} %s\n"</span></span>, count, msg ); } rec: <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> old_sys_write( fd, buf, count ); // original <span class="hljs-built_in"><span class="hljs-built_in">write</span></span>() }; static void **taddr; // address of sys_call_table static int __init wrchg_init( void ) { void *waddr; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( NULL == ( taddr = find_sym( <span class="hljs-string"><span class="hljs-string">"sys_call_table"</span></span> ) ) ) { ERR( <span class="hljs-string"><span class="hljs-string">"sys_call_table not found\n"</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> -EINVAL; } old_sys_write = (void*)taddr[ __NR_write ]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( NULL == ( waddr = find_sym( <span class="hljs-string"><span class="hljs-string">"sys_write"</span></span> ) ) ) { ERR( <span class="hljs-string"><span class="hljs-string">"sys_write not found\n"</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> -EINVAL; } <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( old_sys_write != waddr ) { ERR( <span class="hljs-string"><span class="hljs-string">"Oooops! : addresses not equal\n"</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> -EINVAL; } LOG( <span class="hljs-string"><span class="hljs-string">"set new sys_write syscall [%p]\n"</span></span>, &amp;new_sys_write ); show_cr0(); rw_enable(); taddr[ __NR_write ] = new_sys_write; show_cr0(); rw_disable(); show_cr0(); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>; } static void __exit wrchg_exit( void ) { rw_enable(); taddr[ __NR_write ] = old_sys_write; rw_disable(); LOG( <span class="hljs-string"><span class="hljs-string">"restore old sys_write syscall [%p]\n"</span></span>, (void*)taddr[ __NR_write ] ); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span>; } module_init( wrchg_init ); module_exit( wrchg_exit );</code> </pre><br>  The find_sym () kernel symbol search function, which uses the kallsyms_on_each_symbol () kernel API call, was seen in the <a href="http://habrahabr.ru/post/267535/">previous part of the</a> discussion.  In addition, we make control (more for illustration) that the address of the name of the original sys_write () matches the same address, which is in the __NR_write position of the sys_call_table table. <br><br>  Now we can execute a system with parallel logging of everything that is displayed on the terminal (the choice for write () experiments is not particularly aesthetically pleasing, but very illustrative and, besides, safe in the early stages of experimentation in comparison with other Linux system calls): <br><pre> <code class="bash hljs">$ sudo insmod wrlog.ko debug=2 $ ls CR0.c find.c Makefile Modi.hist wrlog.0.c wrlog.1.c wrlog.2.c wrlog.3.c wrlog.c wrlog.hist wrlog.ko $ sudo rmmod wrlog $ dmesg | tail -n31 [ 1594.231242] ! <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> new sys_write syscall [f8854000] [ 1594.231248] ! ---- CR0 = 80050033 [ 1594.231250] ! ---- CR0 = 80040033 [ 1594.231252] ! ---- CR0 = 80050033 [ 1594.232737] ! {0052} /home/olej/2015_WORK/own.BOOK/SysCalls/Modi/examles [ 1594.233368] ! {0078} \x1b[01;32molej@nvidia\x1b[01;34m ~/2015_WORK/own.BOOK/SysCalls/Modi/examles $\x1b[00m [ 1596.866659] ! {0001} l [ 1597.154675] ! {0001} s [ 1597.644985] ! {0110} CR0.c find.c Makefile Modi.hist wrlog.0.c wrlog.1.c wrlog.2.c wrlog.3.c wrlog.c wrlog.hist wrlog.ko [ 1597.645196] ! {0113} [ 1597.645196] CR0.c find.c Makefile Modi.hist wrlog.0.c wrlog.1.c wrlog.2.c wrlog.3.c wrlog.c wrlog.hist wrlog.ko [ 1597.645321] ! {0052} /home/olej/2015_WORK/own.BOOK/SysCalls/Modi/examles [ 1597.645951] ! {0078} \x1b[01;32molej@nvidia\x1b[01;34m ~/2015_WORK/own.BOOK/SysCalls/Modi/examles $\x1b[00m [ 1600.226651] ! {0001} s [ 1600.346587] ! {0001} u [ 1600.522683] ! {0001} d [ 1601.026667] ! {0001} o [ 1602.170701] ! {0001} [ 1602.426522] ! {0001} r [ 1603.218682] ! {0001} m [ 1603.682677] ! {0001} m [ 1603.906615] ! {0001} o [ 1604.338566] ! {0001} d [ 1606.442570] ! {0001} [ 1606.946670] ! {0001} w [ 1607.226667] ! {0001} r [ 1607.834662] ! {0001} l [ 1608.106672] ! {0001} o [ 1608.842694] ! {0001} g [ 1612.003059] ! {0002} [ 1612.014102] ! restore old sys_write syscall [c1179f70]</code> </pre><br><h1>  Discussion </h1><br>  Similarly, we can change the behavior of any Linux system call.  This is done dynamically, by loading the module, and when it is unloaded, the original behavior of the system is restored.  The areas of application of such a technique are wide: the possibilities of control and debugging during the development period, the targeted change in the behavior of individual system calls for project tasks, and more. <br><br>  The code shown is noticeably simplified.  A real module would have to take a series of safety actions to ensure integrity.  For example, a new handler function could increase the module's reference count by calling try_module_get (THIS_MODULE) to prevent the module from being unloaded for the duration of the function (which is possible with a vanishingly small but still finite probability).  Before returning, the function will then do the opposite: module_put (THIS_MODULE).  Other precautions may be required, for the time of loading and unloading a module, for example.  But this is quite an ordinary technique of kernel modules, and it is not discussed in order not to complicate the principle. <br><br>  Some additional nuances and special cases of the shown equipment will be seen in the next part of the discussion. <br><br>  The code archive for experiments can be taken <a href="https://yadi.sk/d/ujNKOWhJjLBDG">here</a> or <a href="https://drive.google.com/file/d/0B__cqmYoRw_6WnJvZzhwckIyWFk/view%3Fusp%3Dsharing">here</a> (because of the irrelevance of the examples, I do not post them on GitHub). <br><br>  <b>PS</b> Everything shown works unchanged in 32-bit.  In the 64-bit architecture, the picture becomes somewhat more complicated due to the need to emulate 32-bit applications.  In order not to complicate the picture, this option was deliberately not affected (perhaps for now, and it is worth returning to it later). </div><p>Source: <a href="https://habr.com/ru/post/267773/">https://habr.com/ru/post/267773/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../267763/index.html">Using GATT in Bluetooth LE on Intel Edison</a></li>
+<li><a href="../267765/index.html">Vim FileStyle Update</a></li>
+<li><a href="../267767/index.html">DropBox distributes place to students / teachers 2</a></li>
+<li><a href="../267769/index.html">Attach files to comments</a></li>
+<li><a href="../267771/index.html">Nothing is easier than calling a function; I myself have done this repeatedly.</a></li>
+<li><a href="../267775/index.html">"Front-end Bookshelf" - like google, only better</a></li>
+<li><a href="../267777/index.html">Candy Challenge</a></li>
+<li><a href="../267779/index.html">Create a REST service on Rust. Part 3: update the database from the console</a></li>
+<li><a href="../267781/index.html">C ++ module support in Visual Studio 2015 Update 1</a></li>
+<li><a href="../267785/index.html">Go, practice asynchronous interaction</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

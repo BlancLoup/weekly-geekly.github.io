@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Iproute2 policy-routing and traffic balancing between uplinks - the problem of dropping connections</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Stumbled upon a nasty underwater rock. We have a system with several uplinks, and a policy-routing that realizes the balancing of connections between ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Iproute2 policy-routing and traffic balancing between uplinks - the problem of dropping connections</h1><div class="post__text post__text-html js-mediator-article"> Stumbled upon a nasty underwater rock.  We have a system with several uplinks, and a policy-routing that realizes the balancing of connections between uplinks using: <br><br> <code>ip route replace default scope global <br> nexthop via 11.22.33.1 dev eth0 weight 1 <br> nexthop via 55.66.77.1 dev eth1 weight 1 <br></code> <br><br>  (Sample instruction <a href="http://habrahabr.ru/post/54748/">here</a> ) 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The problem is this: connections periodically fall, and there is no system.  May stand for several hours, may fall in 5-10 minutes.  Any http and torrent it does not interfere.  In the first case, the sessions are usually quite short; in the second case, the reconnect passes unnoticed and without consequences.  But if we work with ssh? <br><a name="habracut"></a><br>  Explanation for those who do not know how this routing scheme works. <br><br>  For each connection going through the default gateway, one of the available channels is selected, with a probability corresponding to the weight parameter. <br><br>  Then a record of the route for this connection is recorded in the cache, and all packets between these ip-addresses further go along this route.  If there is no packet for this route for some time, the entry from the cache is deleted.  By default, this takes about five minutes.  There is already at least one problem in this - if your connection does not transmit any data for a long time, the record from the route cache will be wiped out, although it may still not be from the connection cache.  By default, the nf_conntrack module has a very large lifetime for tcp connections.  What will happen?  The next time a packet passes through this connection, which is still considered to be unbroken, a new route will be selected, as if it had been re-established.  If lucky - the same as it was.  Then everything will continue to work.  But if the other - nothing will go anywhere. <br><br>  But in practice this is a small problem, there are quite a few situations in which a connection is idle for so much time, and even if it is, say, an ssh session, then you can include keep-alive packets in it.  As in most other practical cases.  In theory, this situation is possible even with ftp, but I have not used it for a long time, and I do not advise you.  And most ftp-clients also know how to keep-alive. <br><br>  Worse is different - in this scheme even sessions with a continuous stream of data fell.  And it turned out to be incomprehensible. <br>  A simple workaround, made in a hurry, turned out to be in prescribing static routes for the most needed remote hosts, so that the route to them lay strictly through one interface.  But ugly.  Non-universally and breaks the idea of ​​connection-failover. <br><br>  The fact that it helped gave me the idea that the problem was somewhere in the routing.  Three-hour excavations revealed the following: <strong>in the kernels up to 2.6.35</strong> (and there are a lot of systems on them) in the routing settings there is the <strong>net.ipv4.route.secret_interval</strong> parameter, in seconds, by default 600. It is responsible for <strong>forcing the route cache</strong> to avoid it overflow.  In the future, it was decided to abandon it - <a href="https://github.com/torvalds/linux/commit/3ee943728fff536edaf8f59faa58aaa1aa7366e3">https://github.com/torvalds/linux/commit/3ee943728fff536edaf8f59faa58aaa1aa7366e3</a> <br><br>  Thus, once every 10 minutes, your cache is reset, and routes are selected again.  And not always the way we would like. <br>  Therefore, for stable policy-routing on systems with multiple uplinks, I recommend setting this parameter to 0. <br><br> <code>sysctl -w net.ipv4.route.secret_interval=0 <br></code> <br><br>  You can certainly put the kernel patch, eliminating this behavior entirely, but this is not a solution for everyone. <br><br>  It is quite safe to disable this reset, since in later kernels no additional mechanism was introduced to protect the cache from overflow, the existing ones were considered to be fairly reliable. </div><p>Source: <a href="https://habr.com/ru/post/267339/">https://habr.com/ru/post/267339/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../267325/index.html">About a new set of 3D schools, a Kalashnikov assault rifle, an arctic greenhouse and other engineering projects of graduates of past courses</a></li>
+<li><a href="../267327/index.html">IBM Research plans to create a robust method for early diagnosis of dementia using smartphones</a></li>
+<li><a href="../267331/index.html">Mail to Mail @ Ru behaves so conveniently that it’s scary</a></li>
+<li><a href="../267335/index.html">Development of a visual modeling language using Sirius</a></li>
+<li><a href="../267337/index.html">What's new in iOS 9, what to expect from Android Marshmallow, what to avoid game designer - and other news of the week for a mobile developer</a></li>
+<li><a href="../267341/index.html">Adaptation of the Feedly application for Material Design</a></li>
+<li><a href="../267343/index.html">Scheduling DHCP server</a></li>
+<li><a href="../267345/index.html">Block diagram for the selection of STL-algorithm</a></li>
+<li><a href="../267347/index.html">Results of the Russian Code Cup 2015 and analysis of the final tasks</a></li>
+<li><a href="../267349/index.html">JSON Web Token and sliding expiration in a web application</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

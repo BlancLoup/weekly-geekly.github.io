@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Go Mutex Dancing</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Translation of a developer’s tutorial article from SendGrid about when and why you can and should use “traditional” data synchronization methods in Go...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Go Mutex Dancing</h1><div class="post__text post__text-html js-mediator-article">  <i>Translation of a developer’s <a href="https://medium.com/%40deckarep/dancing-with-go-s-mutexes-92407ae927bf">tutorial article</a> from SendGrid about when and why you can and should use “traditional” data synchronization methods in Go.</i> <br><br>  <i>Reading Level: <b>Intermediate</b> - this article assumes that you are familiar with the basics of Go and the concurrency model, and, at a minimum, are familiar with the approaches to data synchronization using the methods of locks and channels.</i> <br><br>  <b>Note to reader</b> : I was inspired by a good friend for this post.  When I helped him deal with some races in his code and tried to teach him the art of data synchronization as well as he could, I realized that these tips could be useful to others.  So, be it an inherited code base, in which certain design decisions have already been made before you, or you just want to better understand the traditional synchronization primitives in Go — this article may be for you. <br><a name="habracut"></a><br>  When I first started working with the Go programming language, I instantly fell in love with the slogan <a href="https://blog.golang.org/share-memory-by-communicating">“Do not communicate by sharing memory.</a>  <a href="https://blog.golang.org/share-memory-by-communicating">Share memory through communication. ”</a> ( <i>Don't communicate by sharing memory; share memory by communicating.</i> ) For me, this meant writing all competitive (concurrent) code in the“ right ”way, using channels always-always.  I thought that using the potential of the channels, I am guaranteed to avoid problems with competitiveness, locks, deadlocks, etc. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/files/a58/f96/f00/a58f96f00abf490ba6fb12ae20b2d9ef.png" align="left">  As I progressed into Go, learned to write Go code more idiomatically and learned best practices, I regularly came across large code bases where people regularly used the <b>sync / mutex</b> primitives, as well as <b>sync / atomic</b> , and several other low-level »Primitive synchronization of the" old school ".  My first thoughts were - well, they obviously do it wrong, and, obviously, they didn’t watch a single speech by Rob Pike about the advantages of implementing concurrent code through channels in which he often talks about the design based on the work of Tony Hoara. <a href="https://en.wikipedia.org/wiki/Communicating_sequential_processes">Communicating Sequential Processes</a> . <br><br>  But the reality was harsh.  The go community quoted this slogan here and there, but <b>looking into many open source projects, I saw that mutexes are everywhere and there are a lot of them</b> .  I struggled with this mystery for a while, but in the end, I saw the light at the end of the tunnel, and it was time to roll up our sleeves and put the channels aside.  Now, quickly rewind to 2015, in which I have been writing on Go for about 2.5 years, during which I had an epiphany or even two regarding more traditional synchronization primitives like locks with mutexes.  Come on, ask me now, in 2015?  Hey, @deckarep, do you still write competitive programs using only channels?  I will answer - no, and this is why. <br><br>  First, let's not forget the importance of pragmatism.  When it comes to protecting the state of an object using locks or channels, let's ask ourselves: “What method should I use?”.  And, as it turned out, there is a very <a href="https://github.com/golang/go/wiki/MutexOrChannel">good post that perfectly answers this question</a> : <br><blockquote>  Use the method that is most expressive and / or simple in your case. <br><br>  A common mistake for newcomers to Go is to reuse channels and gorutines simply because it is possible, and / or because it is fun.  Do not be afraid to use <u>sync.Mutex</u> if it solves your problem best.  Go is pragmatic in giving you those problem solving tools that suit you best, and does not impose on you only one approach. </blockquote><br>  Pay attention to the key words in this quotation: <b>expressive, simple, reuse, do not be afraid, pragmatic</b> .  I can honestly admit some things voiced here: I was afraid when I first tried Go.  I was completely new to the language, and I needed time to quickly draw conclusions.  You will surely draw your own conclusions from the article mentioned above, and from this article, as we delve into the accepted practices of using mutexes and various nuances.  The article above also describes well the considerations regarding the choice between mutexes and channels. <br><br><blockquote>  When to use Channels: transfer of ownership of data, distribution of calculations and transfer of asynchronous results. <br><br>  When to use Mutexes: caches, states. </blockquote><br>  In the end, each application is different, and you may need a little experimentation and false starts.  The instructions above help me personally, but let me explain them in a little more detail.  If you need to protect access to a simple data structure, such as a slice, or map, or something of your own, and if the access interface to this data structure is simple and straightforward, start with a mutex.  It also helps to hide the dirty details of the lock code in your API.  The end users of your structure should not care about how it does internal synchronization. <br><br>  If your synchronization on mutexes begins to become cumbersome and <b>you start dancing dances with mutexes</b> , this is the time to switch to a different approach.  Once again, accept, as given, that mutexes are convenient for <b>simple scenarios</b> to protect minimally shared data.  Use them for what they are needed for, <b>but respect them and do not let them get out of control</b> .  Look back, look carefully at the logic of your program, and if you are fighting with mutexes, then this is a reason to rethink your design.  Perhaps the transition to the channels much better fit into the logic of your application, or, even better, maybe you do not need to separate the state at all. <br><br><blockquote>  Multithreading is not difficult - blocking is difficult. </blockquote><br>  Understand, I do not claim that mutexes are better than channels.  I'm just saying that you should be familiar with both methods of synchronization, and if you see that your solution on the channels looks overdeveloped, be aware that you have other options.  The examples in this article serve the purpose of helping you write better, more supported, and reliable code.  We, as engineers, <b>need to be conscious of how we approach working with shared data and race conditions in multi-threaded applications.</b>  Go makes it incredibly easy to write high-performance competitive and / or parallel applications, but there are some pitfalls, and we should be able to carefully circumvent them by creating the right code.  Let's look at them in more detail: <br><br>  <b>Number 1</b> : When defining a structure in which a mutex must protect one or more values, place the mutex above the fields to which it will protect.  <a href="">Here is an example of this idiom in Go source code.</a>  Keep in mind that this is just an agreement, and does not affect the logic of the code. <br><pre><code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> sum <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> { sync.Mutex <span class="hljs-comment"><span class="hljs-comment">// &lt;--    i int // &lt;--     }</span></span></code> </pre> <br>  <b>Number 2</b> : hold the lock no longer than it actually takes.  Example - if possible, do not hold a mutex during an IO call.  On the contrary, try to protect your data only the minimum necessary time.  If you do something like this in the web handler, you simply lose the competitive advantage by serializing access to the handler: <br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">//    ,  `mu`   //    cache // </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">NOTE:</span></span></span><span class="hljs-comment">    ,     //   ,    func doSomething(){ mu.Lock() item := cache["myKey"] http.Get() // -  IO- mu.Unlock() } //  ,  -  func doSomething(){ mu.Lock() item := cache["myKey"] mu.Unlock() http.Get() //    ,    }</span></span></code> </pre><br>  <b>Number 3</b> : Use defer to unlock a mutex where a function has multiple exit points.  For you, this means less manual code and can help avoid deadlocks when someone changes the code after 3 months and adds a new exit point, losing sight of the lock. <br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">doSomething</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { mu.Lock() <span class="hljs-keyword"><span class="hljs-keyword">defer</span></span> mu.Unlock() err := ... <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { <span class="hljs-comment"><span class="hljs-comment">//log error return // &lt;--    } err = ... if err != nil { //log error return // &lt;--   } return // &lt;-- , ,   }</span></span></code> </pre><br>  At the same time, try not to depend blindly on defer in all cases in a row.  For example, the following code is a trap that you can get into if you think that defers are executed not when exiting a function, but when exiting a scope: <br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">doSomething</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> { mu.Lock() <span class="hljs-keyword"><span class="hljs-keyword">defer</span></span> mu.Unlock() <span class="hljs-comment"><span class="hljs-comment">// -   // &lt;-- defer    ,  - **  } // &lt;-- ()   ,     } //       !</span></span></code> </pre><br><br>  Finally, do not forget that defer can not be used at all in simple cases without multiple exit points.  Deferred executions (defer) have a small overhead, although they can often be neglected.  <i>And consider this as a very premature and often excessive optimization.</i> <br><br>  <b>Number 4</b> : exact (fine-grained) locking may give better performance at the cost of more complex code to manage it, while a coarse locking may be less productive, but making the code easier.  But then again, be pragmatic in design evaluations.  If you see that you are “dancing with mutexes”, then most likely this is the right moment to refactor and switch to synchronization through channels. <br><br>  <b>Number 5</b> : As mentioned above, it is good practice to encapsulate the synchronization method used.  Users of your package should not care how you protect the data in your code. <br><br>  In the example below, imagine that we represent the get () method, which will select the code from the cache only if it has at least one value.  And since we have to block both the access to the content and the counting of values, <b>this code will lead to deadlock</b> : <br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> main <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> ( <span class="hljs-string"><span class="hljs-string">"fmt"</span></span> <span class="hljs-string"><span class="hljs-string">"sync"</span></span> ) <span class="hljs-keyword"><span class="hljs-keyword">type</span></span> DataStore <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> { sync.Mutex <span class="hljs-comment"><span class="hljs-comment">// ←      cache map[string]string } func New() *DataStore { return &amp;DataStore{ cache: make(map[string]string), } } func (ds *DataStore) set(key string, value string) { ds.Lock() defer ds.Unlock() ds.cache[key] = value } func (ds *DataStore) get(key string) string { ds.Lock() defer ds.Unlock() if ds.count() &gt; 0 { // &lt;-- count()  ! item := ds.cache[key] return item } return "" } func (ds *DataStore) count() int { ds.Lock() defer ds.Unlock() return len(ds.cache) } func main() { /*      ,    get()    count()      get()   */ store := New() store.set("Go", "Lang") result := store.get("Go") fmt.Println(result) }</span></span></code> </pre><br>  Since the <b>mutexes in Go are non-recursive</b> , the proposed solution might look like this: <br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> main <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> ( <span class="hljs-string"><span class="hljs-string">"fmt"</span></span> <span class="hljs-string"><span class="hljs-string">"sync"</span></span> ) <span class="hljs-keyword"><span class="hljs-keyword">type</span></span> DataStore <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> { sync.Mutex <span class="hljs-comment"><span class="hljs-comment">// ←      cache map[string]string } func New() *DataStore { return &amp;DataStore{ cache: make(map[string]string), } } func (ds *DataStore) set(key string, value string) { ds.cache[key] = value } func (ds *DataStore) get(key string) string { if ds.count() &gt; 0 { item := ds.cache[key] return item } return "" } func (ds *DataStore) count() int { return len(ds.cache) } func (ds *DataStore) Set(key string, value string) { ds.Lock() defer ds.Unlock() ds.set(key, value) } func (ds *DataStore) Get(key string) string { ds.Lock() defer ds.Unlock() return ds.get(key) } func (ds *DataStore) Count() int { ds.Lock() defer ds.Unlock() return ds.count() } func main() { store := New() store.Set("Go", "Lang") result := store.Get("Go") fmt.Println(result) }</span></span></code> </pre> <br>  Note in this code that for each non-exported method there is a similar one exported.  These methods work as a public API, and take care of locks at this level.  Then they call unexported methods that don't care about locks at all.  This ensures that all calls to your methods from the outside will be blocked only once and are free from the problem of recursive locking. <br><br>  <b>Number 6</b> : In the examples above, we used a simple <b>sync.Mutex</b> , which can only block and unlock.  sync.Mutex provides the same guarantees, regardless of whether it reads or writes data.  But there is also <b>sync.RWMutex</b> , which provides more accurate blocking semantics for code that only accesses data.  When to use RWMutex instead of the standard Mutex? <br><br><blockquote>  Answer: use RWMutex when you are absolutely sure that the code in your critical section does not change the protected data. </blockquote><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">//     RLock()  ,       func count() { rw.RLock() // &lt;--   R  RLock (read-lock) defer rw.RUnlock() // &lt;--   R  RUnlock() return len(sharedState) } //     Lock()  set(),    func set(key string, value string) { rw.Lock() // &lt;-- ,    "" Lock (write-lock) defer rw.Unlock() // &lt;--   Unlock(),  R sharedState[key] = value // &lt;--  () }</span></span></code> </pre><br>  In the code above, we mean that the variable `sharedState` is an object, perhaps a map, in which we can read it is long.  Since the count () function ensures that our object does not change, we can safely call it in parallel from any number of readers (gorutin).  In some scenarios, this can reduce the number of gorutin in the blocking state and potentially give a performance boost in a scenario where many read-only data accesses occur.  But remember, if you have code that changes data like in set (), you must use rw.Lock () instead of rw.RLock (). <br><br>  <b>Number 7</b> : Meet the hellishly cool and built-in race detector in Go.  This detector has earned a reputation by finding race conditions even in the standard Go library in due time.  That is why it is built into the Go toolkit and there are quite a few speeches and articles about it that tell better about it than I do. <br><ul><li>  if you don’t yet run your unit / integration tests with enabled flight detector in your CI - set it up right now </li><li>  if your tests do not test concurrent access to your API / code - the detector will not help you much </li><li>  do not run the program with the race detector in production, there are overhead costs that reduce performance </li><li>  if the race detector found a race condition - this is a real race </li><li>  race conditions can be synchronized through channels if you are not careful </li><li>  no blocking in the world will save you if the gorutines read or write shared data outside the critical section </li><li>  if Go authors can sometimes write code that has races, then you too can </li></ul><br>  I hope this article gives you a good idea of ​​how and when to use mutexes in Go.  Please experiment with low-level synchronization primitives in Go, make mistakes, learn from them, appreciate and understand the toolkit.  And above all, be pragmatic in your code, use the right tools for each case.  Do not be afraid, as I was afraid at first.  If I had always listened to all the negative things that say about blocking, I would not be in this business right now, creating the coolest distributed systems using such cool technologies as Go. <br>  Note: I love feedback, so if you find this stuff useful, ping me, tweet, or give me a constructive review. <br>  Thanks and good coding! </div><p>Source: <a href="https://habr.com/ru/post/271789/">https://habr.com/ru/post/271789/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../271773/index.html">Find the corrupt. Data analysis of officials from the Clerical Hundred Projects (with examples in R)</a></li>
+<li><a href="../271779/index.html">JavaDay Voronezh 2015: details and video reports</a></li>
+<li><a href="../271781/index.html">SafeThreadUpdate () for wpf controls</a></li>
+<li><a href="../271783/index.html">How to make the site work in the form of a Web App (an uninteresting example of a private solution, which is also poorly described)</a></li>
+<li><a href="../271785/index.html">Car safety: what lessons can we learn from recalling cars?</a></li>
+<li><a href="../271791/index.html">Black Friday 2015</a></li>
+<li><a href="../271793/index.html">Black Friday at hosters</a></li>
+<li><a href="../271795/index.html">Use TSQL to play Baldu</a></li>
+<li><a href="../271797/index.html">COUNT (*)</a></li>
+<li><a href="../271799/index.html">An example of express analysis of the performance of storage using the free service Mitrend</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

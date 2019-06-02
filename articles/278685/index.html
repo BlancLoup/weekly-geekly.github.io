@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Overview of synchronization primitives - spinlock and secrets of the processor core</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The last article is about classic synchronization primitives. 
+
+ (Probably, then I will write another one about a completely non-typical task, but thi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Overview of synchronization primitives - spinlock and secrets of the processor core</h1><div class="post__text post__text-html js-mediator-article">  The last article is about classic synchronization primitives. <br><br>  (Probably, then I will write another one about a completely non-typical task, but this later.) <br><br>  Today we look at the processor a little bit.  A little bit. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In fact, we will talk about a single primitive, which is fundamentally different from the rest: spinlock.  Spinlock. <br><br>  In the comments to the previous notes there was a discussion - how fair is it to allocate the spinlock as a primitive, because in fact it is just a mutex, right?  It performs the same function - it prohibits the simultaneous execution of a code fragment by several parallel threads. <br><br>  At the process level, everything is as it is - the differences between the spinlock and the mutex are purely technical, the question of implementation and performance. <br><br>  But I am interested in this topic not only from the standpoint of a user programmer, but also from the standpoint of the kernel developer, as well as the developer of the synchronization primitives themselves.  And here the difference is fundamentally. <br><br>  The fact is that inside the core, the mutex is implemented with the help of spinlock, but the spinlock is implemented by itself, autonomously.  They are truly a basic primitive.  Below - only the processor itself. <br><br>  There is one more semantic difference.  The mutex allows and assumes the removal of the thread from the processor, the long stopping of the calling thread.  Mutex can lock an object for an hour or a day, this is acceptable and normal.  Spinlock is principally designed only for the shortest suspensions; it is always work with a non-atomic state of the object.  Assigning a group of variables, a small cycle is the maximum of what can be done under the spinlock. <br><br>  So, the implementation hierarchy is as follows: mutex / cond / sema are made on the basis of spin locks, spin locks on the basis of atomic operations provided by the processor.  We will look at them a little today. <br><br>  How is the spinlock? <br><a name="habracut"></a><br>  The principle is incredibly simple.  Spinlock is just a variable that contains zero or one (there are options). <br><br>  If zero - spinlock is free, and it can be captured.  If not zero, the spinlock is locked, and the thread that wants to grab it will wait, spinning (spin) in a small cycle of continuous testing of the spinlock release.  Here is the implementation: <br><br><pre><code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">while</span></span>( ! _spin_try_lock( &amp;(sl-&gt;lock) ) ) <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>( sl-&gt;lock ) ;</code> </pre> <br><br>  The _spin_try_lock operation is atomic, implemented in an assembler of the corresponding processor.  We are trying to lock the spinlock, if it was not possible - we are spinning in a cycle while it is locked, then we try again. <br><br>  That's it, in general. <br><br>  Now the details.  The _spin_try_lock operation is also very simple: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> _spin_try_lock(p)\ (!({ register int _r__; \ __asm__ volatile(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"movl $1, %0; \n\ xchgl %0, %1"</span></span></span><span class="hljs-meta"> \ : </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"=&amp;r"</span></span></span><span class="hljs-meta"> (_r__), </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"=m"</span></span></span><span class="hljs-meta"> (*(p)) ); \ _r__; }))</span></span></code> </pre><br><br>  The fact is that the Intel processor xchgl instruction atomically swaps the register and variable in memory.  Atomic, taking into account the possible work of other processors, that is, in the SMP environment. <br><br>  What's happening?  We swap the value of sl-&gt; lock and the register in which the unit lies.  If the spinlock was not locked (sl-&gt; lock was zero), it will become equal to one and _spin_try_lock will return zero - we successfully locked the spinlock.  If sl-&gt; lock was equal to one, then ul-&gt; lock after exchange will again be equal to one, but the result of _spin_try_lock will be the previous value of sl-&gt; lock - one, which means that the spinlock has failed. <br><br>  In general, the problem with atomic operations at the processor level is very large.  As long as the system has one processor, this problem does not exist.  But the situation is also real, too, is long gone.  Even in cheap machines, there are already several processors, or one multi-core, and / or hyperthread. <br><br>  In order for the memory operation to work atomically, you need to ensure that no processor in the system will touch this memory cell.  This is implemented within the framework of interprocessor communication in the cache memory coherence control system in the form of a ban on other processors from accessing the memory cell. <br><br>  It is interesting that there is a completely different scheme of work with atomic objects.  The mips processors do not have instructions like "atomically do something with a memory cell."  Instead, MIPS has an interesting pair of instructions: <br><br> <code>LL - load linked <br> SC - store conditional <br></code> <br><br>  The first instruction, load linked, simply reads the value from memory.  But at the same time, a trigger is cocked in the processor, which “monitors” the read cell - was there a record in it. <br><br>  The second, the store conditional, saves the value to memory.  But!  If, since execution time load linked to this cell, someone has already written a new value, the store conditional will return a failure sign (and, of course, nothing will be recorded in the memory cell). <br><br><div class="spoiler">  <b class="spoiler_title">How it is arranged inside</b> <div class="spoiler_text">  Apparently, the MIPS mechanism is much cheaper to implement, because it uses the existing mechanisms for synchronizing the state of the cache memory between processors.  The mentioned trigger is reset if the processor receives an update of the cache state for the address on which the trigger hangs.  That is, the "atomic" operation does not require any work on the maintenance of atomicity from neighboring processors. <br></div></div><br><br>  In contrast to Intel's xchg, such a pair allows you to not only make spinlocks, but also implement more complex algorithms.  Back to <a href="https://habrahabr.ru/post/278661">the semaphore conversation</a> : <br><br><pre> <code class="cpp hljs"> rpos = atomic_add( &amp;read_pos, <span class="hljs-number"><span class="hljs-number">1</span></span> ); ret = buf[rpos]; read_pos %= <span class="hljs-keyword"><span class="hljs-keyword">sizeof</span></span>(buf);</code> </pre><br><br>  All problems with this code on a MIPS processor can be solved quite simply: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">do</span></span> { rpos = load_linked( &amp;read_pos ) ret = buf[rpos++]; rpos %= <span class="hljs-keyword"><span class="hljs-keyword">sizeof</span></span>(buf); } <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>( !store_conditional( &amp;read_pos, rpos ) );</code> </pre><br><br>  Unfortunately, this code will not be portable.  Although quite effective.  However, for really critical areas, you can also perform processor-specific optimization. <br><br>  What else is important to know about spinlocks in the OS kernel environment (or when programming for microcontrollers, where, as a rule, there is no user mode): when capturing the spinlock, interrupts should be prohibited. <br><br>  The fact is that the spinlock can protect us from another processor, but not from our own - if an interrupt happens inside a locked spinlock and the processor tries to capture the same spinlock in the interrupt, a clinch will come: there is no one to unlock the spinlock before returning from the interruption until the spinlock is unlocked. <br><br>  Therefore, a typical implementation of spinlockes either prohibits interruptions by itself, or, at least, checks whether the calling code has forgotten to forbid them. <br><br>  Returning to the issue of mutexes and spin locks: there is not much that can be inside the spinlock.  We can not sleep - they are waiting for us, it is impossible to switch the context (to give the processor) - this is fraught with deadlock in the same way as with interruptions.  You cannot call functions that have a chance to do the above.  For example, in the kernel or in the code of the microcontroller it may be impossible to call malloc - as a rule, it is synchronized itself and can wait for its release if the memory is low.  Well, for example, the function of writing to the log can be banned - especially if they are trying to send data to the logging server via syslog over UDP. <br><br>  With all the above, in interrupts, spinlocks can and should be used.  Actually, only they can.  True, it only makes sense if there are several processors in the machine.  Otherwise, all synchronization is reduced to the prohibition of interruptions, including the prohibition of interruptions when executing the interrupt itself. <br><br>  On this we find the review of traditional synchronization primitives completed.  After a week, I will try to return to the topic and finally blow your brain with an article about the problems of implementing synchronization primitives in a persistent virtual memory environment.  :) <br><br>  This is a series of articles "Overview of synchronization primitives": <br><ul><li>  <a href="https://habrahabr.ru/post/278413/">mutex and cond</a> </li><li>  <a href="https://habrahabr.ru/post/278661/">Semaphore and a little lockless</a> </li><li>  <a href="https://habrahabr.ru/post/278685/">spinlock and secrets of the processor core</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/278685/">https://habr.com/ru/post/278685/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../278675/index.html">The legend of the silver pool, or how I looked for logical caching and retrieval errors</a></li>
+<li><a href="../278677/index.html">AudioCodes Routers</a></li>
+<li><a href="../278679/index.html">Own "Who called?" On the basis of Multifon</a></li>
+<li><a href="../278681/index.html">How to parse text with bare hardware, without a processor and without software</a></li>
+<li><a href="../278683/index.html">iTrace. How are the letters written?</a></li>
+<li><a href="../278689/index.html">iBeacon. Myths and Reality</a></li>
+<li><a href="../278691/index.html">PowerShell Remoting - setup and remote management</a></li>
+<li><a href="../278693/index.html">turn string into scriptblock</a></li>
+<li><a href="../278695/index.html">Angstrom. A bunch of difficulties in a simple wrapper</a></li>
+<li><a href="../278697/index.html">libuniset2 is a library for creating ACS. It’s better to see once ... Part 6 (Final)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

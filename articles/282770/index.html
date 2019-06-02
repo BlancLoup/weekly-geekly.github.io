@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Recovering PostgreSQL data after pg_control loss</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="To ensure fault tolerance, PostgreSQL DBMS, like many databases, uses a special logbook in which it keeps a history of data changes. Before writing da...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Recovering PostgreSQL data after pg_control loss</h1><div class="post__text post__text-html js-mediator-article"><p>  To ensure fault tolerance, PostgreSQL DBMS, like many databases, uses a special logbook in which it keeps a history of data changes.  Before writing data to the database files, the PostgreSQL server accumulates changes in RAM and writes them to a sequential log file so as not to lose them due to an unexpected power outage. </p><br><p>  The data is written to the log before the database user receives a message about the successful application of changes.  This log is called the proactive write log (Write-Ahead Log or simply WAL), and the log files are stored in the pg_xlog directory.  Also, periodically PostgreSQL flushes changed accumulated data from RAM to disk.  This data reconciliation process is called a checkpoint.  The checkpoint is also executed every time PostgreSQL is shut down. </p><br><p>  Information about which internal values ​​the checkpoint has completed is stored in the global / pg_control file and therefore the database must be accessible before the time of data recovery.  If PostgreSQL shuts down abnormally, changes from the log files (pg_xlog) are applied to the database files, starting from the position of the last checkpoint.  This process is called data recovery. </p><br><p>  The pg_control file contains information: </p><br><ul><li>  version of the format of the control file, </li><li>  checksum of data recorded in this file </li><li>  version of the database file format, </li><li>  unique identifier of the database instance </li><li>  current state: running / stopped, </li><li>  position in the log corresponding to the running and previous control points, </li><li>  current timeline (timeline) </li><li>  Maximum visible transaction number (xid) </li><li>  maximum number of internal object counter (oid), </li><li>  time of creation, </li><li>  and much more. </li></ul><br><p>  You can view the contents of pg_control using the pg_controldata utility: </p><br><pre><code class="bash hljs">$ pg_controldata /var/lib/pgsql/9.5/data pg_control version number: 942 Catalog version number: 201510051 Database system identifier: 6242923005164171508 Database cluster state: <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> production pg_control last modified: Fri Apr 29 01:00:00 2016 Latest checkpoint location: EEAF/BAA5520 Prior checkpoint location: EEAF/BAA5440 ... Latest checkpoint<span class="hljs-string"><span class="hljs-string">'s NextXID: 7/876524573 Latest checkpoint'</span></span>s NextOID: 264355612 Latest checkpoint<span class="hljs-string"><span class="hljs-string">'s NextMultiXactId: 134512401 Latest checkpoint'</span></span>s NextMultiOffset: 547842659 ...</code> </pre> <a name="habracut"></a><br><p>  If the contents of pg_control were lost, PostgreSQL will not be able to start the recovery procedure.  If it happened that the database files suddenly disappeared, which can happen during an emergency shutdown with the <code>fsync=off</code> parameter, then the correct recovery method is switching to a backup.  This article can be useful in those cases when you need to restore the database to the minimum time, but you cannot switch to the backup and you can donate some of the data. <br></p><br><p>  The pg_control file is not protected from failures, and it can only be restored using the pg_resetxlog utility or a hex editor.  Using pg_resetxlog, you can lose some data.  You discard all current transaction logs and consider that PostgreSQL has completed its work normally: all data is written to files, as if the checkpoint had just completed.  You will also have to select the maximum visible number of the transaction counter.  If you select a transaction number that is too large, then the data files will not contain information that the DBMS has not yet flushed to the disk from RAM, as the process of creating a checkpoint would have done.  If you select a transaction number that is too small, then the data recorded later will not be visible. </p><br><p>  It is logical to choose the time of the control point, but where can you get this value?  The standard utility pg_xlogdump, which can view the contents of WAL files, comes to the rescue.  You need to select the most recent file containing the checkpoint record with the XLOG record type: </p><br><pre> <code class="bash hljs">$ pg_xlogdump -r XLOG pg_xlog/<span class="hljs-variable"><span class="hljs-variable">$FILE</span></span> ... rmgr: XLOG len (rec/tot): 80/ 106, tx: 0, lsn: EEAF/0BAA5B40, prev EEAF/0BAA5B08, desc: CHECKPOINT_ONLINE redo EEAF/BAA5B08; tli 2; prev tli 2; fpw <span class="hljs-literal"><span class="hljs-literal">true</span></span>; xid 7/876524573; oid 264355612; multi 134512401; offset 547842659; oldest xid 686019718 <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> DB 16400; oldest multi 128391103 <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> DB 16400; oldest/newest commit timestamp xid: 0/0; oldest running xid 876524573; online</code> </pre><br><p>  In this case, you can select the following parameters for pg_resetxlog: </p><br><pre> <code class="bash hljs">$ pg_resetxlog -x 876524573 -o 264355612 -m 134512401,128391103 -n /var/lib/pgsql/9.5/data</code> </pre> <br><p>  In order for the specified command to apply values, you need to run it without the <code>-n</code> option and with the <code>-f</code> option key.  The command will clear the contents of the pg_xlog directory and write the new values ​​to the pg_control file.  After that, you can run PostgreSQL without data recovery. </p><br><p>  If you selected a checkpoint for recovery, then in order not to get into a situation where the preempted data from the buffer cache was written to the database files, it is recommended to set the value of the <code>autovacuum=off</code> parameter before starting the instance and remove the logical backup using the pg_dump utility.  If errors occur during the backup, use the <code>zero_damaged_pages=on</code> parameter.  After removing a logical backup, it must be restored on a new PostgreSQL instance. </p><br><p>  All successful operation of PostgreSQL and backup at your fingertips! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/282770/">https://habr.com/ru/post/282770/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../282752/index.html">Chewing Algorithm for Touchscreen</a></li>
+<li><a href="../282756/index.html">Code examples for the Internet of things: smart sprinkler</a></li>
+<li><a href="../282760/index.html">Hire an identity, not a skill set. My most important questions in the interview</a></li>
+<li><a href="../282764/index.html">Why PostgreSQL is better than other open source SQL databases. Part 1</a></li>
+<li><a href="../282766/index.html">4 tools on the shelves. Project Management with WBS, Gantt Chart, CPM and Time-Cost</a></li>
+<li><a href="../282772/index.html">The digest of interesting materials from the world of Drupal # 20</a></li>
+<li><a href="../282776/index.html">Linux programming interface</a></li>
+<li><a href="../282778/index.html">Journey to Onionland: hacking a hidden service from the darknet in the task NeoQUEST-2016</a></li>
+<li><a href="../282780/index.html">The path of the laplacian. Part 2</a></li>
+<li><a href="../282782/index.html">About the unconventional way to use a computer mouse</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

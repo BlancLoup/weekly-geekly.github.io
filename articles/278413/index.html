@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Overview of synchronization primitives - mutex and cond</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Synchronization is needed in any program. (Unless, of course, it consists of 100% of lokless algorithms, which is unlikely). Be it an application or a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Overview of synchronization primitives - mutex and cond</h1><div class="post__text post__text-html js-mediator-article">  Synchronization is needed in any program.  (Unless, of course, it consists of 100% of lokless algorithms, which is unlikely).  Be it an application or a kernel component of a modern operating system. <br><br>  All of the below, of course, concerns me more from the point of view of developing an OS kernel.  But almost everything applies to custom code. <br><br>  By the way, the kernels of the old OS did not need synchronization primitives, since there was no preamptive multitasking inside the kernel in the good old days.  (Already for the 7th version of Unix, I answer. Not.) More precisely, the only method of synchronization was the prohibition of interruptions.  But more about that later. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      First, we list the characters.  I know the following synchronization primitives: <br><br>  User / kernel mode: mutex + cond, sema, enter / leave critical section. <br>  Kernel only: spinlock, interrupt control. <br><br>  Why all this is needed, the reader probably knows, but still we will clarify. <br><br>  If a certain data structure can be accessed by two parallel threads (or threads and interrupts), and is an entity that cannot be accessed atomic access, then work with such a structure should be done so that only one thread simultaneously performs complex manipulations with the state of the structure. . <br><a name="habracut"></a><br>  A simple example.  List. <br><br><pre><code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">list</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-built_in"><span class="hljs-built_in">list</span></span> *next; <span class="hljs-built_in"><span class="hljs-built_in">list</span></span> *prev };</code> </pre> <br><br>  Insert item into the list. <br><br><pre> <code class="cpp hljs">new_el-&gt;next = curr_el-&gt;next; new_el-&gt;prev = curr_el; curr_el-&gt;next-&gt;prev = new_el; <span class="hljs-comment"><span class="hljs-comment">// 3 curr_el-&gt;next = new_el;</span></span></code> </pre><br><br>  Everything is primitive.  But if this code is executed by two threads in parallel, then instead of a coherent list, there will be an explosion at the macaroni factory.  For example, if the second thread starts at the moment when the first thread has finished line 3, then bypassing the list from left to right we will meet one object in the same place, and another object from right to left. <br><br>  Unpleasant <br><br>  Apply the mutex - mutually exclusive lock.  This lock prohibits the parallel execution of code locked by it - if one thread starts to execute it, the second one will wait at the entrance until the first one is finished. <br><br><pre> <code class="cpp hljs">mutex_lock( &amp;<span class="hljs-built_in"><span class="hljs-built_in">list</span></span>-&gt;mutex); new_el-&gt;next = curr_el-&gt;next; new_el-&gt;prev = curr_el; curr_el-&gt;next-&gt;prev = new_el; <span class="hljs-comment"><span class="hljs-comment">// 3 curr_el-&gt;next = new_el; mutex_unlock( &amp;list-&gt;mutex);</span></span></code> </pre><br><br>  Now good.  (Well, it’s not very good if we have more than a hundred processors and they have a lot of code, but this is a completely separate conversation.) <br><br>  What's happening?  Thread A makes a mutex_lock call for the list-&gt; mutex mutex.  Which, obviously, belongs to the list that we want to change, and protects access to it.  It is not locked, thread A locks the mutex (now it knows that it is locked, and knows who locked it) and continues to work.  If now thread B tries to enter the same region of the code (or another one protected by the same mutex - for example, in the function of deleting a list item), then it will not work to lock the locked mutex a second time.  Thread B will wait for thread A to trigger mutex_unlock. <br><br>  By the way, if you and I are nuclear developers, then it is important to understand one more uninteresting feature for an application programmer is the mutex (as well as all the "heavy" synchronization primitives) - if we try to lock a mutex that is already locked with another thread, we are not just waiting - our thread will be "removed from the processor", a context switch will occur.  This is valuable because it allows you to load the processor much more efficiently, but there are also problems.  Inside an interrupt handler, for example, such primitives cannot be used at all, because context switching inside an interrupt is prohibited and threatens to cause a fair amount of disruption to the operation of the system.  But, probably, it will be necessary to write about it separately. <br><br>  This completely solves the problem if you need to work with a complex data structure.  But there are other tasks.  For example, inform another thread about the event that that other thread is waiting for. <br><br>  Consider the functions alloc_mem and free_mem: <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">// NB!   ! alloc_mem() { while(total_free_mem &lt;= 0) { wait_cond(&amp;got_free_mem); } // actually allocate } free_mem() { // actually free mem total_free_mem++; signal_cond(&amp;got_free_mem); }</span></span></code> </pre><br><br>  What's going on here?  Everything is trite.  In the memory allocation function, we look at the global free memory count.  If it is empty, there is no free memory, we wait until someone releases the memory - we call wait_cond, which suspends us, until someone signals it - ready, the memory is released. <br><br>  This, of course, the free_mem () function - it returns memory to the heap, increases the free memory counter and calls signal_cond - informs the suffering ones that there is memory.  The one who slept inside wait_cond will “wake up” after such a signal, check that yes, there is memory, and allocate it.  All right <br><br>  Well, no, of course.  If the alloc_mem function is called by two threads at once, then there will be trouble - one of them will receive the signal first, will wake up, make sure that there is free memory, and then suddenly take the scheduler and remove it from the processor.  And let me wake up the second such thread.  The second thread will wake up, also see that there is a memory, will take it and end it.  The <s>mafia</s> wakes up the first thread, and everything is bad with it.  She just checked the free_mem variable, made sure that everything is there, and now - there is no free memory in the pool.  Trouble <br><br>  For this case, the trouble is not fatal - you can simply return to the beginning of the function and again wait for the weather by the sea.  Although, of course, this is bad - we lose processor time for empty throwing. <br><br>  But, it seems, we know the answer?  Add mutex! <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">// NB!    ! alloc_mem() { mutex_lock( &amp;allocator_mutex ); while(total_free_mem &lt;= 0) { wait_cond(&amp;got_free_mem); } // actually allocate mutex_unlock( &amp;allocator_mutex ); } free_mem() { mutex_lock( &amp;allocator_mutex ); // actually free mem total_free_mem++; signal_cond(&amp;got_free_mem); mutex_unlock( &amp;allocator_mutex ); }</span></span></code> </pre><br><br>  So good?  Not.  Memory release will not happen - the alloc_mem () function locked it, fell asleep while waiting for cond, and no one else can enter the mutex, and no one will release the memory, and it will not beep. <br><br>  Trouble  But okay, we know what to do!  Before we fall asleep while waiting for the cond, we will heat the mutex, and let others enter free and return our memory.  Like this: <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">// NB!     ! alloc_mem() { mutex_lock( &amp;allocator_mutex ); while(total_free_mem &lt;= 0) { mutex_unlock( &amp;allocator_mutex ); wait_cond(&amp;got_free_mem); mutex_lock( &amp;allocator_mutex ); } // actually allocate mutex_unlock( &amp;allocator_mutex ); }</span></span></code> </pre><br><br>  In the commentary, you already see that again, not thanks to God.  Now what?  And now there is a slit, a thin line between the moment when we woke up and left the wait_cond function, receiving a free memory signal from free_mem, and capturing a mutex.  At this point, the mutex is not taken, and other threads can again get ahead of us and re-create.  It is for this reason that the wait_cond function looks a little different: <br><br><pre> <code class="cpp hljs">wait_cond( cond *c, mutex *m );</code> </pre><br><br>  It works like this: the function takes a conditional variable as input, which will give us a wake-up signal and a <b>locked</b> mutex: <br><br><pre> <code class="cpp hljs">alloc_mem() { mutex_lock( &amp;allocator_mutex ); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(total_free_mem &lt;= <span class="hljs-number"><span class="hljs-number">0</span></span>) { wait_cond(&amp;got_free_mem,&amp;allocator_mutex); } <span class="hljs-comment"><span class="hljs-comment">// actually allocate mutex_unlock( &amp;allocator_mutex ); }</span></span></code> </pre><br><br>  The wait_cond function will unlock the mutex, firstly, independently, and secondly, it will do it <b>atomically</b> with respect to the transition to the sleeping state.  That is, the thread entering wait_cond will first fall asleep, and then, without interrupting sleep, will unlock the mutex.  Conversely, waking up, she first captures the mutex, and then wakes up and continues to work.  (This requires the thread switch code to be a good deal of trick, I will try to tell about it in one of the following notes.) <br><br>  Only such semantics provides 100% consistency and the absence of "race" - race conditions. <br><br>  Note that the free function code is completely correct: <br><br><pre> <code class="cpp hljs">free_mem() { mutex_lock( &amp;allocator_mutex ); <span class="hljs-comment"><span class="hljs-comment">// actually free mem total_free_mem++; signal_cond(&amp;got_free_mem); // 4 mutex_unlock( &amp;allocator_mutex ); // 5 }</span></span></code> </pre><br><br>  Only taking into account the above, it should be understood that although we formally awaken the allocator on line 4, it will actually wake up after the execution of line 5, because until this point it is not able to capture the mutex. <br><br>  Probably, it makes sense to add to the above that the real signal_cond function does not awaken all the waiting threads, but only one (usually with the highest priority), so the situation in the given example is somewhat simpler and more complicated at the same time.  It’s simpler because a mechanism is already built inside the alarm, which after one free will only wake up one alloc, and more complicated because it really doesn’t solve anything - we don’t know if the given section is suitable for the freed section, so you need to use broadcast_cond instead of signal_cond, which will awaken all the suffering, giving them the opportunity in a fair fight to decide who will get the resource. <br><br>  Look at the actual implementation of these primitives here: <br><br>  <a href="">mutex.c</a> , <a href="">cond.c</a> <br><br>  In the next series - sema semaphore, which alone replaces both mutex and cond.  Virtually without ensemble. <br><br>  This is a series of articles "Overview of synchronization primitives": <br><ul><li>  <a href="https://habrahabr.ru/post/278413/">mutex and cond</a> </li><li>  <a href="https://habrahabr.ru/post/278661/">Semaphore and a little lockless</a> </li><li>  <a href="https://habrahabr.ru/post/278685/">spinlock and secrets of the processor core</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/278413/">https://habr.com/ru/post/278413/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../278403/index.html">Dollar</a></li>
+<li><a href="../278405/index.html">Creating applications for Firebird with the use of various components and drivers: ADO.NET Entity Framework 6</a></li>
+<li><a href="../278407/index.html">The key to JetBrains products for all students on Stepic.org</a></li>
+<li><a href="../278409/index.html">Introduction to practical analytics, or what is common in neural networks with diet pills</a></li>
+<li><a href="../278411/index.html">Authentication using Spring Security and JWT tokens</a></li>
+<li><a href="../278421/index.html">Emotional landing page? Wow wow, easy</a></li>
+<li><a href="../278423/index.html">Migration of UI patterns and gestures. Who has anyone that podtyril</a></li>
+<li><a href="../278425/index.html">Understanding the neural network war (GAN)</a></li>
+<li><a href="../278427/index.html">Connect to the Device Guard Webinar on Windows 10. Start March 3 at 11:00 (GMT)</a></li>
+<li><a href="../278429/index.html">Fresh exhibition ISE - new LEDs, screens in the windows and how to break the screen that does not break</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

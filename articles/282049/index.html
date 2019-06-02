@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Preemptivity: how to take away the processor</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article does not make sense without the previous one, which described the main mechanisms for switching contexts in a multitasking OS . 
+
+ Here I...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Preemptivity: how to take away the processor</h1><div class="post__text post__text-html js-mediator-article">  This article does not make sense without the <a href="https://habrahabr.ru/post/282037/">previous one, which described the main mechanisms for switching contexts in a multitasking OS</a> . <br><br>  Here I will tell how cooperative multitasking turns into <s>hostile</s> preamptive. <br><br>  The essence of this transformation is simple.  The machine has a timer, the timer generates interrupts, interrupts suspend the thread code and put the processor in the hands of a multitasking mechanism.  It is already quite cooperatively switching the processor to a new thread, as described in the <a href="https://habrahabr.ru/post/282037/">previous article</a> . 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      But, as usual, there are nuances.  See the <a href="">code for intel</a> . <br><br>  The processor weaning itself is done as part of a normal hardware interrupt, usually by timer and as part of a software interrupt, which is actually the same interrupt, but caused by a special processor instruction.  This method of context switching is needed if we (for example, within the synchronization primitive) explicitly stop the thread and don’t want to wait for the timer interrupt to arrive. <br><a name="habracut"></a><br>  Firstly, before weaning on the processor from the poor threads, you need to serve the interrupt itself.  The interrupt processor / controller “knows” that the interrupt has begun and needs to be “reassured” by saying that we have completed the service before we switched to another thread.  Otherwise, the state of the interrupt controller may be very strange and the system will cease to function intelligibly.  And the interrupt handler itself will not be happy if other threads are running for a couple of seconds before it is executed. <br><br>  Therefore, we first serve the interrupt itself.  Then we make sure that it was not nested - that we did not interrupt the service of another interrupt, which should also be completed. <br><br>  And now, while we are still inside the interrupt service function, but the interrupts themselves have serviced and properly notified the interrupt controller about this (and, of course, the interrupts themselves are globally forbidden), we can check if there is a soft irq request, and if so - serve him. <br><br>  Here we must understand that in the high-order bits of the variable irq_nest lies the flag of prohibiting the maintenance of software interrupts and the flag of the <b>absence of a</b> request for a software interrupt.  That is, if it is zero, then, at the same time, the nesting of requests for hardware interrupts is zero, there is no prohibition on a software interrupt and <b>there is a</b> request for a software interrupt. <br><br><pre><code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(irq_nest) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span>; <span class="hljs-comment"><span class="hljs-comment">// Now for soft IRQs irq_nest = SOFT_IRQ_DISABLED|SOFT_IRQ_NOT_PENDING; hal_softirq_dispatcher(ts); ENABLE_SOFT_IRQ();</span></span></code> </pre> <br><br>  Naturally, while we are servicing a software interrupt, the software interrupts themselves are prohibited.  At the end of the service we will resolve them again.  But - see the previous article - if the current thread is removed from the processor, then we will again allow software interrupts - otherwise the thread to which we switch will never switch back.  After all, you need to perform a software interrupt.  I hope I did not confuse you. <br><br>  During thread initialization, the kernel registers a software interrupt handler. <br><br><pre> <code class="cpp hljs"> hal_set_softirq_handler( SOFT_IRQ_THREADS, (<span class="hljs-keyword"><span class="hljs-keyword">void</span></span> *)phantom_scheduler_soft_interrupt, <span class="hljs-number"><span class="hljs-number">0</span></span> );</code> </pre><br><br>  This handler, apart from any checks, comes down to calling phantom_thread_switch (), that is, it simply leads to switching to the next thread. <br><br>  There are two things left.  The first is how to explicitly “give away” the processor.  For example, when we try to capture an already locked mutex, the thread must be stopped. <br><br>  To do this, we coax the software interrupt request and request (any, but better - rarely used) hardware interrupt. <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">phantom_scheduler_request_soft_irq</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ hal_request_softirq(SOFT_IRQ_THREADS); __asm __volatile(<span class="hljs-string"><span class="hljs-string">"int $15"</span></span>); }</code> </pre><br><br>  As mentioned above, this will cause the phantom_thread_switch function to be called from the software interrupt context. <br><br>  Secondly: who will request a software interrupt to complete the thread currently running at the end of the allocated processor time slot? <br><br>  For this there is such a request: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">phantom_scheduler_schedule_soft_irq</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ hal_request_softirq(SOFT_IRQ_THREADS); }</code> </pre><br><br>  He is executed here when.  Inside a timer interrupt, a special function is called: <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">// Called from timer interrupt 100 times per sec. void phantom_scheduler_time_interrupt(void) { if(GET_CURRENT_THREAD()-&gt;priority &amp; THREAD_PRIO_MOD_REALTIME) return; // Realtime thread will run until it blocks or reschedule requested if( (GET_CURRENT_THREAD()-&gt;ticks_left--) &lt;= 0 ) phantom_scheduler_request_reschedule(); }</span></span></code> </pre><br><br>  As it is easy to see, it decrements the ticks_left thread variable, and if it counts to zero, it requests thread switching. <br><br>  The variable ticks_left is set by the scheduler when it selects a thread to start - it writes the number of 10 ms intervals into this variable that the thread will work (if it doesn’t want to stop by itself). <br><br>  The running time of the sheduler can set a fixed (by serving priorities through the frequency of filing the thread on the processor) or take into account the priority (giving higher priority threads longer intervals). <br><br>  To this we must add that phantom_scheduler_request_reschedule () can be called by anyone who has decided that it is time to decide who should get onto the processor now. <br><br>  As an example, this may be appropriate if the current thread unlocks the synchronization primitive on which the thread was blocked with a high (especially realtime) priority. <br><br>  By itself, this call only sets the flag - the real switching will only be at the end of the interrupt service, as described above. <br><br>  For completeness, consider the structure of the description of the thread (struct phantom_thread) in detail. <br><br>  The cpu field contains architecture-specific fields in which the processor state is saved when the thread is stopped.  cpu_id is the number of the processor on which the thread was last launched or is running now.  tid is just a thread id.  owner is used by the phantom object environment to bind an object describing a thread at the application level here.  If the thread services the Unix compatibility subsystem - pid stores the number of the Unix process to which the thread belongs.  The name is for debugging only. <br><br><pre> <code class="cpp hljs"> <span class="hljs-comment"><span class="hljs-comment">/** NB! Exactly first! Accessed from asm. */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">cpu_state_save_t</span></span> cpu; <span class="hljs-comment"><span class="hljs-comment">//! on which CPU this thread is dispatched now int cpu_id; int tid; //! phantom thread ref, etc void * owner; //! if this thread runs Unix simulation process - here is it pid_t pid; const char * name;</span></span></code> </pre><br><br>  ctty - stdin buffer for the thread, used for communication with the graphics subsystem.  stack / kstack is the virtual and physical address of the stack segment, respectively for user and kernel mode.  start_func and start_func_arg - the entry point to the function ("main") of the thread and the argument of this function. <br><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">wtty_t</span></span> * ctty; <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> * <span class="hljs-built_in"><span class="hljs-built_in">stack</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">physaddr_t</span></span> stack_pa; <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> stack_size; <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> * kstack; <span class="hljs-keyword"><span class="hljs-keyword">physaddr_t</span></span> kstack_pa; <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> kstack_size; <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> * kstack_top; <span class="hljs-comment"><span class="hljs-comment">// What to load to ESP void * start_func_arg; void (*start_func)(void *);</span></span></code> </pre><br><br>  sleep_flags are signs of a thread falling asleep for one reason or another.  If it is not zero, the thread cannot be started (waiting for a mutex, timer, not born, died, etc.).  thread_flags - various signs of the thread: the thread serves the Phantom virtual machine, the thread had a timeout of the synchronization primitive, etc. <br><br>  waitcond / mutex / sem - the thread is sleeping on this primitive, waiting for its release.  ownmutex - this thread has locked this mutex; if it dies, it must be released.  (For a semaphore, everything, alas, is not obvious.) <br><br>  sleep_event - used if the synchronization primitive is locked with a timeout - the timer subsystem of the kernel stores the state of the timer request here. <br><br>  chain - used when placing a thread in the queue if several threads wait for one synchronization primitive. <br><br>  kill_chain - turn on the scaffold.  A special system thread deals with the post-mortem deinitialization of other threads (release of memory, unlocking mutexes, etc.), and this is the line for it. <br><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">u_int32_t</span></span> thread_flags; <span class="hljs-comment"><span class="hljs-comment">// THREAD_FLAG_xxx /** if this field is zero, thread is ok to run. */ u_int32_t sleep_flags; //THREAD_SLEEP_xxx hal_cond_t * waitcond; hal_mutex_t * waitmutex; hal_mutex_t * ownmutex; hal_sem_t * waitsem; queue_chain_t chain; // used by mutex/cond code to chain waiting threads queue_chain_t kill_chain; // used kill code to chain threads to kill //* Used to wake with timer, see hal_sleep_msec timedcall_t sleep_event;</span></span></code> </pre><br><br>  snap_lock - the thread is in a state in which you cannot take a snapshot. <br><br>  preemption_disabled - the thread cannot be removed from the processor.  In fact, there is almost no sense in this thing, especially in the SMP environment. <br><br>  death_handler - will be called if the thread has died.  atexit. <br><br>  trap_handler is an analogue of what is called signals in user mode - the function is called if the thread has led to the processor. <br><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> snap_lock; <span class="hljs-comment"><span class="hljs-comment">// nonzero = can't begin a snapshot int preemption_disabled; //! void (*handler)( phantom_thread_t * ) void * death_handler; // func to call if thread is killed //! Func to call on trap (a la unix signals), returns nonzero if can't handle int (*trap_handler)( int sig_no, struct trap_state *ts );</span></span></code> </pre><br><br>  The rest is sheduler's machinery.  Everything is simple: <br><br>  priority contains the thread priority (along with the class realtime, normal, idle) <br><br>  ticks_left - how many “ticks” (10 ms intervals) the thread will work on the processor <br><br>  runq_chain - if the thread is ready for execution, but not executed, then it is present in the queue for execution. <br><br>  sw_unlock - contains a pointer to the spinlock, which will be unlocked after removing the thread from the processor, used in the implementation of synchronization primitives. <br><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">u_int32_t</span></span> priority; <span class="hljs-comment"><span class="hljs-comment">/** * How many (100HZ) ticks this thread can be on CPU before resched. * NB! Signed, so that underrun is not a problem. **/</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int32_t</span></span> ticks_left; <span class="hljs-comment"><span class="hljs-comment">/** Used by runq only. Is not 0 if on runq. */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">queue_chain_t</span></span> runq_chain; <span class="hljs-comment"><span class="hljs-comment">/** Will be unlocked just after this thread is switched off CPU */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">hal_spinlock_t</span></span> *sw_unlock;</code> </pre><br><br>  The last bow to add to the picture of the world: there is always a thread in the system (several threads, according to the number of processors), which is placed on the processor, if the scheduler does not find any decent thread work. <br><br>  This thread does nothing - it executes a processor instruction that stops the processor before receiving an interrupt, and counts the execution time itself.  The time of its execution per second allows you to get the percentage of CPU usage, and stopping the processor saves electricity and heat. <br><br>  Phew  Probably for today - everything.  <a href="https://habrahabr.ru/post/282213/">Continued here</a> . </div><p>Source: <a href="https://habr.com/ru/post/282049/">https://habr.com/ru/post/282049/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../282039/index.html">Moscow Python Meetup №34 (April 27)</a></li>
+<li><a href="../282041/index.html">JS Loader + template engine or history of another</a></li>
+<li><a href="../282043/index.html">On the development of non-paged keys based on passwords</a></li>
+<li><a href="../282045/index.html">Scaling to 100 million: architecture defined by service level</a></li>
+<li><a href="../282047/index.html">Evolution of viruses: from student fun to disruption of Iran’s nuclear program</a></li>
+<li><a href="../282053/index.html">Andrei Ershov: “Two Views of Programming”</a></li>
+<li><a href="../282057/index.html">Xamarin Development Workshop: Technology Overview and Dive into Solution Development</a></li>
+<li><a href="../282065/index.html">How it is made: mobile cross-platform engine</a></li>
+<li><a href="../282067/index.html">From the command line for knowledge</a></li>
+<li><a href="../282071/index.html">What does the convolutional neural network look at when it sees nudity?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

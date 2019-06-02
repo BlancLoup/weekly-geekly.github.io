@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>USB bootloader on the microcontroller: firmware update from a flash drive</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The ability to update the firmware on commercially available products, or on individual products that are in operation at the customer, is difficult t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>USB bootloader on the microcontroller: firmware update from a flash drive</h1><div class="post__text post__text-html js-mediator-article">  The ability to update the firmware on commercially available products, or on individual products that are in operation at the customer, is difficult to overestimate.  This not only makes it possible to subsequently eliminate bugs and expand functionality, but also allows a developer with a lighter heart to release a “still damp” product on the market, if the management requires it. <br><img src="https://habrastorage.org/files/d5a/700/eb4/d5a700eb4f04415cb63c505ee763182b.png"><br>  Therefore, the importance of having a bootloader in newly developed devices in most cases is beyond doubt.  This article will discuss the development of a bootloader via a USB interface on an Atmel <a href="http://www.atmel.com/products/microcontrollers/arm/sam-d.aspx">SAM D21</a> microcontroller with a Cortex M0 + core.  Specifically, on <a href="http://www.atmel.com/devices/ATSAMD21J18A.aspx">SAMD21J18A</a> .  SAM D20 / 21 microcontrollers do not have a pre-written bootloader, so you will have to deal with its software implementation.  On the Atmel website, you can find <a href="http://www.atmel.com/products/microcontrollers/arm/sam-d.aspx%3Ftab%3Ddocuments">Application notes</a> , how to make it using standard interfaces (UART, I2C, SPI, USB).  Under the cat description of the process of creating a USB-bootloader. <br><a name="habracut"></a><br><h4>  Formulation of the problem </h4><br><ul><li>  It is necessary to develop the most simple, from the end user's point of view, method of updating the device firmware.  To do this, you will need to copy a file with a new firmware to an ordinary USB flash drive, insert the USB flash drive into the device and press the reset button (or reset the power).  After that, the bootloader starts, checks for the presence of the file with the firmware on the flash drive and fills the contents of this file as an application </li><li>  As a “protection against a fool”, we use the previously known special name of the firmware file to exclude the accidental coincidence of names with other files on a flash drive.  Moreover, if the "attacker" will independently create a third-party file with the same name as expected, the device will try to use it as a firmware.  Of course, in this case, the performance of the device will be impaired, but it can later be restored by slipping the USB flash drive with the correct firmware </li><li>  The USB interface of the device's microcontroller is used as the USB interface. </li><li>  The device does not have a permanent connection to the Internet to download the new firmware by itself. </li><li>  We believe that connecting a PC to the device and updating the firmware using a third-party utility is more difficult for the end user. </li></ul><br><h4>  A bit of theory and preparation </h4><br><h5>  Memory </h5><br>  The address space in the memory of the SAMD20 / 21 series microcontrollers is simple: <br><img src="https://habrastorage.org/files/1f3/8a7/989/1f38a7989f384f28bcc9d8f03623e4e4.png" alt="Memory organization samd20"><br>  Non-volatile memory is organized in rows, each row contains 4 pages.  The size of 1 page is 64 bytes.  Non-volatile memory is erased in rows, and is written page by page.  It is important to remember. <br>  The lower (lower) rows in the main address space of non-volatile memory can be used for the bootloader (configured using BOOTPROT fyuz), and the upper rows for EEPROM emulation. <br>  The bootloader section is protected by the BOOTPROT lock bits and fuses corresponding to this address space. <br>  BOOTPROT fuses simultaneously determine the size of the bootloader section and protect the allocated memory area from reading. <br>  EEPROM can be recorded despite the protection of the corresponding memory area. <br><br><h4>  What will be required to organize a bootloader? </h4><br><ol><li>  Work with the controller's memory - the non-volatile memory controller (NVM) is responsible for this; </li><li>  Working with USB - the USB controller is responsible for this; </li><li>  Working with the file system is the power of FATFS. </li><li>  And the little things: working with I / O ports, clocking. </li></ol><br><br>  <i><b>Note:</b> <a href="http://www.atmel.com/ru/ru/Microsite/atmel_studio6/">Atmel Studio</a> version 6.2 (inherited from AVR Studio) and the <a href="http://www.atmel.com/ru/ru/tools/avrsoftwareframework.aspx%3Ftab%3Doverview">ASF</a> framework (Atmel Software Framework) are used as the development environment.</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h5>  USB subtleties </h5><br>  In accordance with the USB standard, very precise clocking is required to implement the bus.  We will use external 32 kHz quartz as a support for the DFLL (Digital Frequency Locked Loop).  The DFLL output will be used both for clocking the USB module and the entire controller.  For the USB module to work, you must configure the DFLL so that the output is exactly 48 MHz.  For stability and accuracy of the DFFL output frequency, it must be configured in closed loop mode. <br><img src="https://habrastorage.org/files/d96/3f3/53c/d963f353c1b7493b8ec5970bd11bb757.png" alt="Clocking"><br><h4>  We collect the project </h4><br>  Using the <a href="http://www.atmel.com/webdoc/asf/asf.ModuleExplorerView.html">ASF wizard, we</a> connect all the modules we need listed above. <br><br><h5>  USB host </h5><br>  Add <b>USB Host service</b> in <b>mass storage</b> mode. <br><img src="https://habrastorage.org/files/d9a/71b/dbe/d9a71bdbe3224268adbc2a9ec809ffd2.png"><br>  After the driver is added to the project, several header and executive files appear.  We are interested in 2 of them: <br><ul><li>  <b>conf_usb_host.h</b> - configures USB and configures interrupt handlers (Callback), </li><li>  <b>conf_access.h</b> - configures the abstract level for working with memory. </li></ul><br>  For the operation of the USB host stack, we register two definitions in the project properties: <br><pre><code class="cpp hljs">USB_MASS_STORAGE_ENABLE=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ACCESS_MEM_TO_RAM_ENABLED=<span class="hljs-literal"><span class="hljs-literal">true</span></span></code> </pre> <br>  To do this, right-click on the project, select <b>Properties -&gt; Toolchain -&gt; ARM / GNU C Compiler -&gt; Symbols</b> . <br>  We comment on the line <b>"#define Lun_usb_unload - NULL"</b> in <b>USB LUNs Definitions</b> in the <b>conf_access.h</b> file to prevent errors during compilation. <br>  To track connected devices on the USB bus, an interrupt handler (callback) on the <b>Start of Frame</b> event is introduced.  This interrupt occurs only once each time a SOF is sent, and since SOF is sent every 1 ms when the device is connected to the bus, this event can be used as a timer. <br>  We register the interrupt handler in the <b>conf_usb_host.h</b> file. <br>  To do this, we add the prototype of the <b>main_usb_sof_event ()</b> function at the beginning of the <b>conf_usb_host.h</b> file after all #include. <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main_usb_sof_event</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span>;</code> </pre><br>  We also add a line to this file: <br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta"># </span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> UHC_SOF_EVENT() main_usb_sof_event()</span></span></code> </pre><br>  Now we need to globally define a counter variable in the <b>main.c</b> file, we will increase it each time we call the corresponding handler: <br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">volatile</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint16_t</span></span> main_usb_sof_counter = <span class="hljs-number"><span class="hljs-number">0</span></span>;</code> </pre><br>  Add the interrupt handler itself (callback): <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main_usb_sof_event</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ main_usb_sof_counter++; }</code> </pre><br><h5>  File system </h5><br>  Add <b>FAT FS file system service</b> (with the help of the ASF wizard).  We open the module and select the <b>calendar_polled</b> driver's RTC mode. <br>  For the full functioning of the file system module, add at the beginning of <b>main.c</b> : <br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"string.h"</span></span></span><span class="hljs-meta"> #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> MAX_DRIVE _VOLUMES #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> FIRMWARE_FILE </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"firmware.bin"</span></span></span><span class="hljs-meta"> const char firmware_filename[] = {FIRMWARE_FILE}; </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* FATFS variables */</span></span></span><span class="hljs-meta"> static FATFS fs; static FILE file_object;</span></span></code> </pre><br>  The file name (#define FIRMWARE_FILE "firmware.bin") must match the name of the firmware file on the connected USB flash drive. <br><br><h5>  Work with non-volatile memory </h5><br>  Add NVM-Non-volatile memory (driver).  In addition, we define the necessary constants and variables in the main.c file: <br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> APP_START_ADDRESS (NVMCTRL_ROW_SIZE * 200) uint8_t page_buffer[NVMCTRL_PAGE_SIZE];</span></span></code> </pre><br>  Still need to configure the controller non-volatile memory.  To do this, add the configuration structure (globally), read the default settings, change the necessary and set (make out a separate function): <br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">nvm_config</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">nvm_cfg</span></span></span><span class="hljs-class">;</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">nvm_init</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ nvm_get_config_defaults(&amp;nvm_cfg); nvm_cfg.manual_page_write=<span class="hljs-literal"><span class="hljs-literal">false</span></span>; nvm_set_config(&amp;nvm_cfg); }</code> </pre><br>  All the necessary modules are added, you can write code. <br><br><h4>  Code </h4><br>  It is worth noting that if the bootloader uses the same peripherals as the application, then it must be reset before switching to the application.  A reset is performed by special functions in the ASF. <br>  Also note that you can access the USB device only after 1-2 seconds from the moment it is connected to the bus, since before this the device is initialized. <br>  A brief operation algorithm (bootloader only) is shown in the figure below: <br><img src="https://habrastorage.org/files/d67/3d3/b68/d673d3b6864e458abcd84d5d5b9e9f8d.png" alt="Algorithm"><br><div class="spoiler">  <b class="spoiler_title">Main code</b> <div class="spoiler_text"><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;asf.h&gt; #include &lt;exp_io.h&gt; #include &lt;led.h&gt; #include "string.h" //------------------------------------------------------------------------------------------------------------------------------ #define MAX_DRIVE _VOLUMES #define FIRMWARE_FILE "Modbus_RTU_TCP.bin" #define APP_START_ADDRESS (NVMCTRL_ROW_SIZE * 200) //------------------------------------------------------------------------------------------------------------------------------ const char firmware_filename[] = {FIRMWARE_FILE}; // FATFS variables static FATFS fs; static FIL file_object; // NVM uint8_t page_buffer[NVMCTRL_PAGE_SIZE]; struct nvm_config nvm_cfg; //USB volatile static uint16_t main_usb_sof_counter = 0; //------------------------------------------------------------------------------------------------------------------------------ void main_usb_sof_event(void) { main_usb_sof_counter++; } static void check_boot_mode(void) { uint32_t app_check_address; uint32_t *app_check_address_ptr; // Check if WDT is locked if (!(WDT-&gt;CTRL.reg &amp; WDT_CTRL_ALWAYSON)) { //Disable the Watchdog module WDT-&gt;CTRL.reg &amp;= ~WDT_CTRL_ENABLE; } app_check_address = APP_START_ADDRESS; app_check_address_ptr = (uint32_t *)app_check_address; if (*app_check_address_ptr == 0xFFFFFFFF) { // No application; run bootloader return; } // Pointer to the Application Section void (*application_code_entry)(void); // Rebase the Stack Pointer __set_MSP(*(uint32_t *)APP_START_ADDRESS); // Rebase the vector table base address TODO: use RAM SCB-&gt;VTOR = ((uint32_t)APP_START_ADDRESS &amp; SCB_VTOR_TBLOFF_Msk); // Load the Reset Handler address of the application application_code_entry = (void (*)(void))(unsigned *)(*(unsigned *)(APP_START_ADDRESS + 4)); //Jump to user Reset Handler in the application application_code_entry(); } void delay_ms(uint32_t ms) { volatile int a=0; for(uint32_t i=0; i&lt;ms; i++) { for( int j=0; j&lt;2000; j++) a++; } } void nvm_init(void) { nvm_get_config_defaults(&amp;nvm_cfg); nvm_cfg.manual_page_write=false; nvm_set_config(&amp;nvm_cfg); } void init_IO(void) { ExpIO_Init(); LED_Init(); } int main (void) { volatile uint16_t z=0; uint32_t fw_size ; UINT bytes_read = 0; enum status_code error_code; uint32_t current_page; uint32_t curr_address = 0; // Erase flash rows to fit new firmware uint16_t rows_clear; uint16_t i; check_boot_mode(); system_init(); init_IO(); nvm_init(); uhc_start(); while (1) { if(65000==z) { LED(GREEN,0); delay_ms(1000); LED(GREEN,1); z = 0; } z++; // Wait 2 seconds before trying to access the USB drive if (main_usb_sof_counter &gt; 2000) { main_usb_sof_counter = 0; volatile uint8_t lun = LUN_ID_USB; // Mount drive memset(&amp;fs, 0, sizeof(FATFS)); FRESULT res = f_mount(lun, &amp;fs); if (FR_INVALID_DRIVE == res) { continue; } res = f_open(&amp;file_object,firmware_filename, FA_READ); if (res == FR_NOT_READY) { // LUN not ready f_close(&amp;file_object); continue; } if (res != FR_OK) { // LUN test error f_close(&amp;file_object); continue; } // Get size of file fw_size = f_size(&amp;file_object); bytes_read = 0; if (fw_size != 0) { current_page = APP_START_ADDRESS /NVMCTRL_PAGE_SIZE; curr_address = 0; // Erase flash rows to fit new firmware rows_clear = fw_size / NVMCTRL_ROW_SIZE; for (i = 0; i &lt; rows_clear; i++) { do { error_code = nvm_erase_row( (APP_START_ADDRESS) +(NVMCTRL_ROW_SIZE * i)); } while (error_code == STATUS_BUSY); } do { //Read data from USB stick to the page buffer f_read(&amp;file_object,page_buffer,NVMCTRL_PAGE_SIZE,&amp;bytes_read ); bytes_read=64; curr_address += bytes_read; // Write page buffer to flash do { error_code = nvm_write_buffer(current_page * NVMCTRL_PAGE_SIZE, page_buffer, bytes_read); } while (error_code == STATUS_BUSY); current_page++; } while (curr_address &lt; fw_size); } f_close(&amp;file_object); system_interrupt_disable_global(); uhc_stop(1); NVIC_SystemReset(); } } }</span></span></span></span></code> </pre><br></div></div><br><h4>  Preparing the firmware file </h4><br>  In the <a href="http://www.atmel.com/devices/ATSAMD21J18A.aspx">SAMD21J18A</a> (as in the other controllers of the SAMD20 / 21 series), each NVM row consists of 4 pages, each of which is 64 bytes.  Thus, 200 rows (which we allocate for the bootloader) are (200 * 4 * 64) bytes = 51200 (0xC800) bytes of memory.  And the application part should start after 51200 bytes of flash memory. <br>  Splitting flash memory: <br>  Bootloader section: <br><ul><li>  Size: 50 KB (51200 bytes) </li><li>  Address space (flash memory): 0x00000000 to 0x0000C7FF </li></ul><br>  Application section: <br><ul><li>  Size: 206 KB (256KB-50KB) </li><li>  Address space (flash memory): 0x0000C800 to 0x0003FFFF </li></ul><br>  In order to generate the firmware starting from the address we need, and not from the beginning of the flash memory, as it happens by default, you need to change the linker file. <br>  The file itself can be found in the solution explorer.  In our case, it is called <b>samd21j18a_flash.ld</b> : <br>  Path: src-asf-sam0-utils-linker scripts-samd21-gcc <br>  It is necessary to make changes to the definitions of memory areas: <br>  Default configuration: <br> <code>rom (rx) : ORIGIN = 0x00000000, <br> LENGTH = 0x00040000 <br></code> <br>  should be replaced by <br> <code>rom (rx) : ORIGIN = 0x0000C800, <br> LENGTH = 0x00033800 <br></code> <br>  Now the compiled binary can be uploaded through the bootloader. </div><p>Source: <a href="https://habr.com/ru/post/275369/">https://habr.com/ru/post/275369/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../275351/index.html">Dynamic Interrupt Management in ARM</a></li>
+<li><a href="../275353/index.html">HTML5 analog clock with JavaScript logic</a></li>
+<li><a href="../275355/index.html">Anonymous Father Frost 2015-2016 - Post boasting New Year's gifts</a></li>
+<li><a href="../275359/index.html">Office lighting control over Wi-Fi. Part 1: Atmel WINC1500 Wi-Fi Module</a></li>
+<li><a href="../275361/index.html">Office lighting control over Wi-Fi. Part 2: Q-touch sensor technology</a></li>
+<li><a href="../275371/index.html">Atmel Software Framework (ASF): how does it work?</a></li>
+<li><a href="../275373/index.html">1-Wire slave on MK. Part 1: Iron</a></li>
+<li><a href="../275375/index.html">Clocking Atmel microcontrollers SAMD20 / 21</a></li>
+<li><a href="../275377/index.html">1-Wire slave on MK. Part 2: Implementing in code</a></li>
+<li><a href="../275379/index.html">Dialog and Atmel have announced a merger. Comments of the official distributor in Russia</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

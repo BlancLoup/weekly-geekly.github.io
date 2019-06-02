@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Increase search performance by index partitioning in Apache Solr</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Full text search is used almost everywhere in Wrike . Search in the header of the page allows you to quickly access the latest tasks, sorted by update...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Increase search performance by index partitioning in Apache Solr</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/9eb/472/e1d/9eb472e1d8fb43c4a68c09da3c75aa8b.png"><br><br>  Full text search is used almost everywhere in <a href="https://www.wrike.com/ru%3Futm_source%3Dhabrahabr%26utm_medium%3Dblogposts%26utm_campaign%3DSolr">Wrike</a> .  Search in the header of the page allows you to quickly access the latest tasks, sorted by update date, with a match by name.  This search option is presented in the sections "My Work" and "Taskbar". <br>  Search in the task list works in all fields: name, description, file names of attachments, authors, comments, date of change.  The maximum priority for tasks whose activity is related to the current user, with phrasal coincidence in the name, description, or comments. <br>  Simplified search by name is used: <br><ul><li>  when assigning dependencies for the Gantt chart (previous and next tasks), </li><li>  when adding links to tasks by name (mensenging), </li><li>  when adding subtasks. </li></ul><br>  In these sections, instant search with an implicit wildcard is used: the user sequentially enters u, up, upd, update, and search queries take the form: u *, up *, upd *, update *. <br>  In addition, wildcards can be used in all search options. <br>  Thus, often come “heavy” search queries that cause multiple readings of the index, increased CPU / IO load on servers and, as a result, general delays in processing requests at “peak hours”. <br>  In this article, we will share our way to solving performance problems. <br>  It will be about accelerating the search when working with the <a href="http://lucene.apache.org/solr/">Apache Solr</a> search server through partitioning collections.  We have tested the described method on versions 4.9.0 and 4.10.2. <br><br><a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Problem </h4><br>  Some search queries on the site took tens of seconds, sometimes such delays lead to Gateway Timeout from end users. <br><br><h4>  Input conditions </h4><br>  Full text search is implemented on Apache Solr.  Permanent indexing works.  The whole index is in one collection.  The size of RAM on the servers allows you to put the entire index into the file cache. <br><br>  Here is the problem: <br><ol><li>  In some cases, a single search query takes “too much time” </li><li>  Problem searches include a combination of multiple fields. </li><li>  The index is on the SSD </li><li>  <a href="https://wiki.apache.org/solr/SolrPerformanceProblems">Apache recommendations</a> don't help </li><li>  The index schema (schema.xml) is fixed and there is an explicit criterion for partitioning. </li></ol><br>  Additionally, we find out: <br><ol><li>  Long queries are queries with wildcards (like * q *, * w *, * e *) </li><li>  Time of full reading of the index files into the RAM: Tread = Tsearch / N, where Tsearch is the search time, N is the number of fields in the search query </li></ol><br><h4>  Example </h4><br>  Let there be the following request to Apache Solr: <br><br> <code>q = fieldA=q* OR fieldB=q* OR fieldC=q* OR fieldD=q* <br></code> <br><br>  Suppose it takes N seconds for the first request, the rest will work faster, because some of the data is already in the file cache and in the internal Apache Solr / Lucene caches.  We find out that a simple reading of the full index in the RAM takes N / 4 seconds.  Obviously, the problem is in the size of the index Solr has to work with. <br><br><h4>  What does Apache Solr and <a href="https://cwiki.apache.org/confluence/display/solr/SolrCloud">SolrCloud</a> offer us? </h4><br><ol><li>  <a href="https://wiki.apache.org/solr/SolrPerformanceProblems">Apache optimization tips</a> <br><ul><li>  Setting caches does not suit us, since we have constant indexing, and sooner or later, the caches are reset, and we get a long query. </li><li>  filter queries - does not work, Solr still reads the full index, and filtering happens after. </li></ul></li><li>  <a href="https://cwiki.apache.org/confluence/display/solr/Shards%2Band%2BIndexing%2BData%2Bin%2BSolrCloud">Distributed Search, SolrCloud and Sharding.</a> <a href="https://cwiki.apache.org/confluence/display/solr/Shards%2Band%2BIndexing%2BData%2Bin%2BSolrCloud"><br><br></a>  Features: <br><ul><li>  The difficulty of support, full re-indexing when updating the scheme. </li><li>  Opacity preparation shards. </li></ul></li><li>  <a href="http://wiki.apache.org/solr/IndexPartitioning">IndexPartitioning</a> - things didn't get further than the idea. </li></ol><br><br>  We do not consider Distributed Search as an outdated technology, the flaws of which are presented in the SolrCloud description. <br><br><h4>  Cons sharding on SolrCloud </h4><br>  SolrCloud documentation offers two sharding options, automatic and manual, using the <a href="https://cwiki.apache.org/confluence/display/solr/Collections%2BAPI">SPLITSHARD command</a> . <br>  In automatic mode, the number of shards is set in advance.  SolrCloud with the help of <a href="https://zookeeper.apache.org/">ZooKeeper</a> is engaged in balancing the loading of shards during indexing, shards are automatically selected for the search.  In the “manual” mode, we ourselves choose the time and the shard to divide it into two. <br><br>  Automatic mode does not suit us.  We have a clear key for partitioning, that is, for routing documents on shards during indexing.  The routing itself can be changed after indexing, when we can estimate the size of the shard.  Automatic sharding rebalancing assumes that one of our partitions can be scattered across multiple shards, in the worst case, all.  It does not suit us, if we have such a large partition that its parts are on all shards, we would like to allocate it into a separate shard without other partitions. <br><br>  Manual mode could be used through the background service, invoking the SPLITSHARD command automatically, upon reaching the limits on the size of the shard, but the process is closed and not instantaneous. <br>  Here is what we can get when SPLITSHARD is dropped on Solr 4.9.0: <br><ol><li>  Preserved original collections. </li><li>  New ones are created (with the names * _shard1_0, * _shard1_1). </li><li>  New collections are created only on one node, information does not get into ZooKeeper. </li><li>  Real balancing of search queries does not occur. </li><li>  Created collections must be cleaned manually from the disk on the node where they were created. </li></ol><br>  The reason for this file was the timeout when Solr and ZooKeeper interact.  Of course, one would like to avoid such drops in production, or have more control to simplify recovery. <br><br><h4>  Decision </h4><br>  What should be our solution? <br><ol><li>  A significant decrease in the volume of the index with which a particular search query will work. </li><li>  Minimum support effort. </li><li>  Minimum effort to change the structure. </li><li>  Partitioning without downtime. </li></ol><br>  Partitions will be called collections (in Apache Solr terminology), because the solution works through the <a href="https://cwiki.apache.org/confluence/display/solr/Collections%2BAPI">Solr Collections API</a> and as partitions creates collections and replicas for them. <br><br>  We have stipulated in advance that we can split the data unequivocally by key (batchId), and also: <br><ul><li>  In one collection can get data with one or more batchId. </li><li>  Different collections cannot contain data with the same batchId. </li></ul><br>  The scheme of the search engine before the introduction of partitioning looked like this: <br><img src="https://habrastorage.org/files/07d/988/c04/07d988c04f9d446bb5f39f29d0de4f00.png"><br>  <i>Web Application</i> - performs search queries. <br>  <i>Indexer</i> - a service that performs delta indexing and full re-indexing (only in the shadow collection), works in a separate infrastructure for background processes. <br>  <i>Solr instance # 1, instance # 2</i> - two servers with Apache Solr for fault tolerance. <br>  <i>collection</i> - two index instances, replication occurs via SolrCloud / ZooKeeper. <br>  <i>shadow collection</i> - two copies of the index for full re-indexing when changing the index scheme, after which the collection and the shadow collection are swapped. <br><br>  The scheme works as follows.  Search queries are sent alternately to all Apache Solr nodes.  For routing requests, the LBHttpSolrServer class from the solrj client library is used, the speed of requests with it is higher than with CloudSolrServer, but it’s necessary to track down the nodes manually and re-request the actual information from ZooKeeper.  Requests for indexing can also be done through LBHttpSolrServer / CloudSolrServer / ZooKeeper, or directly to one of the Apache Solr nodes, leaving the second node less loaded to speed up search queries. <br><br>  We need to break the working collections, based on the amount of data in the partitions received by the batchId key.  To implement our solution, we need another service that will manage the process of partitioning collections.  Let's call the service - index manager (IndexManager).  Manager functions: <br><ul><li>  monitoring the size of current collections </li><li>  initiation of creation of new when the limits are exceeded (partitioning) </li><li>  initiation of the union of collections, if their size fell below a predetermined limit (union) </li><li>  monitoring and managing the re-indexing process in new collections (through indexer commands) </li><li>  switching work collections after indexing to new and deleting old ones </li></ul><br>  You can estimate the volume that the index will occupy for one or several partitions, either indirectly or after creating the index. <br>  An indirect estimate looks like this: <br>  <i>R <sub>all</sub></i> - the total number of entries for all partitions. <br>  <i>V <sub>all</sub></i> - total index volume (collection) <br>  <i>R <sub>n</sub></i> - the number of entries for the partition <i>N</i> <br>  <i>V <sub>n</sub> = R <sub>n</sub> ⋅V <sub>all</sub> / R <sub>all</sub></i> - estimated volume of collection for partition <i>N</i> <br><br>  The <i>M</i> collection is formed from the <i>1..k</i> partitions until <i>S <sub>summ</sub> &lt;S <sub>limit</sub></i> , <i>S <sub>summ</sub></i> is the total size of the collection, <i>S <sub>limit</sub></i> is the specified limit on the collection size. <br><br>  The scheme of the new service is as follows: <br><img src="https://habrastorage.org/files/6e5/0ca/6a1/6e50ca6a1b1040eebb8e17bbb8e39664.png"><br>  As a result of the work of IndexManager, collections are created / deleted, data in separate collections are re-indexed, actual collections are switched.  The association of collections and source data (batchId) is stored in the database. <br><br>  The scheme of a search engine with index partitioning looks like this: <br><img src="https://habrastorage.org/files/f61/4d0/67f/f614d067f34d4f18877ee3068df8a883.png"><br>  The index in this scheme represents N collections and N reserve collections in case of a change in the index scheme with subsequent re-indexing.  These N collections are stored on each Apache Solr node, replication occurs by native SolrCloud + ZooKeeper agents. <br>  Acceleration of search occurs due to search on the index limited to one collection.  For this purpose, the HTTP parameter collection (collection = batchId) is added to the search query. <br><br>  After starting, creating and re-indexing collections, we obtained the maximum collection size of 0.1 from the original and the following distribution of query execution time: <br><table><tbody><tr><th>  Execution time (ms) </th><th>  To (% of total) </th><th>  After (% of total count) </th></tr><tr><td>  &gt; = 10,000 </td><td>  2.2% </td><td>  0 </td></tr><tr><td>  1000 - 10,000 </td><td>  3.8% </td><td>  0 </td></tr><tr><td>  500 - 1000 </td><td>  4.3% </td><td>  0 </td></tr><tr><td>  100 - 500 </td><td>  17.1% </td><td>  8.1% </td></tr><tr><td>  0 - 100 </td><td>  72.4% </td><td>  91.9% </td></tr></tbody></table><br><h4>  results </h4><br><ol><li>  The decrease in the index involved in the search is implemented through the control of the size of collections by the index manager. </li><li>  Minimum support effort: <br><ul><li>  server: the same configuration before and after partitioning.  The IndexManager service works in the general infrastructure of services and does not require separate administration. </li><li>  one-time configuration update in ZooKeeper when changing the index scheme </li></ul></li><li>  Minimum effort to change the structure: <br><ul><li>  index schema change done once for base collections </li><li>  resizing collections, adding new ones and deleting unnecessary ones after merging - automatically </li></ul></li><li>  Absence of downtime - any operation (splitting, combining collections) before its completion does not affect search indexes and indexing; after completion, an atomic switch occurs. </li><li>  Significantly faster query processing. </li></ol></div><p>Source: <a href="https://habr.com/ru/post/274059/">https://habr.com/ru/post/274059/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../274049/index.html">Happy New Year 2016</a></li>
+<li><a href="../274051/index.html">My Location Companion application for ViaLatM service</a></li>
+<li><a href="../274053/index.html">Underground carders market. Translation of the book "KingPIN". Chapter 28. "Carder Court"</a></li>
+<li><a href="../274055/index.html">Work on the design of space reptiloids: wandering through the maze of possibilities</a></li>
+<li><a href="../274057/index.html">Go in 2015</a></li>
+<li><a href="../274063/index.html">Using cloud PBX pbxes.com to empower VoiP / SIP telephony</a></li>
+<li><a href="../274065/index.html">Overview of innovations in Laravel 5.2</a></li>
+<li><a href="../274067/index.html">IBM Swift Sandbox - Swift web sandbox for those who want to understand the Apple programming language</a></li>
+<li><a href="../274069/index.html">Perl 6 Developers: Language Ready To Use</a></li>
+<li><a href="../274071/index.html">Effective UI tests on Selenide</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

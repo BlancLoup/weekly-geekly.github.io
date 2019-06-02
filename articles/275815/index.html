@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How we prepared Elasticsearch, or How to process 36 thousand logs per second</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="At one fine moment for one of the projects there was a need for storing, processing and visualizing a large number of logs. It was necessary to index ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How we prepared Elasticsearch, or How to process 36 thousand logs per second</h1><div class="post__text post__text-html js-mediator-article">  At one fine moment for one of the projects there was a need for storing, processing and visualizing a large number of logs.  It was necessary to index about 10-20 thousand requests per second with peaks up to hundreds of thousands, which, as it turned out, is a nontrivial task.  To solve this problem, we decided to use the ELK stack already familiar to many.  The only question was - “will he pull?”  As it turned out, pull, but not immediately. <br><a name="habracut"></a><br>  The brief description of the task was as follows: there are a bunch of nodes, they send a bunch of logs to the server, where they need to be processed and saved in a certain way.  The number of logs seemed to us about 10-20 thousand logs per second with short-term peaks of up to 100-150 thousand per second. <br><br>  We had the following configuration: three servers, on each Logstash + ElasticSearch.  They also wrote a simple java program on the same server, which generates and sends logs in the form of strings to one address via TCP.  Servers are average, 16 cores, 32 GB of RAM and no ssd. <br><br>  We started ES by changing only the parameter indices.memory.index_buffer_size (which sets the size of the buffer for indexing) by 30% (according to the standard 10%). After looking at this manual, we created a configuration file for the logstash: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <div class="spoiler">  <b class="spoiler_title">Initial settings</b> <div class="spoiler_text"><pre><code class="markdown hljs">input { tcp { port =&gt; "1515" } } output { elasticsearch { cluster =&gt; "elasticsearch" embedded =&gt; false host =&gt; "localhost" index =&gt; "performance_test" } }</code> </pre> <br></div></div><br>  We started the generator and got ... 11 thousand logs per second.  And this is without any processing logs!  Inadmissibly little, we won't even survive a normal job, let alone the "explosions" of the logs.  We started to read, started to look, came across an article about the performance of ES, where it was said that the number of shards and replicas greatly influenced the speed of indexing.  For such settings in ElasticSearch meet the index-templates, which configure the newly created indexes.  Said and done, created a template: <br><br><div class="spoiler">  <b class="spoiler_title">template</b> <div class="spoiler_text"><pre> <code class="markdown hljs">template" : "performance*", "settings" : { "index.number<span class="hljs-emphasis"><span class="hljs-emphasis">_of_</span></span>shards" : "9", "index.refresh.interval" : "30s", "index.number<span class="hljs-emphasis"><span class="hljs-emphasis">_of_</span></span>replicas" : "0" }, "mappings" : { }, "aliases" : { }</code> </pre><br></div></div><br>  Change the number of shards to 9 and the number of replicas to 0 (according to the standard 5 shards and 1 replica) and run the test.  16 thousand per second!  Acceleration and a half times: not bad, but still not enough.  By experiments, we found the optimal number: 18 shards, 18 thousand logs per second.  Further it did not leave.  Still a little.  Having looked at the server load schedule during operation, we saw that the processor is 20% loaded, load is even less, and we don’t rest on io either.  So there is still room for optimization!  We decided to go to the settings of Logstash.  In the output, we set workers =&gt; 8, which shows that to send logs to ES, use 8 “workers”, after which the speed increased to 20 thousand \ sec.  Still a little. <br><br>  Somehow, in a strange way, someone from our team came to discuss the LS error associated with OOM, to solve it, we recommended manually setting the environment variable LS_HEAP_SIZE, which controls the amount of memory for the LS process (putting -Xmx when launching the application).  Although the Kopf plugin showed only 40% heap usage (200 mb out of 512) tried to put it out, more out of interest.  And it worked!  On the same settings, on which with the default LS_HEAP_SIZE there were 20 thousand with LS_HEAP_SIZE = 8gb, 38 thousand logs per second were obtained. <br><br>  The attentive reader must have noticed a mismatch: the ES cluster consists of 3 servers, and the generating application is one.  Indeed, for the previous tests, the application wrote logs to one of the three servers.  For the full test, we copied the LS settings to all three servers, set LS_HEAP_SIZE = 8gb to them all, launched three generating applications and hoped to get a three-fold increase in productivity (38 * 3 = 114 thousand logs per second), but it turned out "only" 95 thousand.  Do not forget: there is no log processing yet. <br><br>  Further studies of the ES and LS settings did not improve the situation, and the current performance did not suit us, because clients cannot write more than 32 thousand logs per second to a single server, “stopping” when sending network packets to Logstash.  We thought, read, and decided to use a buffer between the generating application and Logstash.  Redis could act as such, but first we decided to try to implement a simpler thing. <br><br>  And that's what we did: instead of sending logs directly to Logstash, we take them to Rsyslog and add them to a file.  According to our tests, the performance of Rsyslog in receiving and recording logs reaches about 570,000 logs per second, which covered our needs several times.  From the file, these logs are then read by logstash, which processes them and sends them to ES. <br><br>  As a result, the LS configuration was as follows: <br><br><div class="spoiler">  <b class="spoiler_title">final configuration</b> <div class="spoiler_text"><pre> <code class="markdown hljs">input { file { path =&gt; "/root/logs/log.log" start<span class="hljs-emphasis"><span class="hljs-emphasis">_position =&gt; "end" } } output { elasticsearch { cluster =&gt; "elasticsearch" embedded =&gt; false host =&gt; "localhost" index =&gt; "performance_</span></span>testing" workers =&gt; "8" } }</code> </pre><br></div></div><br>  We tested it on three servers at once, got 66 thousand \ sec.  But now we are able to experience peaks of any size (most importantly, not too often, so that the average flow of logs does not exceed 66,000 logs / s). <br><br>  Having stopped on it, added processing of logs.  The processing was purely symbolic, just parsing logs through the Grok filter and 5 if conditions: <br><br><div class="spoiler">  <b class="spoiler_title">Grok filters</b> <div class="spoiler_text"><pre> <code class="markdown hljs">filter { grok{ match =&gt; {"message" =&gt; "%{MONTH:month} %{NUMBER:date} %{TIME:time} %{URIHOST:sender} %{WORD:grokanchor} %{NUMBER:mstatus} %{WORD:salt}"} remove<span class="hljs-emphasis"><span class="hljs-emphasis">_field =&gt; ["grokanchor"] } if [mstatus]{ if [mstatus] &gt; "90"{ mutate { add_</span></span>tag =&gt; ["morethanninety"] } } else if [mstatus] &gt; "80"{ mutate { add<span class="hljs-emphasis"><span class="hljs-emphasis">_tag =&gt; ["morethaneighty"] } } else if [mstatus] &gt; "70"{ mutate { add_</span></span>tag =&gt; ["morethanseventy"] } } else if [mstatus] &gt; "60"{ mutate { add<span class="hljs-emphasis"><span class="hljs-emphasis">_tag =&gt; ["morethansixty"] } } else if [mstatus] &gt; "50"{ ate { add_</span></span>tag =&gt; ["morethanfifty"] } } } }</code> </pre><br></div></div><br>  We tested it immediately on 3 servers, got the figure 46 206 logs \ sec, which is already enough for the normal operation of the application, and for processing data from the file - the buffer after the peaks. <br><br>  There is, however, one BUT: one of the developers had the idea that the performance of ES could degrade over time.  We decided to check - we set the system to work for 9 hours without stopping.  The results were not pleased: for the first couple of hours everything was fine, then the performance began to sag a lot: a total of about 30 thousand per second came with second drops to zero. <br><br><div class="spoiler">  <b class="spoiler_title">Number of logs per hour</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/c59/607/da2/c59607da29144fae8ab6689014adc4f7.png"><br></div></div><br>  5 hours after this, we launched the generation again and received already familiar 46 thousand.  For 9 hours, we collected 1,203,453,573 log files, which is 37143 logs per second.  Since the normal operation of the system will be designed for a much smaller volume, we decided that it suits us perfectly.  It was suggested that this behavior of ES is related to the fact that it needs to rebuild the index on the fly every 30 seconds (specified in the settings), and since its volume with this amount of information tends to half a byte, it does he is long.  The study of server logs indirectly confirmed the conjecture: the server rested on iowait, with a large number of reads from the disk. <br><br><div class="spoiler">  <b class="spoiler_title">Server load</b> <div class="spoiler_text"><img src="https://habrastorage.org/files/263/3d3/de5/2633d3de5abb4da5ae78b6305804e447.png"><br></div></div><br>  If someone knows in more detail what it is connected with and how to solve it - we are waiting for your comments. </div><p>Source: <a href="https://habr.com/ru/post/275815/">https://habr.com/ru/post/275815/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../275803/index.html">Service Monitoring with Prometheus</a></li>
+<li><a href="../275805/index.html">Path from prototype to industrial IoT product</a></li>
+<li><a href="../275809/index.html">How IT executives work with mail</a></li>
+<li><a href="../275811/index.html">As I wrote the security policy</a></li>
+<li><a href="../275813/index.html">Recursion Training tasks</a></li>
+<li><a href="../275817/index.html">Preparing ASP.NET Core: let's talk more about OWIN and Katana</a></li>
+<li><a href="../275819/index.html">Undocumented features of the optical terminal ZTE ZXHN F660 from MGTS</a></li>
+<li><a href="../275821/index.html">How to criticize employees: Case Facebook</a></li>
+<li><a href="../275823/index.html">Notes on the article “How to write in C in 2016”</a></li>
+<li><a href="../275825/index.html">Machine learning techniques for predicting stock prices: indicator functions and news analysis</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
