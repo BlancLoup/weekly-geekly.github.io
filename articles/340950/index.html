@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Why does one NGINX process take care of all the work?</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The scaling method for TCP servers is usually obvious. Start with one process when you need it - just add more. Many applications do this, including H...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Why does one NGINX process take care of all the work?</h1><div class="post__text post__text-html js-mediator-article"><p>  The scaling method for TCP servers is usually obvious.  Start with one process when you need it - just add more.  Many applications do this, including HTTP servers like Apache, NGINX, or Lighttpd. </p><br><p><img src="https://habrastorage.org/webt/59/f0/8f/59f08f64162b4335654058.jpeg"></p><br><p>  Increasing the number of servicing processes is an excellent method for solving the problem of using just one CPU core, but at the cost of other problems. </p><a name="habracut"></a><br><p>  There are three ways to organize a TCP server regarding performance: </p><br><p>  a) one <abbr title="connection acceptor">passive</abbr> socket, one serving process; </p><br><p>  b) one passive socket, multiple servicing processes; </p><br><p>  c) a set of serving processes, each has its own passive socket. </p><br><p><img src="https://habrastorage.org/webt/59/f0/8f/59f08f6452baa904198167.png"></p><br><p> The "a" method is the simplest due to the limitation of one CPU available for processing requests.  A single process accepts connections by calling <code>accept()</code> and servicing them.  This method is preferred for Lighttpd. </p><br><p><img src="https://habrastorage.org/webt/59/f0/8f/59f08f6492843195604400.png"></p><br><p>  With method "b", new connections are in the same kernel data structure (passive socket).  Many servicing processes call <code>accept()</code> on this socket and process received requests.  The method allows to balance incoming connections between several CPUs within certain limits and is standard for NGINX. </p><br><p><img src="https://habrastorage.org/webt/59/f0/8f/59f08f6452baa904198167.png"></p><br><p>  Using the <a href="https://lwn.net/Articles/542629/"><code>SO_REUSEPORT</code></a> socket <a href="https://lwn.net/Articles/542629/"><code>SO_REUSEPORT</code></a> it is possible to provide each process with its own kernel structure (passive socket).  This avoids the competition of serving processes for accessing a single socket, which, however, should not be a particular problem, unless your traffic is comparable to Google.  The method also helps to balance the load better, which will be shown below. </p><br><p>  In Cloudflare, we use NGINX, and therefore are more familiar with method "b".  The article will describe its specific problem. </p><br><h2 id="raspredelyaem-nagruzku-accept">  We distribute accept () load </h2><br><p>  Few people know that there are two ways to distribute new connections among several processes.  Consider two pseudocode listings.  Let's call the first blocking-accept: </p><br><pre> <code class="hljs pgsql">sd = bind((<span class="hljs-string"><span class="hljs-string">'127.0.0.1'</span></span>, <span class="hljs-number"><span class="hljs-number">1024</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> range(<span class="hljs-number"><span class="hljs-number">3</span></span>): <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> os.fork () == <span class="hljs-number"><span class="hljs-number">0</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span>: cd, _ = sd.accept() cd.<span class="hljs-keyword"><span class="hljs-keyword">close</span></span>() print <span class="hljs-string"><span class="hljs-string">'worker %d'</span></span> % (i,)</code> </pre> <br><p>  One queue of new connections is shared between processes by blocking the <code>accept()</code> call in each of them. </p><br><p>  The second path is called epoll-and-accept: </p><br><pre> <code class="hljs pgsql">sd = bind((<span class="hljs-string"><span class="hljs-string">'127.0.0.1'</span></span>, <span class="hljs-number"><span class="hljs-number">1024</span></span>)) sd.setblocking(<span class="hljs-keyword"><span class="hljs-keyword">False</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> range(<span class="hljs-number"><span class="hljs-number">3</span></span>): <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> os.fork () == <span class="hljs-number"><span class="hljs-number">0</span></span>: ed = <span class="hljs-keyword"><span class="hljs-keyword">select</span></span>.epoll() ed.register(sd, EPOLLIN | EPOLLEXCLUSIVE) <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span>: ed.poll() cd, _ = sd.accept() cd.<span class="hljs-keyword"><span class="hljs-keyword">close</span></span>() print <span class="hljs-string"><span class="hljs-string">'worker %d'</span></span> % (i,)</code> </pre> <br><p>  Each process has its own epoll event cycle.  Non-blocking <code>accept()</code> will be called only when epoll announces the presence of new connections.  In this case, the <a href="https://idea.popcount.org/2017-02-20-epoll-is-fundamentally-broken-12/">usual thundering herd</a> problem (when all the processes that can process it wake up is approached by even a single event) is avoided using the <code>EPOLLEXCLUSIVE</code> flag.  The full code is available <a href="https://github.com/cloudflare/cloudflare-blog/blob/master/2017-10-accept-balancing">here</a> . </p><br><p>  Both programs look similar, but their behavior is slightly different.  This is what will happen when we try to establish several connections with each of them: </p><br><div class="spoiler">  <b class="spoiler_title">Note</b> <div class="spoiler_text"><p>  Of course, it is not fair to compare the blocking <code>accept()</code> with the <code>epoll()</code> event cycle.  Epoll is a more powerful tool and allows you to create complete event-oriented programs.  Using the same blocking method of receiving connections is cumbersome.  For the meaningfulness of such an approach in real conditions, it will be necessary to have a thorough multi-threaded programming with a separate thread for each request. </p><br><p>  Another surprise - using the blocking <code>accept()</code> on Linux is technically incorrect!  Alan Burlison pointed out that if you execute <code>close()</code> on a passive socket, the <code>accept()</code> blocking calls that execute on it will not be interrupted.  This can lead to sudden behavior: successful <code>accept()</code> on a passive socket that no longer exists.  If in doubt, avoid using blocking <code>accept()</code> in multi-threaded programs.  A workaround is to call <code>shutdown()</code> before <code>close()</code> , but it does not comply with the POSIX standard.  Damn leg break. </p></div></div><br><pre> <code class="hljs ruby">$ ./blocking-accept.py &amp; $ <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> <span class="hljs-string"><span class="hljs-string">`seq 6`</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> nc localhost <span class="hljs-number"><span class="hljs-number">1024</span></span>; done worker <span class="hljs-number"><span class="hljs-number">2</span></span> worker <span class="hljs-number"><span class="hljs-number">1</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span> worker <span class="hljs-number"><span class="hljs-number">2</span></span> worker <span class="hljs-number"><span class="hljs-number">1</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span></code> </pre> <br><pre> <code class="hljs ruby">$ ./epoll-<span class="hljs-keyword"><span class="hljs-keyword">and</span></span>-accept.py &amp; $ <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> <span class="hljs-string"><span class="hljs-string">`seq 6`</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> nc localhost <span class="hljs-number"><span class="hljs-number">1024</span></span>; done worker <span class="hljs-number"><span class="hljs-number">0</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span> worker <span class="hljs-number"><span class="hljs-number">0</span></span></code> </pre> <br><p>  In the blocking-accept program, the connections were distributed among all the serving processes: each received exactly two.  In the epoll-and-accept program, all connections received only the first process, the rest did not receive anything.  The fact is that Linux differently balances requests in these two cases. </p><br><p>  In the first case, Linux will make a <abbr title="First In - First Out; first come first served">FIFO</abbr> cyclic distribution.  Each process waiting to return a call to <code>accept()</code> becomes a queue and receives new connections also in the order of the queue. </p><br><p>  In the case of epoll-and-accept, the algorithm is different: Linux seems to choose the process that was added to the queue to wait for new connections last, i.e.  <abbr title="Last In - First Out; the last to come first served">LIFO</abbr> .  This behavior results in most new connections being received by the most “busy” process, which has just returned to waiting for new events after processing the request. </p><br><p>  We see this distribution in NGINX.  Below is the output of the <code>top</code> command from the web server during a synthetic test, in which one of the serving processes gets more work and the rest is relatively less. </p><br><p><img src="https://habrastorage.org/webt/59/f0/8f/59f08f646b661604238268.png"></p><br><p>  Please note that the last process in the list is practically not busy (less than 1% of the CPU), and the first one consumes 30% of the CPU. </p><br><h2 id="so_reuseport-speshit-na-pomosch">  SO_REUSEPORT to the rescue </h2><br><p>  Linux supports the <code>SO_REUSEPORT</code> socket <code>SO_REUSEPORT</code> , which allows you to circumvent the described load balancing problem.  We have already explained the use of this option in the "in" mode, in which incoming connections are distributed over several queues instead of one.  As a rule, one queue per serving process is used. </p><br><p>  In this mode, Linux distributes new connections using hashing, which leads to a statistically uniform distribution of new connections and, as a result, approximately equal to the amount of traffic for each process: </p><br><p><img src="https://habrastorage.org/webt/59/f0/8f/59f08f6415fe5291636999.png"></p><br><p>  Now the process load variation is not so great: the leader consumes 13.2% of CPU, and the outsider - 9.3%. </p><br><p>  Well, the load distribution has become better, but this is not the whole story.  Sometimes splitting the receive queues of connections worsens the distribution of the delay in processing requests!  A good explanation for this is The Engineer guy: </p><br><iframe width="560" height="315" src="https://www.youtube.com/embed/F5Ri_HhziI0" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><p>  I call this problem "Waitrose cashiers versus Tesco cashiers" (popular retailers in Britain - <em>approx. Transl.</em> ).  The “one turn to all cashiers” Waitrose model better reduces the maximum delay.  One stalled cashier will not significantly affect the remaining customers in the queue, because they will go to less busy employees.  The Tesco model “for each cashier has its own turn” in the same case will lead to an increase in the time of service for a specific customer, and all who are behind him. </p><br><p>  In the case of increased load, method "b" does not evenly distribute the load evenly, but provides the best time to wait for a response.  This can be shown by synthetic dough.  Below is the distribution of response times for 100,000 relatively CPU-demanding requests, 200 simultaneous requests without HTTP keepalive, served by NGINX in the "b" configuration (one queue for all processes). </p><br><pre> <code class="hljs markdown">$ ./benchhttp -n 100000 -c 200 -r target:8181 http://aa/ | cut -d " " -f 1 | ./mmhistogram -t "Duration in ms (single queue)" min:3.61 avg:30.39 med=30.28 max:72.65 dev:1.58 count:100000 Duration in ms (single queue): value |-------------------------------------------------- count 0 | 0 1 | 0 2 | 1 4 | 16 8 | 67 16 |<span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span> 91760 32 | <span class="hljs-emphasis"><span class="hljs-emphasis">***</span></span>* 8155 64 | 1</code> </pre> <br><p>  It is easy to see that the response time is predictable.  The median is almost equal to the mean value, and the standard deviation is small. </p><br><p>  The results of the same test conducted with NGINX with the configuration method "c" using the option <code>SO_REUSEPORT</code> : </p><br><pre> <code class="hljs markdown">$ ./benchhttp -n 100000 -c 200 -r target:8181 http://aa/ | cut -d " " -f 1 | ./mmhistogram -t "Duration in ms (multiple queues)" min:1.49 avg:31.37 med=24.67 max:144.55 dev:25.27 count:100000 Duration in ms (multiple queues): value |-------------------------------------------------- count 0 | 0 1 | <span class="hljs-bullet"><span class="hljs-bullet">* 1023 2 | *</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*** 5321 4 | **</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span> 9986 8 | <span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">** 18443 16 | **</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">**** 25852 32 |**</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*** 27949 64 | **</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-strong"><span class="hljs-strong">*****</span></span><span class="hljs-emphasis"><span class="hljs-emphasis">***</span></span> 11368 128 | 58</code> </pre> <br><p>  The average value is comparable to that in the previous test, the median has decreased, but the maximum value has increased significantly and, most importantly, the standard deviation is now just huge.  Service time varies widely - definitely not the situation that I would like to have on the combat server. </p><br><p>  However, treat this test with healthy skepticism: we tried to create a significant burden in order to prove our case.  Your specific conditions may allow you to limit the load on the server so that it does not enter the described state.  For those who want to reproduce the test its <a href="https://github.com/cloudflare/cloudflare-blog/tree/master/2017-10-accept-balancing">description is available</a> . </p><br><div class="spoiler">  <b class="spoiler_title">Note</b> <div class="spoiler_text"><p>  To use NGINX and <code>SO_REUSEPORT</code> , several conditions must be met.  First make sure that NGINX version 1.13.6 or higher is used, or apply <a href="https://github.com/nginx/nginx/commit/da165aae88601628cef8db1646cd0ce3f0ee661f">this patch</a> .  Second, remember that due to a defect in the Linux implementation of TCP REUSEPORT, reducing the number of REUSEPORT queues will cause some pending TCP connections to be dropped. </p></div></div><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  The problem of balancing incoming connections between multiple processes of a single application is far from a solution.  Using the same queue using the "b" method scales well and allows you to keep the maximum response time at an acceptable level, but due to the mechanics of the epoll, the load will be unevenly distributed. </p><br><p>  For loads that require uniform distribution between serving processes, it may be useful to use the <code>SO_REUSEPORT</code> flag in the "in" method.  Unfortunately, in a high-load situation, the distribution of response times can deteriorate significantly. </p><br><p>  The best solution seems to change the standard behavior of epoll from LIFO to FIFO.  Jason Baron from Akamai has already tried to do this ( <a href="https://patchwork.kernel.org/patch/5803291/">1</a> , <a href="https://patchwork.kernel.org/patch/5841231/">2</a> , <a href="https://www.mail-archive.com/linux-kernel%40vger.kernel.org/msg831609.html">3</a> ), but so far these changes have not fallen into the core. </p><br><p>  <em>Explanation: The translator is not affiliated with Cloudflare, Inc.</em>  <em>The translation is made out of love for art, all rights are with their owners.</em>  <em>The author of <a href="https://www.flickr.com/photos/brizzlebornandbred/37470469351/in/photolist-WWESK-arHswn-YCzFLW-Z68X62-Ys7F95-5PkLkJ-7WevtH-reYKNA-bHdogM-PQtEbn-PrTv2Q-PQtEG2-P39C9u-P39CCL-X1waW-ynbVS2-27aa3n-7qy2iy-47YUTQ-u6Su9-Py1w8y-Py4WNE-PzgZY7-PnSq1A-PquMda-P39D4f-NnLGfG-Pssk7K-9qPn21">KDPV is</a> <a href="https://www.flickr.com/photos/brizzlebornandbred/">Paul Townsend</a> , CC BY-SA 2.0.</em> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/340950/">https://habr.com/ru/post/340950/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../340938/index.html">New virus Reaper infected 2 million IoT devices</a></li>
+<li><a href="../340940/index.html">Windows Defender removes the bootloader from DiskCryptor</a></li>
+<li><a href="../340942/index.html">Big migration</a></li>
+<li><a href="../340944/index.html">Bad Rabbit ransomware Trojan: Bad, Bad Rabbit</a></li>
+<li><a href="../340946/index.html">Jaeger Opentracing and Microservices in a real PHP and Golang project</a></li>
+<li><a href="../340952/index.html">13 surprises by a non-company</a></li>
+<li><a href="../340954/index.html">Cisco Sales Associate Program</a></li>
+<li><a href="../340956/index.html">Requirements analysis</a></li>
+<li><a href="../340958/index.html">How to apply neurotechnology in practice: hakaton Neuromedia-2017</a></li>
+<li><a href="../340960/index.html">IdM implementation. Part 2. How to determine what is worth thinking about the implementation of IdM?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

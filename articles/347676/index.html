@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Static analysis and property-based testing: together we are powerful</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="As you know, there are bugs in all programs. There are many ways to deal with them: unit tests, review, static analysis, dynamic analysis, smoke testi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Static analysis and property-based testing: together we are powerful</h1><div class="post__text post__text-html js-mediator-article"><p><img align="right" width="270" src="https://habrastorage.org/webt/zd/jc/ze/zdjczejgfxa3ep41doanxpwzota.png">  As you know, there are bugs in all programs.  There are many ways to deal with them: unit tests, review, static analysis, dynamic analysis, smoke testing, and so on.  Sometimes to eradicate a certain bug it is useful to combine different techniques. </p><br><p>  I am developing Java Inspection at IntelliJ IDEA, which is mostly written in Java.  In a sense, I am in a privileged position compared to other programmers: to refine the static IDE analyzer in order to find a new class of errors - this is my direct working duty, which, at the same time, allows finding and disabling bugs in the same IDE.  I want to share one such success story. </p><a name="habracut"></a><br><p>  In early October, a colleague threw me a report with a hung <a href="http://hypothesis.works/articles/what-is-property-based-testing/">property-based test</a> .  This test does something like the following: opens a random Java file from IDEA sources, makes some random edits, puts the cursor in a random place, applies some random quick-fix that is available at that place, and so on.  The colleagues did this thing at the summer hackathon and thanks to it they managed to catch and neutralize many bugs in the inspections before they were reported by users.  Also reproduced the errors that were once reported by users, but for some reason they were not reproduced here.  In general, a very useful thing.  If anyone is interested, the source is all available in the community IDEA version on <a href="">GitHub</a> . </p><br><p>  So, the report.  The test fell on a timeout, but it gives the initial value of the pseudo-random number generator, which can be used to reproduce the behavior.  Looking at the stack-trace, we managed to find out that the test hung in a fairly simple <a href="">endless loop</a> inside the inspection, reporting string concatenation in the loop: </p><br><pre><code class="java hljs">PsiElement parent = PsiUtil.skipParenthesizedExprUp(expression.getParent()); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (parent <span class="hljs-keyword"><span class="hljs-keyword">instanceof</span></span> PsiTypeCastExpression || parent <span class="hljs-keyword"><span class="hljs-keyword">instanceof</span></span> PsiConditionalExpression) { parent = PsiUtil.skipParenthesizedExprUp(expression.getParent()); }</code> </pre> <br><p>  Let me tell you why this cycle is needed.  String concatenation in a loop is known to be harmful, and often interchangeable with StringBuilder.  However, in some cases it makes no sense to warn about such a concatenation.  For example, if after each concatenation the current result is used: </p><br><pre> <code class="java hljs">String dots = <span class="hljs-string"><span class="hljs-string">""</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i=<span class="hljs-number"><span class="hljs-number">0</span></span>; i&lt;<span class="hljs-number"><span class="hljs-number">10</span></span>; i++) { dots += <span class="hljs-string"><span class="hljs-string">"."</span></span>; pacman.eatSomeDots(dots); }</code> </pre> <br><p>  There is no point in replacing it with <code>StringBuilder</code> , since every intermediate string is needed for passing to the method.  If it is possible to optimize, then it is not trivial.  It is here (or rather just below) that we check how the occurrences of references to a string variable are used.  Here, <code>expression</code> is another reference to a string in the source text of the program being analyzed (in our example, the parameter of the <code>eatSomeDots</code> method).  Obviously, if we call <code>eatSomeDots((dots))</code> , or <code>eatSomeDots((String)(dots))</code> , or even <code>eatSomeDots(flag ? dots : "***")</code> , then the line <code>dots</code> should still be considered always used.  Therefore, we climb up the hierarchy of expressions up, skipping possible brackets, type conversions (PsiTypeCastExpression) and conditional operators (PsiConditionalExpression). </p><br><p>  However, a banal typo has crept into the loop: there should be no <code>parent = PsiUtil.skipParenthesizedExprUp(expression.getParent());</code>  , and <code>parent = PsiUtil.skipParenthesizedExprUp(parent.getParent());</code>  .  It turned out to be an unpleasant situation: if the condition of the loop is true, then the <code>parent</code> reassigned to the same value that it already had, with the result that the loop becomes infinite. </p><br><p>  Ironically, the code, the purpose of which is to deal with performance problems in cycles, itself contains a problem in the cycle, albeit of a completely different sense.  This was not noticed on the review and for some reason it turned out that such a case was not covered by the unit test.  It is unpleasant.  I, of course, <a href="https://github.com/JetBrains/intellij-community/commit/8e19d90cd752fb8385f41706d2d4e36319f108ba">corrected the</a> code and wrote a unit test.  Is it worth it to stop?  No, every mistake must be analyzed to determine why it occurred, why it went unnoticed and what we can do to prevent the situation from repeating. </p><br><p>  There was no suitable unit test, which means that they never entered the loop body in tests - this is bad.  If we were to monitor code coverage regularly, this problem would probably have been avoided immediately.  But just to start demanding 100% test coverage is also a road to nowhere.  It was a review, it was good, but such an error was easy to miss, it was also wrong to blame the reviewer.  The fact that the property-based-test caught it, and earlier users - is generally excellent.  It means that such tests are really useful stuff and we made them not in vain.  But I, as the IDE author, was worried about another question: why couldn’t any of our inspections have warned of such a mistake?  Is it possible to write an inspection that marks this code?  Or can improve existing? </p><br><p>  We have several inspections that allow us to detect endless cycles.  For example, if the <code>parent</code> variable were not assigned in a loop, then the Loop variable is not updated inside loop inspection would work.  But it is assigned.  If the condition were always true, the inspection of “Constant conditions &amp; exceptions” would have worked.  But it can be false if we never enter the cycle.  Interestingly, the <code>skipParenthesizedExprUp</code> and <code>getParent</code> methods have no visible side effects, and the analyzer knows this because they are marked with the <code>@Contract(pure = true)</code> annotation.  Also, the cycle condition has no side effect.  It turns out that the entire side effect of one iteration of the loop is assignment to the local variable <code>parent</code> . </p><br><p>  Let's call a side effect, which changes only local variables (the variables themselves, and not, for example, the fields of the objects to which these variables refer) as “local side effects”, and any other side effect - non-local.  A local side effect can only affect the behavior of the current method.  If a cycle has only a local side effect, and its condition does not have any side effects at all, let's collect all the variables that we write to during one iteration of the cycle.  In our case, this is only the <code>parent</code> variable.  Let me remind you, the body of the loop looks like this: </p><br><pre> <code class="java hljs">parent = PsiUtil.skipParenthesizedExprUp(expression.getParent());</code> </pre> <br><p>  Now let's see if the value of this variable is used before the fact of assignment.  We can do this using simple control flow analysis.  This is generally a necessary operation for issuing correct error messages in Java: if a local variable is used before the first assignment, such a Java program is considered incorrect.  But we can apply this analysis only to the body of our cycle.  If the variable recorded in the body is used before assignment, then the value from the last iteration affects the next iteration.  Otherwise, the next iteration will do the same as the previous one, and we will not get new effects from subsequent iterations! </p><br><p>  In our loop, the situation is quite simple: the value of <code>parent</code> from the previous iteration in the body of the loop is not used at all.  However, this approach will allow you to catch more complex cases.  For example, imagine that another variable is written in a loop: </p><br><pre> <code class="java hljs">PsiExpression immediateParent = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (parent <span class="hljs-keyword"><span class="hljs-keyword">instanceof</span></span> PsiTypeCastExpression || parent <span class="hljs-keyword"><span class="hljs-keyword">instanceof</span></span> PsiConditionalExpression) { immediateParent = expression.getParent(); parent = PsiUtil.skipParenthesizedExprUp(immediateParent); }</code> </pre> <br><p>  Now we write two variables and read one of them during the iteration.  But we read guaranteed after it was written down, which means that we still never use the value from the previous iteration. </p><br><p>  How to characterize such a cycle?  Cycle without side effects?  But there is a side effect.  The problem is that this effect is always the same after the first iteration.  That is, either we will not enter the cycle at all, or we will execute one iteration.  If, after the first iteration, the condition of the loop remains true, then nothing new will happen on subsequent iterations, and we will loop.  Then the word <a href="https://ru.wikipedia.org/wiki/%25D0%2598%25D0%25B4%25D0%25B5%25D0%25BC%25D0%25BF%25D0%25BE%25D1%2582%25D0%25B5%25D0%25BD%25D1%2582%25D0%25BD%25D0%25BE%25D1%2581%25D1%2582%25D1%258C">idempotency</a> came to my mind.  The body of such a cycle is idempotent: re-performing the body has no effect.  And so a new inspection of the “ <a href="">Idempotent loop body</a> ” appeared. </p><br><p>  We made sure that the inspection highlighted the initial error cycle.  However, it is worth checking out what else it highlights and whether it gives false positives.  False workings can negate all the benefits of the inspection, such an inspection will only annoy and turn it off.  On the IDEA Ultimate source code, there were four more draws and it turned out that they are all correct: these are really four potentially infinite loops.  Such a trivial error, for example, was found in refactoring, which converts Groovy to Java: </p><br><pre> <code class="java hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> String </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">getNewFileName</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(GroovyFile file)</span></span></span><span class="hljs-function"> </span></span>{ ... String prefix = FileUtil.getNameWithoutExtension(file.getName()); String fileName = prefix + <span class="hljs-string"><span class="hljs-string">".java"</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> index = <span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (fileNames.contains(fileName)) { fileName = prefix + index + <span class="hljs-string"><span class="hljs-string">".java"</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> fileName; }</code> </pre> <br><p>  Pretty standard code to generate a unique file name.  In general, it is strange that it is written directly in the refactoring code.  For good this should be reusable utility solution.  By the way, another way to avoid bugs - do not reinvent the wheel.  It is better to debug a single reference bike and ride it all. </p><br><p>  In the code, obviously, an error, which is described by our script.  If there is no file named <code>prefix + ".java"</code> , then this name will be used.  If there is a file with this name, then the name <code>prefix + "1.java"</code> will be generated.  But if there is such a file, then we will have an infinite loop, because subsequent iterations will not give new effects (here the effect is a change in <code>fileName</code> ).  Probably the first two cases were tested, and the third was missed.  <a href="https://github.com/JetBrains/intellij-community/commit/5993d859f6ad866b6c9d091c13fa459b6caeb1da">The fix is</a> quite simple - you need to increase the <code>index</code> variable in the loop. </p><br><p>  This story showed how important it is to analyze the error found.  Property-based-test revealed one infinite loop, that's good.  But such tests also cover not everything.  In this case, it turned out that the error can also be found statically and after a corresponding refinement of the static analyzer, we found four more similar errors.  Does this mean that static analysis is five times better than property-based-tests?  No, because without a test, we would not have known about this problem at all (at least until the users stumbled upon it).  In addition, the property-based-test can find errors that cannot be described by static rules at all.  Different search and error prevention techniques are powerful when they work together.  If you think about how to detect the error found statically, you can save a lot of time and effort in the future.  Of course, not everyone can easily modify the static analyzer.  But you can search for simple cases in IDEA using the <a href="https://www.jetbrains.com/help/idea/structural-search-and-replace-examples.html">Structural search</a> (you can also configure the inspection to highlight your own template).  If you ran into a more complicated, but potentially formalized situation, you can always throw an idea into the official bug tracker of your IDE. </p><br><p>  The “Idempotent loop body” inspection is available in <a href="https://blog.jetbrains.com/idea/2018/01/intellij-idea-starts-2018-1-early-access-program/">EAP-versions of</a> IDEA 2018.1, so you can try it now.  Program with pleasure! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/347676/">https://habr.com/ru/post/347676/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../347666/index.html">The code was checked literally by line: how our firewall was certified by FSTEC</a></li>
+<li><a href="../347668/index.html">Break and fallthrough operator</a></li>
+<li><a href="../347670/index.html">Developing Tic-Tac-Toe on native javascript</a></li>
+<li><a href="../347672/index.html">How robots help people start investing in the stock market: what is roboking and how it works</a></li>
+<li><a href="../347674/index.html">"Supercomputer" digest: 4 news from the world of high-performance computing</a></li>
+<li><a href="../347678/index.html">Creating cognitive connections with players</a></li>
+<li><a href="../347680/index.html">Interview with Jasi2169</a></li>
+<li><a href="../347684/index.html">Telephony for hotels: review of the hotel module PBX 3CX</a></li>
+<li><a href="../347686/index.html">The theory of "broken" warnings</a></li>
+<li><a href="../347688/index.html">Performance comparison of C and C ++ using the example of Huffman compression</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

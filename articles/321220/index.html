@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>A note on how to debug locks in the Linux kernel</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! This note concerns one practical technique that I used to solve the problem of determining the place in the Linux kernel, where a certain spin ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>A note on how to debug locks in the Linux kernel</h1><div class="post__text post__text-html js-mediator-article"><p>  Hello!  This note concerns one practical technique that I used to solve the problem of determining the place in the Linux kernel, where a certain spin lock (spin lock) is held.  This problem arose quite spontaneously and, given the complexity of the kernel, could require a large amount of time to solve.  If you are interested, please read more ... </p><a name="habracut"></a><br><p>  So, here is the real situation that arose in the <a href="https://github.com/tempesta-tech/tempesta">Tempesta FW</a> project, where I had to take part in the role of the developer of a nuclear WEB accelerator / firewall (yes, implemented in the Linux kernel). </p><br><p>  During the work of the module, it was noticed that sometimes during the load, debug messages appear in the kernel log, indicating that an attempt is made to execute a block of code, assuming that the object (socket) processed in it will not be held by anyone else. </p><br><p> Due to the high coding culture in the project, namely the abundant use of constructions like <code>BUG_ON/WARN_ON</code> and other various <code>BUG_ON/WARN_ON</code> , situations where something went against the logic implemented by the developer were easily caught.  So this time - having knowledge of the internal logic of the kernel, the developer found it necessary to protect himself and others, and just in case added a check of the form: </p><br><pre> <code class="hljs lisp"> if (<span class="hljs-name"><span class="hljs-name">unlikely</span></span>(<span class="hljs-name"><span class="hljs-name">spin_is_locked</span></span>(<span class="hljs-name"><span class="hljs-name">&amp;sk-&gt;sk_lock</span></span>.slock))) SS_WARN(<span class="hljs-string"><span class="hljs-string">"Socket is used by two cpus, action=%d"</span></span> <span class="hljs-string"><span class="hljs-string">" state=%d sk_cpu=%d curr_cpu=%d\n"</span></span>, sw.action, sk-&gt;sk_state, sk-&gt;sk_incoming_cpu, smp_processor_id())<span class="hljs-comment"><span class="hljs-comment">;</span></span></code> </pre> <br><p>  And everything was fine until the messages <code>"Socket is used by two cpus, ..."</code> really appeared in the kernel log.  That is, <code>if (unlikely(spin_is_locked(&amp;sk-&gt;sk_lock.slock))) { ... }</code> condition worked in this place, which was evidence of the fact that someone else held the lock.  Further, I will tell you how I managed to find out quite easily who is holding this spin-lock. </p><br><p>  So, we have the following.  There is a <code>struct sock</code> socket descriptor structure in which there is a <code>sk_lock</code> lock of the <code>socket_lock_t</code> type, including a spinlock <code>slock</code> type (see <a href="">here</a> and <a href="">here</a> ).  The spin-lok itself is based on the <code>raw_spinlock_t</code> structure, which includes a <code>dep_map</code> of <code>struct lockdep_map</code> , containing (including) information about the holders.  The latter becomes available only when building a kernel with the <code>CONFIG_DEBUG_LOCK_ALLOC</code> option.  But we are hackers :) </p><br><p>  Thus, for debugging, I needed to build the kernel with the <code>CONFIG_DEBUG_LOCK_ALLOC</code> option and make the following change to the code: </p><br><pre> <code class="hljs rust">--- a/tempesta_fw/sock.c +++ b/tempesta_fw/sock.c @@ -<span class="hljs-number"><span class="hljs-number">1101</span></span>,<span class="hljs-number"><span class="hljs-number">11</span></span> +<span class="hljs-number"><span class="hljs-number">1101</span></span>,<span class="hljs-number"><span class="hljs-number">14</span></span> @@ ss_tx_action(void) <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (!tfw_wq_pop(this_cpu_ptr(&amp;si_wq), &amp;sw)) { <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">sock</span></span></span></span> *sk = sw.sk; - <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (unlikely(spin_is_locked(&amp;sk-&gt;sk_lock.slock))) + <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (unlikely(spin_is_locked(&amp;sk-&gt;sk_lock.slock))) { SS_WARN(<span class="hljs-string"><span class="hljs-string">"Socket is used by two cpus, action=%d"</span></span> <span class="hljs-string"><span class="hljs-string">" state=%d sk_cpu=%d curr_cpu=%d\n"</span></span>, sw.action, sk-&gt;sk_state, sk-&gt;sk_incoming_cpu, smp_processor_id()); + printk(<span class="hljs-string"><span class="hljs-string">"raw_spinlock = %p\n"</span></span>, &amp;sk-&gt;sk_lock.slock.rlock); + BUG(); + } bh_lock_sock(sk); switch (sw.action) {</code> </pre> <br><p>  The meaning of the change is to dump the address of the captured spinlock to a log when the necessary situation arises and crash the kernel due to a <code>BUG</code> .  In fact, it provides an excellent opportunity to dump the kernel image as of the time of the error and, knowing the address of the object, examine its contents later. </p><br><p>  A bunch of QEMU + kdump was used to capture the dump.  The latter is a kernel mechanism that allows you to stop the current kernel and, via kexec, load a backup (simpler) one, which will dump the image of the previous one as a file. </p><br><p>  The <a href="https://github.com/crash-utility">crash</a> utility was used to analyze the resulting dump.  It is better to pump out and collect by hand, because  I had problems with the regular versions in the distributions.  We have the following: </p><br><pre> <code class="hljs pgsql">crash&gt; <span class="hljs-keyword"><span class="hljs-keyword">log</span></span> [ <span class="hljs-number"><span class="hljs-number">56.934038</span></span>] [sync_sockets] <span class="hljs-built_in"><span class="hljs-built_in">Warning</span></span>: Socket <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> used <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> two cpus, action=<span class="hljs-number"><span class="hljs-number">0</span></span> state=<span class="hljs-number"><span class="hljs-number">1</span></span> sk_cpu=<span class="hljs-number"><span class="hljs-number">2</span></span> curr_cpu=<span class="hljs-number"><span class="hljs-number">2</span></span> [ <span class="hljs-number"><span class="hljs-number">56.934066</span></span>] raw_spinlock = ffff880001f28b70</code> </pre> <br><p>  Well, the address of the object is known ( <code>ffff880001f28b70</code> ).  Let's see what is there: </p><br><pre> <code class="hljs go">crash&gt; raw_spinlock_t ffff880001f28b70 <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> raw_spinlock_t { raw_lock = { { head_tail = <span class="hljs-number"><span class="hljs-number">0x3434</span></span>, tickets = { head = <span class="hljs-number"><span class="hljs-number">0x34</span></span>, tail = <span class="hljs-number"><span class="hljs-number">0x34</span></span> } } }, magic = <span class="hljs-number"><span class="hljs-number">0xdead4ead</span></span>, owner_cpu = <span class="hljs-number"><span class="hljs-number">0xffffffff</span></span>, owner = <span class="hljs-number"><span class="hljs-number">0xffffffffffffffff</span></span>, dep_map = { key = <span class="hljs-number"><span class="hljs-number">0xffffffff82cd95f</span></span>0 &lt;af_family_slock_keys+<span class="hljs-number"><span class="hljs-number">16</span></span>&gt;, class_cache = {<span class="hljs-number"><span class="hljs-number">0xffffffff</span></span>8261be30 &lt;lock_classes+<span class="hljs-number"><span class="hljs-number">319920</span></span>&gt;, <span class="hljs-number"><span class="hljs-number">0xffffffff826283d</span></span>0 &lt;lock_classes+<span class="hljs-number"><span class="hljs-number">370512</span></span>&gt;}, name = <span class="hljs-number"><span class="hljs-number">0xffffffff815b719d</span></span> <span class="hljs-string"><span class="hljs-string">"slock-AF_INET"</span></span>, cpu = <span class="hljs-number"><span class="hljs-number">0x1</span></span>, ip = <span class="hljs-number"><span class="hljs-number">0xffffffff813c667f</span></span> } }</code> </pre> <br><p>  At the address <code>ip = 0xffffffff813c667f</code> we find the function in which the lock was captured: </p><br><pre> <code class="hljs swift">$ addr2line -f -e vmlinux <span class="hljs-number"><span class="hljs-number">0xffffffff813c667f</span></span> tcp_tasklet_func /home/milabs/linux-stable-<span class="hljs-number"><span class="hljs-number">4.1</span></span>/net/ipv4/tcp_output.<span class="hljs-built_in"><span class="hljs-built_in">c</span></span>:<span class="hljs-number"><span class="hljs-number">773</span></span></code> </pre> <br><p>  Here is the answer - the lock on the socket was captured in tcp_tasklet_func <code>tcp_tasklet_func</code> . </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/321220/">https://habr.com/ru/post/321220/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../321208/index.html">Remote connection to the CodeMeter network key for ARCHICAD</a></li>
+<li><a href="../321210/index.html">Classical labyrinth generation algorithms. Part 2: Immersion in Accident</a></li>
+<li><a href="../321212/index.html">Study of the qualitative features of the dynamics of mathematical models of nonlinear nonautonomous systems</a></li>
+<li><a href="../321214/index.html">The digest of fresh materials from the world of the frontend for the last week №248 (January 30 - February 5, 2017)</a></li>
+<li><a href="../321216/index.html">Interesting clustering algorithms, part one: Affinity propagation</a></li>
+<li><a href="../321222/index.html">Unique users are not truly unique users.</a></li>
+<li><a href="../321224/index.html">Sport is dead! (based on "Agile died" and other obituaries)</a></li>
+<li><a href="../321226/index.html">How we created a hosting provider with our own data center (continued)</a></li>
+<li><a href="../321228/index.html">Visual C ++ for Linux Development: Practicing for Windows Developers</a></li>
+<li><a href="../321230/index.html">Translation of excerpts from Robert Heinlein’s book, Take Your Government Back - part 21</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

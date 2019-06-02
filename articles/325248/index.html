@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Pitfalls for home-made distribution "out of the box" in the C ++ actor framework</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the comments to the last article about the bumps that we had a chance to fill in over 15 years of using actors in C ++, the topic of the lack of di...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Pitfalls for home-made distribution "out of the box" in the C ++ actor framework</h1><div class="post__text post__text-html js-mediator-article"><p>  <a href="https://habrahabr.ru/post/324978/">In the comments</a> to the last article about the bumps that we had a chance to fill in over 15 years of using actors in C ++, the topic of the lack of distribution out of the box in <a href="https://sourceforge.net/projects/sobjectizer/">SObjectizer-5</a> reappeared.  We have already answered these questions many times, but it is obvious that this is not enough. </p><br><p>  In SObjectizer-5 there is no distribution because there was support for distribution in SObjectizer-4, but as the range of tasks solved by SObjectizer expanded and the load on SObjectizer applications grew, we had to learn several lessons: </p><br><ul><li>  For each type of task, it is desirable to have its own specialized protocol.  Because the exchange of a large number of small messages, the loss of which is not terrible, is very different from the exchange of large binary files; </li><li>  Implementing back-pressure for asynchronous agents is not an easy thing in itself.  And when communication over the network is mixed in here, the situation becomes much worse; </li><li>  Today, some pieces of a distributed application will necessarily be written in other programming languages, and not in C ++.  Therefore, interoperability is required and our own protocol, sharpened for C ++ and SObjectizer, hinders the development of distributed applications. </li></ul><br><p>  Further in article we will try to open a subject in more detail. </p><a name="habracut"></a><br><h1>  Preamble </h1><br><p>  At the beginning we will try to formulate the prerequisites, without which, in my opinion, there is no point in using our own transport protocol for the actor framework. </p><br><h2>  Transparent sending and receiving messages </h2><br><p>  Distribution "out of the box" is good when it is transparent.  Those.  when sending a message to the remote side is no different from sending a message inside the application.  Those.  when the agent calls send &lt;Msg&gt; (target, ...), and already the framework determines that the target is some other process or even another node.  After that, it serializes, puts the message in a queue for sending, sends it to some channel. </p><br><p>  If there is no such transparency and the API for sending a message to the remote side is noticeably different from the API for sending a message within the same process, then what is the benefit of using the built-in framework mechanism?  How is this better than using any ready-made MQ broker, ZeroMQ, RESTful API or, say, gRPC?  Own bike on this topic is unlikely to be better than a ready-made third-party tool that develops a long time ago and with much larger forces. </p><br><p>  The same goes for receiving messages.  If for an agent an incoming message from a neighboring agent is no different from an incoming message from a remote node, then this is exactly what makes it possible to easily and unconditionally separate one large application into parts that can work in different processes on one or several nodes.  If a local message is obtained in one way, and a message from a remote node is different, then the benefits of own bicycles are much less.  And, again, it is not clear why give preference to your own bike, and not to use, for example, one of the existing MQ brokers. </p><br><h2>  Application Topology Transparency </h2><br><p>  It is good when all nodes of a distributed application are connected to each other: </p><br><img src="https://habrastorage.org/files/e4f/153/b8b/e4f153b8b56e4bacab22369daa858dbd.png"><p>  In this case, there is no problem at all to send a message from node A to node E. </p><br><p>  Only here in real life topologies will not be so simple and will have to work in a situation where there is no direct connection between some nodes: </p><br><img src="https://habrastorage.org/files/111/750/7d2/1117507d2348494f99ff17faeb62b29d.png"><br><p>  In this case, node A cannot send a message to node E directly, for this it will be necessary to use the services of intermediate node D. Naturally, I want the programmer who uses the actor framework to know nothing about the choice of message transfer routes.  Since if the programmer has to explicitly indicate that the message from A to E should go through D, then the “out of the box” sense of this distribution will not be as much as we would like. </p><br><h2>  Minimizing the number of channels and their types </h2><br><p>  If two nodes need to exchange, for example, three types of traffic (say, a normal transaction flow with acknowledgments; regular exchange of verification information, telemetry), then one could, in theory, create three different channels between these two nodes.  The first would be transactional traffic, the second would be verification files, and the third would be telemetry. </p><br><p>  Only in practice it is not convenient.  The fewer the channels, the better.  If only one channel is enough to transmit all three types of traffic, then the programmer himself will be easier, and the DevOps will definitely say thank you. </p><br><p>  Minimizing the number of channels is also important for solving problems in the topology of a distributed application.  So, if you need to interact with nodes A and E, it is hardly convenient to create three different channels between A and D for this interaction, and then three more between E and D. </p><br><p>  Accordingly, a good distribution “out of the box” should be able to drive different types of traffic through the same communication channel.  If it does not do this well, then it is much easier to use different types of transport for each type of traffic. </p><br><h1>  Well, actually, the pitfalls themselves </h1><br><p>  So, the built-in distribution is good when it is not different from local messaging, it determines the topology itself and selects the best way to deliver messages, and is able to transmit different types of messages over the same communication channels.  When implementing such a distribution will have to face several problems.  Here is a list of them in no particular order, without trying to sort them by degree of "severity" and / or "importance."  Well, yes, the list is not complete.  This is just what was immediately remembered. </p><br><h2>  Back-pressure between application and transport agents </h2><br><p>  Asynchronous messaging is not good friends with back-pressure.  An agent that performs send &lt;Msg&gt; (target, ...) cannot simply be suspended on a send call if there are a lot of unprocessed messages in the recipient's queue.  In the case where target is the remote side, we get the following: </p><br><ul><li>  There is a queue of messages that need to be sent to the remote side.  These are not yet serialized messages that must be properly serialized and prepared for transmission to the channel.  This queue can grow very quickly if the sending agents generate more messages than the agent responsible for converting messages into some format can process; </li><li>  There is a buffer (or a set of buffers) in which the data already prepared for sending lie, which have not yet gone to the channel.  When gaps occur in the network, when the write speed to the channel drops, the volumes of these buffers increase. </li></ul><br><p>  Here you can use different approaches.  For example, the same agent receives messages, serializes them and writes to the channel.  In this case, it may have a limited-size buffer for the serialized data, but few opportunities to influence the size of the queue of yet un-serialized messages.  Or maybe two different agents: one accepts the message, serializes them to buffers with binary data, and the second agent is responsible for writing these buffers to the channel.  Then both message queues and buffer queues can grow (as well as the sizes of these buffers) with some gaps in the network and / or within the application itself. </p><br><p>  The easy way out is to “cut” the excess.  Those.  if the channel starts to slow down, then we do not allow the queues to grow beyond a certain size.  And just throwing away some data (for example, the oldest or the newest).  But this leads to several issues requiring some sort of solution: </p><br><ul><li>  The sizes of these buffers would be good to tyunit in order to lose as little as possible and calmly experience small gags.  There is a headache about the settings of these parameters.  It is even more fun when these parameters have to adapt to the current conditions at run-time; </li><li>  The application's application logic may require to somehow fix the facts of the ejection of messages.  Roughly speaking, if the message A with the identifier Id1 was thrown out because of gaps in the network, then traces of this should appear in the logs.  Otherwise, then it will be impossible to understand why transaction X began, reached the stage of sending A, and then “hung up” without movement. </li></ul><br><p>  We also add here the problem that the communication channels are not reliable and can break at any time.  This may be a short-term gap, in which it is desirable to keep in memory what has already been prepared for sending.  And maybe a long break, at which you need to throw away everything that has already accumulated in the buffers for writing to the channel. </p><br><p>  Moreover, the concept of "long-term" may vary from application to application.  Somewhere "long" is a few minutes or even tens of minutes.  And somewhere where messages are transmitted at a rate of 10,000 per second, a gap of just 5 seconds will be considered long. </p><br><p>  The problem is that interaction problems in the direction from application agents to transport ones are that application agents, as a rule, do not need to know that they are sending a message to the remote side, and not to the neighboring agent in the same process.  But from this it follows that when the transfer rate of outgoing data drops or the channel breaks completely, then application agents cannot so easily suspend the generation of their outgoing messages.  And the discrepancy between what the application agents generate and what can go into the channel should be taken over by the transport layer, i.e.  the same transparent distribution out of the box. </p><br><h2>  Back-pressure between transport and application agents </h2><br><p>  In the distributed application component, the traffic will be not only outgoing, but also incoming.  Those.  the transport layer will read the data from the I / O channel, deserialize it and convert it into ordinary application messages, after which application messages are delivered to application agents as normal local messages. </p><br><p>  Accordingly, it can easily happen that the data from the channel arrive faster than the application has time to deserialize it, deliver it to application agents and process it.  If you let this situation take its course, then nothing good will come to an end for the application: there will be an overload, which, in the event of a bad scenario, will lead to a complete loss of working capacity due to performance degradation. </p><br><p>  Meanwhile, when processing incoming traffic, we must use the opportunity to stop reading from the channel when we do not have time to process previously read data.  In this case, the remote side will sooner or later find that the channel is unavailable for recording and will stop sending data on its side.  What is good. </p><br><p>  But the question arises: if the transport agent simply reads the socket, deserializes the binary data into application messages, and gives these messages to someone, how does the transport agent know that these application messages do not have time to be processed? </p><br><p>  The question is simple, but to answer it when we are trying to make a transparent distribution is not so simple. </p><br><h2>  Mix traffic with different priorities in the same channel </h2><br><p>  When the same channel is used to transmit different types of traffic, then sooner or later the problem arises of prioritizing this traffic.  For example, if a large verification file with a size of several tens of megabytes was sent from node A to node E, then as it goes, it may be necessary to transmit several messages with new transactions.  Since transactional traffic is more important for an application than file transfer with reconciliations, I would like to suspend the transfer of the reconciliation file, send several short messages with transactions and return again to the suspended transfer of a large file. </p><br><p>  The problem here is that the trivial implementation of the transport layer will not be able to :( </p><br><h2>  Fire-and-forget or not-to-forget? </h2><br><p>  I think that I will not be mistaken if I say that the use of fire-and-forget policy is a common practice when building applications based on agents / actors.  The sending agent simply asynchronously sends the message to the receiving agent and does not care about whether the message reached or was lost somewhere along the way (for example, it was thrown out by the agent overload protection mechanism). </p><br><p>  All this is good until there is a need to transfer large binary blocks (BLOBs) through the transport channel.  Especially if this channel has the property often break.  After all, no one will like it if we started transmitting the block to 100MiB, transmitted 50MiB, the channel broke, then recovered, and we did not send anything.  Or they started resending it all over again. </p><br><p>  When faced with the need to transfer BLOBs between parts of a distributed application, you involuntarily come to the conclusion that such BLOBs need to be split, transferred in small portions, keep records of successfully delivered portions and resend those that failed. </p><br><p>  This approach is also useful in that it is good friends with the task of prioritizing traffic in the communication channel described above.  Only here the trivial implementation of the transport layer is unlikely to support this approach ... </p><br><h1>  Total </h1><br><p>  Above are a few prerequisites that we found important for transparent support for distribution in the actor framework.  As well as a few problems that the developer will face when trying to implement this very transparent distribution.  It seems to me that all this should be enough to understand that the trivial implementations are not so much confusion.  Especially if the framework is actively used to solve different types of tasks, the requirements of which are very different. </p><br><p>  In no case do I want to say that it is impossible to make a transport layer that would successfully cover all or most of the indicated problems.  As far as I know, <a href="https://zeroc.com/products/ice">in Ice from ZeroC</a> , something like this is just implemented.  Or in <a href="http://nanomsg.org/documentation-zeromq.html">nanomsg</a> .  So it is possible. </p><br><p>  There are two problems here: </p><br><ul><li>  Can you invest so much in the development of your advanced transport layer?  The same Ice from ZeroC is in active development and operation for more than fifteen years.  And the author of nanomsg before this "dog ate" on the implementation of ZeroMQ.  Do you have such resources and such competence? </li><li>  How to ensure interoperability with other programming languages?  Closed systems, such as Erlang and Akka, are good, they are little concerned with what happens outside their ecosystems.  In the case of a self-made and little-known actor framework for C ++, the situation is completely different. </li></ul><br><p>  In SObjectizer-4 we faced all these problems.  Some have decided, some have bypassed, some have remained.  When creating SObjectizer-5, we looked at the problem of distribution once again and realized that we did not have enough of our resources to successfully cope with it.  We focused on making SObjectizer-5 a cool tool for simplifying life when building multithreaded applications.  Therefore, SO-5 closes message-dispatching problems within a single process.  Well, communication between processes ... </p><br><p>  As it turned out, such communication is quite convenient to do with the use of ready-made protocols and ready-made MQ brokers.  For example, <a href="">through MQTT</a> .  Of course, there is no transparent distribution.  But practice shows that when it comes to high loads or complex work scenarios, there is little benefit from the transparent distribution of benefits. </p><br><p>  However, if someone knows an open transport protocol that could be effectively used to communicate between agents, and with the support of interoperability between programming languages, you can seriously think about its implementation on top and / or for SObjectizer. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/325248/">https://habr.com/ru/post/325248/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../325234/index.html">Poll. What php-framework do you use?</a></li>
+<li><a href="../325236/index.html">FPGA image rotation</a></li>
+<li><a href="../325242/index.html">Tuning SQL Server 2012 under SharePoint 2013/2016. Part 1</a></li>
+<li><a href="../325244/index.html">SEM time measure. Or “how do you know SEM and what to do next?”</a></li>
+<li><a href="../325246/index.html">Sandbox technology. Check Point SandBlast. Part 1</a></li>
+<li><a href="../325252/index.html">On the practice of using the IBM DOORS requirements management system at NAMI</a></li>
+<li><a href="../325254/index.html">Bitfury: about the team, requirements for candidates and open vacancies</a></li>
+<li><a href="../325256/index.html">Cheap cloud backup with encryption for home</a></li>
+<li><a href="../325258/index.html">Through thorns to the stars: why you need to seek access to users, and how to do it</a></li>
+<li><a href="../325262/index.html">Free image compression tools to speed up the site</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

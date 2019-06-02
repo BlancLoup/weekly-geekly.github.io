@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Highlighting large text fields in ElasticSearch</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In December 2016, my friend and I started a new project - a collection-indexing-search system for documents. The system is built around ElasticSearch ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Highlighting large text fields in ElasticSearch</h1><div class="post__text post__text-html js-mediator-article"><p><img align="left" width="200" src="https://habrastorage.org/files/055/df7/ed0/055df7ed0cc8404f8ab20eb3c1764caf.png">  In December 2016, my friend and I started a <a href="https://github.com/RD17/ambar">new project</a> - a collection-indexing-search system for documents.  The system is built around ElasticSearch (hereinafter - ES), which we use as the main engine for full-text search. </p><br><p>  We would like to share the valuable data acquired during the work on the project with our readers in a series of articles about ES.  Let's start with the basis of any search engine - highlighting the search results (hereinafter - highlight). </p><br><p>  Proper highlighting of search results is perhaps the most important criterion for the effectiveness of a search engine for a user.  Firstly, the logic of including the document in the search results is visible, and secondly, the highlighting of the block of the found text makes it possible to quickly assess the context of the hit found. </p><br><p>  One of the key requirements for our search engine was the ability to quickly and efficiently work with large files (over 100 MB).  In this article, we will explain how to achieve high performance from ES when highlighting large fields of a document. </p><br><p>  The screenshot below shows how the highlighting of search results in our project. </p><br><p><img src="https://habrastorage.org/files/c79/eaf/5dc/c79eaf5dc1c64867837b744381947448.png" alt="Sample Search Results with Highlight"></p><a name="habracut"></a><br><h2 id="pervyy-shag-ili-sut-problemy">  The first step or the crux of the problem </h2><br><p>  So, we use ES for storing and searching in metadata and parsed file contents.  An example of a document that we store in ES: </p><br><pre><code class="hljs pgsql">{ sha256: "1a4ad2c5469090928a318a4d9e4f3b21cf1451c7fdc602480e48678282ced02c", meta: [ { id: "21264f64460498d2d3a7ab4e1d8550e4b58c0469744005cd226d431d7a5828d0", short_name: "quarter.pdf", full_name: "//winserver/store/reports/quarter.pdf", source_id: "crReports", <span class="hljs-keyword"><span class="hljs-keyword">extension</span></span>: ".pdf", created_datetime: "2017-01-14 14:49:36.788", updated_datetime: "2017-01-14 14:49:37.140", extra: [], indexed_datetime: "2017-01-16 18:32:03.712" } ], content: { size: <span class="hljs-number"><span class="hljs-number">112387192</span></span>, <span class="hljs-comment"><span class="hljs-comment">/*   100 Mb */</span></span> indexed_datetime: "2017-01-16 18:32:33.321", author: "John Smith", processed_datetime: "2017-01-16 18:32:33.321", length: "", <span class="hljs-keyword"><span class="hljs-keyword">language</span></span>: "", state: "processed", title: "Quarter Report (Q4Y2016)", <span class="hljs-keyword"><span class="hljs-keyword">type</span></span>: "application/pdf", <span class="hljs-type"><span class="hljs-type">text</span></span>: "....     ...." } }</code> </pre> <br><p>  As you may have guessed, this is a jarring content of a pdf file with a financial report of just over 100 MB in size.  I deliberately shortened the field <code>content.text</code> , it is obvious that its length is approximately equal to 100 MB. </p><br><p>  Let's make a simple experiment: take 1000 of these documents and index them with ES without using any special settings of the index or the ES itself.  Let's see how fast the search and highlight will work on these documents. </p><br><p>  Results: </p><br><ul><li>  Search <code>match_phrase</code> in the <code>content.text</code> field: from 5 to 30 seconds. </li><li>  Formation of a highlight for the <code>content.text</code> field for each of the documents: more than 10 seconds. </li></ul><br><p>  Such performance is no good.  The user expects to see results instantly (&lt;200 ms), and not in tens of seconds.  Let's figure out how to solve the problem of slow formation of a highlight.  The problem of fast search in large files will be discussed in the next article of the cycle. </p><br><h2 id="vybiraem-algoritm-haylaytinga">  Selecting the highlight algorithm </h2><br><p>  In ES, it is possible to use three types of highlighters.  See the <a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-highlighting.html">official manual</a> . <br>  For those who are too lazy to read, on the fingers: </p><br><ul><li>  <strong>Plain</strong> is the default option, the slowest but the highest quality (according to ES, almost 100% reflects the Lucene search algorithm, and this is true), unloads the entire document into memory and re-analyzes it to form a highlight. </li><li>  <strong>Postings</strong> - a faster highlighter, hits the field for sentences and pulls out for the highlight not the entire document, but the sentences where the token was found, ranking them using the <a href="http://nlp.stanford.edu/IR-book/html/htmledition/okapi-bm25-a-non-binary-model-1.html">BM25</a> algorithm.  Requires an enrichment of the index positions of these very proposals. </li><li>  <strong>Fast Vector Highlighting (FVH)</strong> - positioned as the fastest highlighter, especially for large documents.  It requires the index to be enriched with the data on the positions of all tokens in the source document, thanks to which it forms a highlight in almost constant time, regardless of the size of the document. </li></ul><br><p>  As described above, the default ES in Plain highlighter is used.  Thus, each time, to form ES highlights, it unloads all 100 megabytes of text into memory and, because of this, it responds to the request very, very slowly.  We abandoned the Plain highlighter and decided to test the Postings and FVH.  As a result, our choice fell on FVH for several reasons: </p><br><ul><li>  A document with a size of 100 MB FVH, on average, a highlight is about 10-20 ms, Postings spends about a second on this </li><li>  Postings do not always correctly break the text into sentences, so the size of the resulting highlight jumps quite often (it can return 50 words, and maybe 300).  With FVH, there was no such problem.  It returns the specified number of tokens to both sides of the hit. </li><li>  Postings of highlight tokens regardless of their position, so phrase highlighting in this case does not work correctly.  For example, <code>simple_string_query</code> "Ivan Ivan Ivan" ~ 5 zhaylaytit not only cases when two tokens "Ivan" and "Ivan" will be at a distance of no more than 5 tokens from each other, but all the other tokens "Ivan" or "Ivan" in a given field of the document, as if it was just a <code>bool</code> request for a <code>match</code> "ivanov" and "ivan" </li></ul><br><h2 id="podvodnye-kamni-fast-vector-highlighter">  Pitfalls Fast Vector Highlighter </h2><br><p>  In the process of working with FVH, we noticed the following problem: the <code>match_phrase</code> search query "Ivan Ivan Ivan" finds the occurrences "Ivan Ivan Ivan" and "Ivan Ivan Ivanov", but FVH highlights only hits in the order specified in the query.  This nuance is not mentioned in any manual on ES, in our opinion this error occurs as a result of the fact that FVH takes into account the positions of the tokens for the <code>match_phrase</code> request.  We solved the problem in a detour way - we add a <code>highlight_query</code> field to the query in which all the possible positions of the tokens in the phrase are searched.  This is the only way that allowed you to get all the highlights while maintaining performance at the proper level. </p><br><h2 id="itog">  Total </h2><br><p>  Highlight large ES documents can indeed, with fast.  It is important to properly configure the index, and take into account the features of the highlighter.  If you solved a similar problem and found, as you think, a more elegant solution, tell us about it in the comments. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/320390/">https://habr.com/ru/post/320390/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../320376/index.html">Design of multilingual applications</a></li>
+<li><a href="../320378/index.html">The history of the introduction of EDS in one enterprise</a></li>
+<li><a href="../320380/index.html">Intel QuickAssist: let's encrypt it quickly</a></li>
+<li><a href="../320384/index.html">Digital workplace: what is it really?</a></li>
+<li><a href="../320388/index.html">Logeek Night St. Petersburg, February 16</a></li>
+<li><a href="../320392/index.html">Best reports of Mobius 2016: Rating and videos</a></li>
+<li><a href="../320394/index.html">Cisco WebEx Web Conferencing Extend Vulnerability Allows Arbitrary Code Execution</a></li>
+<li><a href="../320396/index.html">Introduction to Akka.NET</a></li>
+<li><a href="../320398/index.html">Defect Detection Code Type Expression Issues (CWE-569)</a></li>
+<li><a href="../320400/index.html">Cloud.Mail.Ru + EncFS without local file storage</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

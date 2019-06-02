@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How to hash passwords in high-load services. Yandex experience</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I will talk about such a problem as password hashing in web services. At first glance, it seems that everything is “clear” and you just need to take a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How to hash passwords in high-load services. Yandex experience</h1><div class="post__text post__text-html js-mediator-article">  I will talk about such a problem as password hashing in web services.  At first glance, it seems that everything is “clear” and you just need to take a normal algorithm, which have already been thought out a lot, write a little bit of code and roll everything into production.  But as usual, when you start working on a problem, there is a bunch of pitfalls that must be taken into account.  Which ones?  The first of them is, perhaps, the choice of the algorithm: although there are many of them, each has its own characteristics.  The second is how to choose the parameters?  More and better?  How to deal with the response time to the user?  How much memory, CPU, threads?  And the third is what to do with computational DoS?  In this article I want to share some of my thoughts about these three problems, the experience of implementing a new password hashing algorithm in Yandex and a small amount of code. <br><br> <a href="https://habrahabr.ru/company/yandex/blog/336860/"><img src="https://habrastorage.org/web/693/f8c/6d4/693f8c6d499c4c77bef686a6ab06782c.png"><br></a> <br><h3>  Attacker &amp; Defender </h3><br>  Before proceeding to the algorithms and the construction of a hashing scheme, we must generally understand what we are protecting ourselves from and what role the password hashing should play in the security of a web service.  Usually, the script is such that an attacker breaks a web service (or several web services) through a chain of vulnerabilities, gets access to a user database, sees password hashes there, dumps a base and goes to have fun with the <a href="https://ru.wikipedia.org/wiki/%25D0%2593%25D1%2580%25D0%25B0%25D1%2584%25D0%25B8%25D1%2587%25D0%25B5%25D1%2581%25D0%25BA%25D0%25B8%25D0%25B9_%25D0%25BF%25D1%2580%25D0%25BE%25D1%2586%25D0%25B5%25D1%2581%25D1%2581%25D0%25BE%25D1%2580">GPU</a> (and, in rare cases, with <a href="https://ru.wikipedia.org/wiki/%25D0%259F%25D0%259B%25D0%2598%25D0%25A1">FPGA</a> and <a href="https://ru.wikipedia.org/wiki/%25D0%2598%25D0%25BD%25D1%2582%25D0%25B5%25D0%25B3%25D1%2580%25D0%25B0%25D0%25BB%25D1%258C%25D0%25BD%25D0%25B0%25D1%258F_%25D1%2581%25D1%2585%25D0%25B5%25D0%25BC%25D0%25B0_%25D1%2581%25D0%25BF%25D0%25B5%25D1%2586%25D0%25B8%25D0%25B0%25D0%25BB%25D1%258C%25D0%25BD%25D0%25BE%25D0%25B3%25D0%25BE_%25D0%25BD%25D0%25B0%25D0%25B7%25D0%25BD%25D0%25B0%25D1%2587%25D0%25B5%25D0%25BD%25D0%25B8%25D1%258F">ASIC</a> ). <br><a name="habracut"></a><br>  What does the defender do in this case?  First of all, it sends users whose password hashes have been compromised, forcing a password change and additional authentication using tethered phone, mail, etc. In this case, a good hashing algorithm gives time to understand the scale of the disaster, to run all the necessary procedures and, as a result, save user accounts from being captured by an attacker. <br><br><h3>  Hardware </h3><br>  As I mentioned above, an attacker can use such equipment as GPU, FPGA, ASIC to speed up the calculations.  In my opinion, the most dangerous thing on this list is the GPU, because so many people are fond of mining cryptocurrencies, three-dimensional games, etc. The GPUs are ready to start sorting password hashes.  FPGAs, in turn, are not widespread, costly, often the capabilities of the debugging board are not enough, and it’s usually unrealistic to solder something at home (at high frequencies, increased requirements for soldering quality, etc.).  And finally, ASIC requires quite substantial investments, design, start-up of the production cycle.  Often it will be more expensive than the cost of information that an attacker can get by hacking your service. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Well, the defending party usually uses server CPUs that run web applications.  Server CPUs have a lot of cores (but less than in a GPU), a large L3 cache, etc. Therefore, an obvious idea when developing hashing algorithms is to optimize them for CPU capabilities and slow them down as much as possible on GPU, FPGA and ASIC.  Among these methods of slowing down the following can be identified: <br><br>  1. The use of a large amount of RAM (GPU shared memory is limited, and going to global memory is very “expensive”; external memory must be soldered to FPGA and ASIC, which increases the cost of the whole circuit, delays in access, etc.) and stability to the Time-Memory Tradeoff (the so-called Memory Hard algorithms). <br><br>  2. Using readings / records of small amounts of data at random addresses in a small region of memory that fits in the L1 cache (if you try to read 4 bytes from the global memory GPU, then 32 bytes will actually be read, which causes the GPU to use the memory bus ). <br><br>  3. Using the multiplication operation MUL.  On the CPU, it is performed as quickly as normal operations like shift and ADD, but on FPGA and ASIC this leads to a more complex configuration, more delays in data processing, etc. <br><br>  4. Using the so-called instruction-level parallelism and the hashing algorithm SIMD-friendly design.  Modern CPUs carry on board various advanced instruction sets such as SSE2, SSSE3, AVX2, etc., which allow you to perform several operations at a time and significantly speed up the calculations. <br><br>  The listed techniques are not used in all algorithms.  So, in <a href="https://ru.wikipedia.org/wiki/Argon2">Argon2</a> (the winner of the <a href="https://password-hashing.net/">Password Hashing Competition</a> ) all the listed techniques are used, except the second one.  In <a href="">Yescrypt</a> , which received special recognition in the PHC competition, all four techniques are used (but you must include a special mode of operation). <br><br>  For ourselves, we chose Argon2, since this algorithm is well researched, easy to understand and implement, and also well optimized for x64 and SIMD. <br><br><h3>  Computational DoS problem </h3><br>  If the algorithm in the process of work uses a lot of memory and is guaranteed to take a certain amount of CPU time, then a mindless choice of parameters can lead to a computational DoS situation, when small RPS can damage the web service or significantly slow down the answers to the user.  The reality is that there are not very many ways out of the situation.  Here are some of them: <br><br>  1. “Fill up the problem with iron” - add a lot of additional north, which is running a web service.  This in some sense will help to cope with the computational DoS with proper load balancing, but this method does not solve the problem of long answers to the user.  In other words, adding a large amount of resources does not reduce the response time, but only increases the peak RPS per cluster.  As you can guess, this is not our way. <br><br>  2. Maximum optimization of the hash algorithm code, use of <a href="https://ru.wikipedia.org/wiki/SIMD">SIMD instructions</a> , etc. <br><br>  3. Reduction of the algorithm parameters used to an acceptable level - with the addition of various mitigations at the level of the entire password hashing scheme. <br><br>  Obviously, it is worth doing the last two points.  If high performance is not so important for you, then using an optimized version of the algorithm, you can afford greater parameters, which will make it even harder to search for passwords on the GPU, FPGA, ASIC.  And adding mitigations at the password hashing scheme level can also make it impossible (or, at least, difficult to execute) offline attacks on the hash base and allow brute force hashes only if the attacker is in your network, which makes it easy to detect and investigate this situation. incident. <br><br><h3>  Protocol level mitigations </h3><br>  What mitigations at the level of the hashing scheme currently exist: <br><br>  1. Using local parameters (local parameters).  This idea is quite simple - you need to add a secret parameter to the algorithm, which is stored not in the database, but in the application (for example, in environment variables).  Thus, an attacker will not be able to gain access to the database with password hashes - you will have to break the application as well.  Also, the database administrator will not be able to dump the hashes and have fun with them at home with the GPU. <br><br>  2. Using a large ROM (Read-only memory) to mix in values ​​from it when hashing passwords.  This idea was proposed by the authors of Yescrypt as one of the adaptations of the algorithm for large scale password hashing.  In fact, if you use ROM of about 100 GB, then it will be difficult to steal it - you need to have a server with a minimum memory of 100 GB for a quick bust on the CPU.  On GPU, FPGA and ASIC, everything will be slow too, since we not only use a large ROM, but also optimize the hashing algorithm so that it is slow on these types of equipment, etc. The disadvantages of the idea are that you have to time to live with this great ROM and you most likely will never get rid of it. <br><br>  3. Using <a href="https://www.youtube.com/watch%3Fv%3DlrGbK6fE7bI">CryptoAnchors</a> - small microservices that perform only one operation: they use PRF with a secret key, for example, <a href="https://ru.wikipedia.org/wiki/HMAC">HMAC</a> .  The secret key is stored in microservice and never leaves it.  The essence of the idea is that microservice is small, simple.  Auditing is easy, and hacking is very difficult, so using it allows you to turn an offline attack into an online attack.  In other words, to attack a hash base, an attacker must remain inside the network and send requests to this microservice. <br><br><img src="https://habrastorage.org/web/f8e/8f0/ca8/f8e8f0ca84494baab26890607eafdf7f.png"><br><br>  The CryptoAnchors idea is used in a Facebook password hashing scheme called <a href="http://bristolcrypto.blogspot.ru/2015/01/password-hashing-according-to-facebook.html">Passwords Onion</a> , but it can also be used in other <a href="https://www.youtube.com/watch%3Fv%3DlrGbK6fE7bI">parts of the infrastructure</a> . <br><br>  4. The use of the so-called <a href="https://eprint.iacr.org/2015/644">Partially-Oblivious PRF</a> (in fact, this is part of paragraph 3).  If you use CryptoAnchors with something like HMAC, then the problem arises of changing the secret key when it is compromised.  One way to solve the problem is to create another layer of HMAC, which leads to various inconveniences.  In addition, in the case of ordinary CryptoAnchors, this microservice sees all the hashes that the application sends.  In other words, if the service is hacked, the attacker will be able to collect hashes in a pure form and conduct an offline attack.  To solve these two problems, researchers from CornellTech have proposed using Partially-Oblivious PRF, based on <a href="https://en.wikipedia.org/wiki/Pairing-based_cryptography">billinear pairing</a> .  This design allows you to change the secret key, organize logging and restrictions on the number of requests for each user.  At the same time microservice does not see the hash in the clear.  You can read more <a href="https://eprint.iacr.org/2015/644">in their article</a> . <br><br><img src="https://habrastorage.org/web/121/ae7/d8a/121ae7d8a16d468ea0223e33a70b4b4f.png"><br><br>  In short, the idea is that the application hashes the password, uses blinding to disguise it, and passes the masked password to the microservice along with the user ID t.  Microservice applies billinear pairing to these values, using the key k known only to it, and transfers the result to the application, which, in turn, can apply unblinding (remove the masking) and compare the result with what is stored in the database.  At the same time, the linearity of billinear pairing allows microservice with POPRF to issue to the application a token for updating the key, and the application can go through the database and update the records. <br><br><img src="https://habrastorage.org/web/e80/18b/826/e8018b826b92453f8520e274e4617064.png"><br><br><h3>  Performance Optimization.  Argonische is our implementation of Argon2 </h3><br>  GitHub has the <a href="https://github.com/P-H-C/phc-winner-argon2">official implementation of</a> the Argon2 algorithm, however it uses <code>‑march=native</code> , which for us is fraught with service <code>‑march=native</code> with the exception of <code>Illegal instruction</code> , because we use different processor models, and this setting forces the compiler to optimize the code for the processor model that builds .  If we create the most portable configuration of the assembly, we will lose about 15–20 percent of the possible performance (and in the case of AVX2 - up to 65 percent).  Therefore, we have created our own implementation of the Argon2 algorithm, which allows you to maximize the capabilities of the CPU on which the code runs. <br><br><img src="https://habrastorage.org/web/068/73f/893/06873f89368647f4bc1a88527d28037b.png"><br><br>  <a href="https://github.com/yandex/argon2">Our implementation</a> uses a technique called Runtime CPU dispatching.  Its essence is that during the initialization of the library with the algorithm code, the <code>cpuid</code> instruction is executed, which determines which of the advanced instructions are supported by the current CPU, and selects the code branch with the corresponding optimizations.  Our library contains code optimized for SSE2, SSSE3, SSE4.1 and AVX2 instruction sets.  The difference in performance on Argon2d with parameters <code>p=1,m=2048,t=1</code> can be seen in the graph below. <br><br><img src="https://habrastorage.org/web/ef2/d35/997/ef2d35997d0b4d1cb6cae200c132a163.png"><br><br>  And since Argon2 uses <a href="https://blake2.net/">Blake2B</a> , we received Blake2B as a bonus, optimized for the above instruction sets.  Inside the company, we recommend using Blake2B as a quick and safe replacement for <code>SHA-1</code> and <code>HMAC-SHA-1</code> .  So, the differences from the official implementation of Argon2 are as follows: <br><br>  1. C ++ 14 and cmake as an assembly system. <br>  2. Runtime CPU dispatching. <br>  3. Blake2B, optimized for SSE2, SSSE3, SSE4.1, AVX2. <br>  4. OpenMP instead of pthread, and if OpenMP is not present, then all calculations will be performed sequentially. <br><br>  Also in the process, we wrote from scratch the version of Argon2 for the AVX2 instruction set and <a href="https://github.com/P-H-C/phc-winner-argon2/pull/208">sent PR</a> to the official repository, where our changes were accepted by the maintainers. <br><br>  In general, the problem of password hashing in large and heavily loaded services is solved.  To solve it you need: <br><br>  • accelerate the implementation of the hashing algorithm, <br>  • select the algorithm parameters based on the KPI for the response time, <br>  • make changes to the hash scheme to protect against offline attacks. <br><br><h3>  Thanks </h3><br>  We thank <a href="http://openwall.org/">Solar Designer</a> (aka Alexander Peslyak) for a huge amount of thoughts, ideas, experiments, and useful discussions of the problem of password hashing in large Internet companies.  We also want to thank <a href="https://twitter.com/khovr">Dmitry Khovratovich</a> for various ideas, joint discussion and analysis of different approaches to password hashing.  Many thanks to Igor <a href="https://habrahabr.ru/users/cerevra/" class="user_link">cerevra</a> Klevantsu, who, in the intervals between making corrections to the C ++ standard, found time to review the code of our implementation of Argon2. <br><br><h3>  useful links </h3><br>  • <a href="https://github.com/yandex/argon2">Project Argonische on GitHub</a> <br>  • <a href="https://github.com/P-H-C/phc-winner-argon2">Official repository Argon2</a> <br>  • <a href="https://eprint.iacr.org/2015/644">Article about Pythia and Partially-Oblivious PRF</a> <br>  • <a href="https://software.intel.com/sites/landingpage/IntrinsicsGuide/">Intel Intrinsics Guide</a> <br>  • <a href="https://rwc.iacr.org/2016/Slides/Pass-RWC.pdf">PASS: Strengthening and Democratizing Enterprise Password Hardening</a> </div><p>Source: <a href="https://habr.com/ru/post/336860/">https://habr.com/ru/post/336860/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../336848/index.html">Transfer mail from Exchange to Zimbra</a></li>
+<li><a href="../336850/index.html">Back up configuration switches, or fasten a little automation to GLPI</a></li>
+<li><a href="../336852/index.html">Optimize the launch time of iOS applications</a></li>
+<li><a href="../336854/index.html">Multithreading in C ++ and SObjectizer with CSP channels, but without any actors ...</a></li>
+<li><a href="../336858/index.html">Entertaining math with colored cubes</a></li>
+<li><a href="../336864/index.html">Getting ready for Java 9. Review of the most interesting improvements.</a></li>
+<li><a href="../336866/index.html">Big Data and Odnoklassniki: what they do with the data in the 2nd most visited social network in Russia</a></li>
+<li><a href="../336868/index.html">How to write a good SLA</a></li>
+<li><a href="../336870/index.html">Joystick on AT91SAM7</a></li>
+<li><a href="../336872/index.html">Creating an IT self-service portal using the example of MS SCCM and ServiceNow integration. Part 1</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

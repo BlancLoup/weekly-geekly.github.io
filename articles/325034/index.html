@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>IL2CPP: Garbage Collector Integration</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article we will talk about the interaction of the IL2CPP runtime environment with the garbage collector and see how the roots of the garbage c...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>IL2CPP: Garbage Collector Integration</h1><div class="post__text post__text-html js-mediator-article">  In this article we will talk about the interaction of the IL2CPP runtime environment with the garbage collector and see how the roots of the garbage collector in managed code are associated with the native garbage collector. <br><br><img src="https://habrastorage.org/files/4d5/491/11c/4d549111cf224734927778909dbb5f4b.jpg"><br><a name="habracut"></a><br>  Previous topic materials: <br><br>  <a href="https://habrahabr.ru/company/plarium/blog/323932/">IL2CPP: P / Invoke wrappers for types and methods</a> <br>  <a href="https://habrahabr.ru/company/plarium/blog/310614/">IL2CPP: method calls</a> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In this article, as in the previous publications of the series, we will reveal the details of the implementation of a separate component of IL2CPP, which may be changed in the future.  Consider some internal APIs that the runtime code uses to interact with the garbage collector.  These APIs are not public, so you should not try to call them from the code of any real project. <br><br><h2>  Garbage collection </h2><br>  I will not give here general information about garbage collection, as this is a fairly broad topic, which is devoted to a lot of research and publications.  For brevity, we will present the garbage collector in the form of an algorithm that builds directed graphs from references to objects.  If the Child object is used by the Parent object with a pointer in the native code, the graph will look like this: <br><br><img src="https://habrastorage.org/files/6b8/663/208/6b866320895142fa8f2ce148b537bd16.png"><br><br>  The garbage collector is looking for objects without a parent object in the memory used by the process.  If such an object is found, then the memory occupied by it can be freed and reused for another purpose. <br><br>  Of course, most objects must have some kind of parent object.  Therefore, the garbage collector needs to be able to distinguish particular parent objects.  I prefer to think of the latter as objects used by the program.  In the terminology of the garbage collector, they are called "roots."  Below is an example of a parent object without a root. <br><br><img src="https://habrastorage.org/files/b38/f61/bd2/b38f61bd2f744a70be98b7f39ae41d0f.png"><br><br>  In this case, the Parent 2 object has no root, so the garbage collector can reuse the memory occupied by Parent 2 and Child 2. In turn, Parent 1 and Child 1 have a root - which means they are used by the program, and the garbage collector will not be reused use their memory, since the program still uses them for a specific purpose. <br><br>  In .NET, three types of roots are used: <br><br><ul><li>  local variables on the stack of any thread executing managed code; </li><li>  static variables; </li><li>  <a href="https://msdn.microsoft.com/en-us/library/system.runtime.interopservices.gchandle(v%3Dvs.110).aspx">GCHandle</a> objects <a href="https://msdn.microsoft.com/en-us/library/system.runtime.interopservices.gchandle(v%3Dvs.110).aspx">.</a> </li></ul><br>  We will look at the IL2CPP relationship with the garbage collector when dealing with the roots of all the above species. <br><br><h2>  Preparation for work </h2><br>  I work in Unity version 5.1.0p1 on OSX, and I will build for the iOS platform.  This will allow us to use Xcode to monitor the interaction of the IL2CPP with the garbage collector.  As in the previous examples, we will use a project containing one script: <br><br><pre><code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">using</span></span> System; <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> System.Runtime.InteropServices; <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> System.Threading; <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> UnityEngine; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">class</span></span> <span class="hljs-title"><span class="hljs-title">AnyClass</span></span> {} <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">class</span></span> <span class="hljs-title"><span class="hljs-title">HelloWorld</span></span> : <span class="hljs-title"><span class="hljs-title">MonoBehaviour</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> AnyClass staticAnyClass = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> AnyClass(); <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Start</span></span></span><span class="hljs-function"> (</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> thread = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Thread(AnotherThread); thread.Start(); thread.Join(); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> anyClassForGCHandle = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> AnyClass(); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> gcHandle = GCHandle.Alloc(anyClassForGCHandle); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">AnotherThread</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> anyClassLocal = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> AnyClass(); } }</code> </pre> <br>  I checked the Development Build option in the Build Settings window, and selected Debug opposite Run in Xcode as.  In the generated Xcode project, first find the string Start_m.  You should see the generated code for the Start method of the HelloWorld class called HelloWorld_Start_m3. <br><br><h2>  Add stream local variables as roots </h2><br>  Add a breakpoint in the HelloWorld_Start_m3 function on the line where Thread_Start_m9 is called.  This method creates a new managed stream that will be added as a root to the garbage collector.  This process can be tracked in the libil2cpp header files that come with Unity.  In the Unity installation directory, open the Contents / Frameworks / il2cpp / libil2cpp / gc / gc-internal.h file.  It contains a number of methods with the il2cpp_gc_ prefix and is part of the API between the libil2cpp runtime and the garbage collector.  But remember that this API is public, therefore these methods should not be called from the code of the real project.  In addition, they may be changed in the new version without notice. <br><br>  Add a breakpoint in function il2cpp_gc_register_thread in Xcode.  To do this, select Debug&gt; Breakpoints&gt; Create Symbolic Breakpoint. <br><br><img src="https://habrastorage.org/files/61f/8fd/df6/61f8fddf6d3349b5a5588a741c5bd698.png"><br><br>  This point is reached almost instantly after the launch of the project in Xcode.  In this case, we do not see the source code, since it is built in the static library of the libil2cpp environment, however, it is clear from the call stack that this thread is created in the InitializeScriptingBackend method, which is executed at startup. <br><br><img src="https://habrastorage.org/files/970/c2d/d35/970c2dd355e14781b8ac2799ef83db92.png"><br><br>  We will see that this point will be reached several times as you create managed threads for internal use.  For now, you can turn it off in Xcode and continue the project without it.  We have to reach the breakpoint that was added earlier in the HelloWorld_Start_m3 method. <br><br>  Now I'm going to run the managed thread created by our script code, so I need to re-enable the breakpoint on il2cpp_gc_register_thread.  Having reached it, we will see that the first thread is waiting to join the created stream, but the call stack for the created stream shows that we are only launching it: <br><br><img src="https://habrastorage.org/files/b0e/bd0/240/b0ebd02403ba4ad98f74e6159ef90de4.png"><br><br>  When a new thread communicates with the garbage collector, the latter interprets all objects in the local stack of this thread as roots.  Take a look at the generated code for the HelloWorld_AnotherThread_m4 method: <br><br><pre> <code class="cpp hljs">AnyClass_t1 * L_0 = (AnyClass_t1 *)il2cpp_codegen_object_new (AnyClass_t1_il2cpp_TypeInfo_var); AnyClass__ctor_m0(L_0, <span class="hljs-comment"><span class="hljs-comment">/*hidden argument*/</span></span><span class="hljs-literal"><span class="hljs-literal">NULL</span></span>); V_0 = L_0;</code> </pre> <br>  We see one local variable L_0, which the garbage collector must interpret as the root.  For a short time while this stream exists, this instance of the AnyClass object and any other objects it references cannot be reused by the garbage collector.  Variables defined on the stack are the most common type of root, since the objects in the program mostly begin with a local variable in the method that is executed in the controlled stream. <br><br>  At the end of the thread, the il2cpp_gc_unregister_thread function is called, which tells the garbage collector to no longer interpret thread stack objects as roots.  After that, the garbage collector will be able to reuse the memory occupied by an object of the class AnyClass, which is represented in the native code as L_0. <br><br><h2>  Static variables </h2><br>  Some variables are not dependent on call flow streams.  We are talking about static variables, and they must also be interpreted by the garbage collector as root. <br><br>  When IL2CPP creates a native class mapping, all static fields are grouped into a C ++ structure that is different from the field instances in the class.  Let's proceed to the definition of the HelloWorld_t2 class in Xcode: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> &amp;</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">amp</span></span></span><span class="hljs-class">;</span></span>amp;amp;nbsp;HelloWorld_t2 &amp;amp;amp;amp;nbsp;: <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> MonoBehaviour_t3 { }; <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">HelloWorld_t2_StaticFields</span></span></span><span class="hljs-class">{</span></span> <span class="hljs-comment"><span class="hljs-comment">// AnyClass HelloWorld::staticAnyClass AnyClass_t1 * ___staticAnyClass_2; };</span></span></code> </pre> <br>  Note that the IL2CPP technology does not use the C ++ static keyword, since it must constantly monitor the placement of static fields, as well as the allocation of memory for them, in order to properly interact with the garbage collector.  When a particular type is first used in a runtime environment, the libil2cpp code will initialize the type.  Such initialization includes the allocation of memory for the HelloWorld_t2_StaticFields structure.  Memory is allocated using a special call to the garbage collector: il2cpp_gc_alloc_fixed (you can see it in the gc-internal.h file). <br><br>  After this call, the garbage collector will take the allocated memory by the root until the end of the process.  You can set a breakpoint on the ilcode 2cpp_gc_alloc_fixed function in Xcode, but it is called quite often (even in a project as simple as ours), so it will not be very useful. <br><br><h2>  GCHandle Objects </h2><br>  In some cases it is undesirable to use static variables, but it is necessary to control exactly when the garbage collector can reuse the memory allocated for the object.  For example, you need to transfer the pointer of the managed object from the managed code to the native one.  If the native code gets the opportunity to dispose of this object, we need to inform the garbage collector that the native code is now the root in its object graph.  To do this, use a special managed object GCHandle. <br><br>  When creating a GCHandle object, the processing environment code begins to interpret the selected managed object as the root in the garbage collector to prevent the memory from either this object or any other to which it refers.  In IL2CPP, we see how the low-level API does this in the Contents / Frameworks / il2cpp / libil2cpp / gc / GCHandle.h file.  Again, I remind you that this API is not public.  Add a breakpoint to the function GCHandle :: New.  If we continue with the project, this call stack should appear: <br><br><img src="https://habrastorage.org/files/da0/06d/8ea/da006d8eafa64a539008d8cc64ce5fef.png"><br><br>  The generated code for the Start method calls the GCHandle_Alloc_m11 method, which eventually creates a GCHandle object and notifies the garbage collector about the new root object. <br><br><h2>  Conclusion </h2><br>  The topic of integration of the garbage collector in IL2CPP is still far from exhausted.  I highly recommend readers to independently study more material about the interaction of the IL2CPP and the garbage collector. </div><p>Source: <a href="https://habr.com/ru/post/325034/">https://habr.com/ru/post/325034/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../325022/index.html">The new chip from Applied Micro is ready to contend with Intel Xeon</a></li>
+<li><a href="../325026/index.html">Infrastructure organization with the help of Kubernetes and Helm. Video recordings of reports from Kubernetes meetup March 22, 2017</a></li>
+<li><a href="../325028/index.html">Web Scrolling: Primer</a></li>
+<li><a href="../325030/index.html">7 questions that you ask at the interview for the position of UX designer</a></li>
+<li><a href="../325032/index.html">How shops lure customers: electronic price tags</a></li>
+<li><a href="../325036/index.html">Regular expression search with suffix array</a></li>
+<li><a href="../325040/index.html">Good trigger, bad trigger: how we monitor hundreds of servers around the world</a></li>
+<li><a href="../325042/index.html">Welcome to Go meetup April 14</a></li>
+<li><a href="../325046/index.html">What would i change in go</a></li>
+<li><a href="../325050/index.html">Digest AI Cup. Five strategies for Code Wizards 2016</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

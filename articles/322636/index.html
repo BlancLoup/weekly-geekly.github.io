@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Experiment: looking for int i = 0xDEADBEEF in a physical memory dump</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The study of the virtual address space and address translation algorithm is much simpler if we start with a simple practical example. To do this, we w...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Experiment: looking for int i = 0xDEADBEEF in a physical memory dump</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/files/0b8/375/1bb/0b83751bb3be4ac98f43a02d62af12a9.png" alt="KDPV"></p><br><p>  The study of the virtual address space and address translation algorithm is much simpler if we start with a simple practical example.  To do this, we write a simple program that displays the address of a local variable: </p><br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> i = <span class="hljs-number"><span class="hljs-number">0xDEADBEEF</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"address of i is "</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::hex &lt;&lt; &amp;i; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cin</span></span>.get(); <span class="hljs-comment"><span class="hljs-comment">//    return 0; }</span></span></code> </pre> <br><p>  Then we try to find the physical address and view the value at that address. </p><br><a name="habracut"></a><br><p>  We will consider 32-bit Windows (without any Physical Address Extension), because 64-bit is more complicated.  The description of the transformation is simplified, but enough for our experiment.  I recommend checking in virtual.  It doesn't matter which one, but in the end I'll show you how to unload a memory dump in VirtualBox. </p><br><h2 id="osnovy">  The basics </h2><br><p>  In my case, the address turned out to be 0x22FF2C.  In general, it may vary each time the program is started (see <a href="https://ru.wikipedia.org/wiki/ASLR">ASLR</a> ).  Other processes at this address may have their own values, because this is not a physical, but a virtual address.  Perhaps the main purpose of a virtual address space is the ability to provide each process with its own address space in which it would not interfere with others.  The size of the virtual address space depends on the platform.  For x86, the theoretical maximum size is 4 GB.  By default, the first half (0 - 0x7FFFFFFF) is the user process space in which the image of the current process executable file is located, its stack, heap, and so on.  The second half (0x80000000 - 0xFFFFFFFF) is the system half.  With some reservations, we can assume that the user process space is unique for each process, and only one system.  Address 0x22FF2C, obviously, hit the first half. </p><br><p>  The virtual address space is divided into 0x100000 (1048576) pages of 4096 bytes each.  Physical memory is also paginated of the same size, called page blocks.  Pages (not all, of course) are mapped onto page blocks, so each page needs information about its location in physical memory.  All 0x100000 pages correspond to the same 4-byte entries, called PTE (page table entry).  In virtual space, they are located in the address range 0xC0000000 - 0xC03FFFFF, and occupy 1024 pages, called page tables.  Getting an entry is simple: the k-th page corresponds to the k-th entry. </p><br><p><img src="https://habrastorage.org/files/df4/c13/c9e/df4c13c9e8c647c8ba55fe229a426f09.png" alt="Virtual addressing"><br>  <em>Orange marked page tables.</em> </p><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">virtual_address</span></span> = 0x22FF2C page_index = virtual_address / <span class="hljs-number"><span class="hljs-number">4096</span></span> pte_addr = 0xC0000000 + page_index * <span class="hljs-number"><span class="hljs-number">4</span></span></code> </pre> <br><p>  Multiply by 4 because PTE is 4-byte.  We get that in our case pte_addr = 0xC00008BC </p><br><h2 id="naivnaya-popytka">  Naive attempt </h2><br><p>  The PTE address is, try to find out what is there: </p><br><pre> <code class="cpp hljs"><span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"PTE is "</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::hex &lt;&lt; *(<span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span>*)<span class="hljs-number"><span class="hljs-number">0xC00008BC</span></span>;</code> </pre> <br><p>  Well, oh.  Hardware exception.  And all because we tried to read from the system space.  ReadProcessMemory does not help either.  Calling VirtualQuery will tell us PAGE_NOACCESS.  Access can only be obtained by obtaining kernel mode privileges.  Perhaps the easiest way for our research task is to use the kernel debugger. </p><br><h2 id="ispolzovanie-otladchika-yadra">  Using the kernel debugger </h2><br><p>  We <a href="https://technet.microsoft.com/ru-ru/sysinternals/livekd.aspx">put</a> <a href="https://msdn.microsoft.com/en-us/library/windows/hardware/ff551063(v%3Dvs.85).aspx">KD</a> and <a href="https://technet.microsoft.com/ru-ru/sysinternals/livekd.aspx">LiveKd</a> .  LiveKD allows you to run the Microsoft Kd and Windbg kernel debuggers, included in the debugging tools for Windows package, in the actual system in local mode.  The last link is also a small help for installation and help. </p><br><p>  We start our example (let it be called main.exe).  Launch LiveKd.  We write " <code>!process 0 0</code> " to display a list of all running processes, or immediately " <code>!process 0 0 main.exe</code> " </p><br><pre> <code class="hljs go"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; !process <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> main.exe PROCESS <span class="hljs-number"><span class="hljs-number">86530118</span></span> SessionId: <span class="hljs-number"><span class="hljs-number">1</span></span> Cid: <span class="hljs-number"><span class="hljs-number">0d</span></span>cc Peb: <span class="hljs-number"><span class="hljs-number">7f</span></span>fdd000 ParentCid: <span class="hljs-number"><span class="hljs-number">0428</span></span> DirBase: <span class="hljs-number"><span class="hljs-number">2402e000</span></span> ObjectTable: <span class="hljs-number"><span class="hljs-number">8879f</span></span>430 HandleCount: <span class="hljs-number"><span class="hljs-number">16.</span></span> Image: main.exe</code> </pre> <br><p>  We are interested in the address after the word PROCESS (this is the address on the EPROCESS structure containing the process attributes).  Connect to the process: </p><br><pre> <code class="hljs vhdl"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; .<span class="hljs-keyword"><span class="hljs-keyword">process</span></span> <span class="hljs-number"><span class="hljs-number">86530118</span></span> Implicit <span class="hljs-keyword"><span class="hljs-keyword">process</span></span> <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> now <span class="hljs-number"><span class="hljs-number">86530118</span></span></code> </pre> <br><p>  We check the content at 0x22FF2C to make sure that everything is done correctly: </p><br><pre> <code class="hljs go"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; dd <span class="hljs-number"><span class="hljs-number">22</span></span>FF2C L1 <span class="hljs-number"><span class="hljs-number">0022f</span></span>f2c deadbeef</code> </pre> <br><p>  Hexadecimal numbers are used by default.  The <code>dd</code> displays several 4-byte values ​​starting at the specified virtual address.  L1 - output only one value. </p><br><h2 id="chtenie-pte">  PTE reading </h2><br><pre> <code class="hljs go"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; dd C00008BC L1 c00008bc <span class="hljs-number"><span class="hljs-number">6612f</span></span>847</code> </pre> <br><p>  It was possible not to consider: </p><br><pre> <code class="hljs ruby">dd C000000<span class="hljs-number"><span class="hljs-number">0</span></span> + (<span class="hljs-number"><span class="hljs-number">22</span></span>FF2C <span class="hljs-meta"><span class="hljs-meta">&gt;&gt; </span></span><span class="hljs-number"><span class="hljs-number">0xC</span></span>) * <span class="hljs-number"><span class="hljs-number">4</span></span> L1 c00008bc <span class="hljs-number"><span class="hljs-number">6612</span></span>f847</code> </pre> <br><p>  In the PTE value of the record 6612f847, the first 20 bits (5 hex digits) are the index of the page block, the rest are various flags.  To get the address of the page block, you need to multiply the index by the block size - 4096 bytes. </p><br><pre> <code class="hljs objectivec">page_block_index = <span class="hljs-number"><span class="hljs-number">0x6612F</span></span> page_block_address = page_block_index &lt;&lt; <span class="hljs-number"><span class="hljs-number">12</span></span> = <span class="hljs-number"><span class="hljs-number">0x6612F000</span></span> <span class="hljs-comment"><span class="hljs-comment">//  4096</span></span></code> </pre> <br><p>  The byte order inside the page and page block is the same, so it is necessary to calculate the offset inside the page and add to the address of the page block: </p><br><pre> <code class="hljs pgsql">virtual_adress = <span class="hljs-number"><span class="hljs-number">0x22FF2C</span></span> <span class="hljs-keyword"><span class="hljs-keyword">offset</span></span> = virtual_adress &amp; <span class="hljs-number"><span class="hljs-number">0xFFF</span></span> = <span class="hljs-number"><span class="hljs-number">0xF2C</span></span> //  hex- phisycal_address = page_block_address + <span class="hljs-keyword"><span class="hljs-keyword">offset</span></span> = <span class="hljs-number"><span class="hljs-number">0x6612FF2C</span></span></code> </pre> <br><p>  Checking: </p><br><pre> <code class="hljs objectivec"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; !dd <span class="hljs-number"><span class="hljs-number">6612</span></span>FF2C L1 <span class="hljs-meta"><span class="hljs-meta">#6612ff2c deadbeef</span></span></code> </pre> <br><p>  The <code>!dd</code> similar to <code>dd</code> , only accepts physical addresses. </p><br><p>  We found out that our address can be represented as follows: </p><br><pre> <code class="hljs">0x22FF2C = b 00000000001000101111 111100101100 20  12  page_index byte_offset</code> </pre> <br><p>  But also note that the PTE found is in the 0th page table with the index 0x22F inside it.  And our address can be represented as follows: </p><br><pre> <code class="hljs">0x22FF2C = b 0000000000 1000101111 111100101100 10  10  12  table_idx PTE_index byte_offset</code> </pre> <br><h2 id="we-need-to-go-deeper-pde">  We need to go deeper (PDE) </h2><br><p>  Using virtual PTE addresses is unsportsmanlike.  After all, they, too, are the usual pages that need to find page blocks.  And if so, then we simply find our PTE for these pages.  In total, we have 1024 such pages (called page tables) and all PTE for them are placed in one page.  This page is called the page directory and it contains 1024 entries (called PDE - page directory entry) with addresses on the page tables. </p><br><p><img src="https://habrastorage.org/files/a17/c44/863/a17c448637c24a4486ce4c4b62f51a48.png" alt="Virtual addressing"><br>  <em>Blue marks the catalog of tables, orange - tables of pages.</em> </p><br><p>  We act in the same way as we have already done: </p><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">pte_addr</span></span> = 0xC00008BC page_index = pte_addr / <span class="hljs-number"><span class="hljs-number">4096</span></span> = 0xC0000 pde_addr = 0xC0000000 + page_index * <span class="hljs-number"><span class="hljs-number">4</span></span> = 0xC0300000</code> </pre> <br><p>  We got the address PDE = 0xC0300000 (all PDEs are stored in the page at 0xC0300000, we hit the zero PDE).  Check the content: </p><br><pre> <code class="hljs">0: kd&gt; dd C0300000 L1 c0300000 0b21d867</code> </pre> <br><p>  Completely similar: A PDE containing 0b21d867 gives us the address 0x0B21D000 of a page block with a page table.  It remains to find the right PTE in it.  Recall that address 0x22FF2C corresponds to PTE with index 0x22F in the 0th table (with offset 0x22F * 4).  This means that PTE is located at 0x0B21D000 + 0x22F * 4. </p><br><pre> <code class="hljs go"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; !dd <span class="hljs-number"><span class="hljs-number">0</span></span>b21d000 + <span class="hljs-number"><span class="hljs-number">0x22f</span></span> * <span class="hljs-number"><span class="hljs-number">4</span></span> # b21d8bc <span class="hljs-number"><span class="hljs-number">6612f</span></span>847</code> </pre> <br><p>  With the address 6612f847 we have already worked. </p><br><p>  It remains to find out where the directory is in physical memory (since we received the PDE using virtual addressing).  The address was specified in DirBase when we reviewed the process information with the " <code>!process 0 0 main.exe</code> Process <code>!process 0 0 main.exe</code> " <code>!process 0 0 main.exe</code> .  In our case, DirBase = 2402e000 </p><br><pre> <code class="hljs objectivec"><span class="hljs-number"><span class="hljs-number">0</span></span>: kd&gt; !dd <span class="hljs-number"><span class="hljs-number">2402e000</span></span> <span class="hljs-meta"><span class="hljs-meta">#2402e000 0b21d867</span></span></code> </pre> <br><h2 id="itogovaya-formula">  Final formula </h2><br><pre> <code class="hljs markdown">0x22FF2C = b 0000000000 1000101111 111100101100 10  10  12  PDE<span class="hljs-emphasis"><span class="hljs-emphasis">_index PTE_</span></span>index byte<span class="hljs-emphasis"><span class="hljs-emphasis">_offset pde_</span></span>addr = DirBase + PDE<span class="hljs-emphasis"><span class="hljs-emphasis">_index * 4 pte_</span></span>addr = ((<span class="hljs-emphasis"><span class="hljs-emphasis">*pde_addr) &amp; 0xFFFFF000) | (PTE_index *</span></span> 4) value<span class="hljs-emphasis"><span class="hljs-emphasis">_addr = ((*pte_</span></span>addr) &amp; 0xFFFFF000) | byte_offset</code> </pre> <br><h2 id="ischem-v-dampe">  Looking for a dump </h2><br><p>  I think removing a dump from a working system is somewhat problematic, so we’ll remove it from VirtualBox.  To do this, you need to run in debug mode: </p><br><pre> <code class="hljs pgsql">VirtualBox.exe <span class="hljs-comment"><span class="hljs-comment">--dbg --startvm VM_name</span></span></code> </pre> <br><p>  Select in the menu "Debugging" -&gt; "Command line ..." and type: </p><br><pre> <code class="hljs objectivec">.pgmphystofile <span class="hljs-string"><span class="hljs-string">"path_to_dump_file"</span></span></code> </pre> <br><p>  Open the file (I use HxD), go to 6612ff2c: </p><br><p><img src="https://habrastorage.org/files/5db/1be/763/5db1be7632414599a0547fe4a22557b9.png" alt="View in dump"></p><br><p>  Knowing DirBase and the virtual address, you can search for the value immediately in the dump, without a debugger.  In general, in the dump you can find the value of DirBase by the name of the process, but this is another story. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/322636/">https://habr.com/ru/post/322636/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../322620/index.html">Moving to Yandex ClickHouse</a></li>
+<li><a href="../322622/index.html">Linus Torvals spoke about the SHA-1 collisions in the Git repositories: there is nothing to fear</a></li>
+<li><a href="../322624/index.html">Uber - the reasons for the transition from Postgres to MySQL</a></li>
+<li><a href="../322626/index.html">Open machine learning course. Topic 1. Primary data analysis with Pandas</a></li>
+<li><a href="../322634/index.html">Free IP Camera Software</a></li>
+<li><a href="../322642/index.html">Pygest # 4. Releases, articles, interesting projects from the world of Python [February 14, 2017 - February 27, 2017]</a></li>
+<li><a href="../322646/index.html">The digest of fresh materials from the world of the frontend for the last week №251 (February 20 - 26, 2017)</a></li>
+<li><a href="../322648/index.html">PHP Digest number 103 - interesting news, materials and tools (February 12 - 26, 2017)</a></li>
+<li><a href="../322650/index.html">Web hosting: Windows or Linux?</a></li>
+<li><a href="../322652/index.html">EventAggregator - antipattern</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

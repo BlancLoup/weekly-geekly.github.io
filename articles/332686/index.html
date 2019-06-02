@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Meet Apache BookKeeper - a replicable log service</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="By the nature of my work, I often have to participate in projects in which high-availability, high-performance systems are created for various markets...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Meet Apache BookKeeper - a replicable log service</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/web/614/62c/2e2/61462c2e21344fe383f35c4cd2d2607f.jpg"></p><br><p>  By the nature of my work, I often have to participate in projects in which high-availability, high-performance systems are created for various markets - advertising, fintech, services of the SaaS, PaaS classes.  Such systems use a well-established set of architectures and components that allow you to effectively meet product requirements, for example, lambda-based architecture for streamline data processing, scalable micro-service software design, oriented to horizontal scaling, noSQL DBMS (Redis, Aerospike, Cassandra, MongoDB ), message brokers (Kafka, RabbitMQ), distributed coordination and detection servers (Apache Zookeeper, Consul).  Such basic infrastructure blocks most often allow to successfully solve most of the tasks and the development team does not encounter the tasks of developing components of the middle level (middleware), which, in turn, will be used by the business-oriented part of the developed system. </p><a name="habracut"></a><br><p>  In some cases, there are tasks that the project team cannot implement with existing solutions that are standard, then there is a need to search for or develop highly specialized products designed to solve specific problems. </p><br><h2 id="zadacha">  Task </h2><br><p>  In one of the projects, the team had a rather specific task, within the framework of which there was a need to organize a strictly-ordered data queue that would allow the data to be “played”, supported replication, horizontal scaling and was fault tolerant.  This is a classic data structure, which is called a transaction log (Commit Log) and is used in almost all more or less complex DBMS. </p><br><blockquote>  The basic requirements for the transaction log are that the changes are recorded in a strict order, thus the structure ensures that the client who initiated the recording is first guaranteed to receive a lower sequence number of the log entry, even if the record took longer than some other client.  Operations logs are widely used in systems that have competitive access to objects, which should be streamlined.  A typical concurrent access queue is an example of such a journal (for example, LinkedBlockingQueue in Java). </blockquote><p>  The value of such a structure is that it guarantees the immutability of the final state during repeated passes and is often used precisely to correctly reflect the final state of the object during multiple changes. </p><br><p>  Difficulties begin when the set of agents must propagate an ordered change of states on the set of nodes for a set of objects.  The obvious and lowest-performing approach is based on the use of a distributed lock service, for example, Apache Zookeeper, with the help of which an ordered access to some storage is provided.  The variant is working, if changes of objects rarely occur, however, for the implementation of a high-performance system in which the states of objects change frequently, this option is not suitable.  A special case with two agents and two nodes is shown in the figure. </p><br><p><img src="https://habrastorage.org/web/cd8/b3d/bc0/cd8b3dbc08fe49b19475e52ecf8373fc.png"></p><br><blockquote>  If you look closely at the introductory image with Rick, Morty and Summer, then you can just notice it ... Everything seems to be similar, but there are already some minor mismatches. </blockquote><p>  We needed to develop a replicable Leader / Followers system, each node of which would maintain the current state of the objects in RocksDB, and if you lost the node, you could easily restore it from another node and the existing activity log, an abstract view is shown in the diagram: <br><img src="https://habrastorage.org/web/a8e/83e/d45/a8e83ed45edd4f4ea47a422858a4425c.png"></p><br><p>  The main engineering problem that exists within this task is the development of a <strong>distributed replicated transaction log</strong> . </p><br><h3 id="raspredelennyy-repliciruemyy-zhurnal-operaciy">  Distributed Replicated Transaction Log </h3><br><p>  At first, as usual, the thought went on the way - " <del>  we need our bar ... </del>  we are cool developers - let's do everything ourselves! ". We had an implementation for a local magazine and we thought that we could probably expand it to a networked and replicable implementation. Honestly, the amount of work caused a dull toothache, and this was not the main product, but a component of the underlying layer. </p><br><blockquote>  Wait, but there is Apache Kafka, the surprised reader will say!  And it will be almost right.  Apache Kafka is a great thing, but as part of this task it lacks the following functions: <br><ol><li>  Confirmation of completion of the operation </li><li>  Guarantees of the order and uniqueness of data </li></ol><br><br>  In most cases, Apache Kafka will work as it should, but if you lose TCP packets or drop the wizard, you have no guarantees that your message will not be duplicated.  This is due to the fact that messages in Kafka are sent on the principle of "fire-and-forget", and the client does not control the order of entries on the server, which is logical, since Apache Kafka is optimized for bandwidth. </blockquote><p>  However, having started the analysis and reflection on the details of the decision, I found that there was already a solution, we just did not know about it.  And this is the <a href="http://bookkeeper.apache.org/">Apache BookKeeper</a> .  Moreover, it is implemented ideologically and technologically almost in the way we would do it ourselves - Apache Zookeeper, Java, Netty (our project on Scala, but the Java stack was very pleased).  As a result, a new phase was initiated, during which we tested Apache BookKeeper to meet our needs. </p><br><h3 id="apache-bookkeeper">  Apache BookKeeper </h3><br><p>  Next, I will try to talk about the principles and approach that is used in the Apache BookKeeper system for solving the problem of replicable, scalable transaction logs. </p><br><p>  So, the product is not so well known, but it has users.  For example: </p><br><ul><li>  <a href="https://blog.twitter.com/engineering/en_us/a/2015/building-distributedlog-twitter-s-high-performance-replicated-log-service.html">Twitter DistributedLog</a> </li><li>  <a href="https://blog.twitter.com/engineering/en_us/a/2014/manhattan-our-real-time-multi-tenant-distributed-database-for-twitter-scale.html">Twitter Manhattan</a> </li><li>  <a href="https://cwiki.apache.org/confluence/display/BOOKKEEPER/PoweredBy">More well-known users</a> </li></ul><br><blockquote>  Perhaps it was necessary to simply translate the first article, but in the soul of the Chukchi a writer. </blockquote><p>  First, look at the Apache BookKeeper conceptual architecture, which is shown in the following figure: <br><img src="https://habrastorage.org/web/1db/631/4ea/1db6314ea0414ec4bc7baeda034dde78.png"></p><br><p>  Key elements of the scheme: </p><br><ul><li>  Bookie - the server on which log data is stored; </li><li>  Ledger - "ledger", which organizes a certain number of records into a single volume, within which Bookie servers are defined, to which data is replicated; </li><li>  Ledger Entry - a record in the ledger, useful information; </li><li>  BK Client - Java client code that implements the API; </li><li>  Zookeeper - Apache Zookeeper server, which keeps records of ledgers (number, Bookie servers, where replicas are stored). </li></ul><br><p>  Now let's look at the key elements in more detail, in order to understand how the model of interaction with Apache BookKeeper and its data management architecture are arranged. </p><br><h2 id="bookie">  Bookie </h2><br><p>  Storage Server  As part of BookKeeper, we deploy and run multiple Bookie servers, in the field of which a replicable storage medium appears.  The data is distributed within the framework of ledgers, the distribution method is flat, the system does not allow you to set any topological labels (which is a pity).  Adding Bookie servers allows system horizontal scaling. </p><br><h2 id="ledger--grossbuh">  Ledger </h2><br><p>  Organizes a set of strictly ordered records replicated to the same servers.  Ledgers ordered by increasing identifiers.  The replica server data is stored in the ledger record in Zookeeper. </p><br><p>  <strong>An important limitation is 1</strong> .  Only one writer can write to the ledger.  Thus, the ledger is a scaling unit.  If a series of operations does not allow spreading them across different ledgers, then the performance limit is the write speed to the ledger, which depends on the replication factor (although not linearly, since BK Client writes in parallel). </p><br><p>  When writing to the ledger each record is given a unique increasing ordinal integer number issued by the client, which allows you to organize an asynchronous approach to recording.  At the same time, BookKeeper guarantees that the write operation with the number (n + 1) is completed only when all the write operations with the lower numbers are completed.  This is a very useful feature that allows you to significantly improve the performance of write operations in some cases, even if you need an orderly notification of clients about the completion of operations. </p><br><p>  <strong>Important limitation 2</strong> .  An unlimited number of readers can read from a ledger in parallel, while reading is allowed when the ledger is closed, that is, at the moment no one is writing. </p><br><p>  In general, the above restrictions for ledgers are significant limitations that in some cases can significantly narrow the scope of application. </p><br><p> For example, you open a new ledger every second, write to it and close it.  This means that reading processing will be 1 second behind.  Since the ledger has the Long identifier type, you can open every 1ms without any problems, but then you will encounter a situation that will increase the load on the Zookeeper, for which this will be a significant load.  In the problem we are solving, this restriction was valid. </p><br><p>  Another example is that the write intensity is such that the performance of servers within a single ledger is not enough, and the logic of the application is such that it is not possible to partition a record by several ledgers.  Everything, as they say, arrived.  This restriction within our task also managed, we were able to partition all the objects in this way, and we only have one data stream left for which we could not get around this restriction. </p><br><h3 id="hranenie-identifikatorov-grossbuhov">  Ledger identifier storage </h3><br><p>  Ledger IDs are stored in Zookeeper, which allows for iteration over them, however, not everything is so simple.  If we want to have several parallel chains of ledgers, then it is necessary to keep the ledger identifiers that relate to a specific chain somewhere separate, BookKeeper will not help us with this.  Another option is to deploy Bookie's isolated servers for each task separately, so that they have a separate path to the Zookeeper (which did not suit us). </p><br><p>  It should be noted that the Apache Zookeeper itself imposes additional restrictions that also need to be considered: </p><br><ol><li>  The entire database should be located in the server’s memory (if you open a lot of ledgers and don’t delete them), it’s quite possible that sometime there’s not enough RAM on the server (this is unlikely, of course, but this fact shouldn’t be written off). </li><li>  If there are many items in the Zookeeper parent directory, an error may occur when getting the directory listing, if it does not fit into the maximum size of the Zookeeper package of 1MB. </li></ol><br><p>  The creators of Apache BookKeeper provide a solution for problem 2 by introducing the <strong>Hierarchical Ledger Manager</strong> , which organizes the flat identifier space into a hierarchical tree by splitting Long into levels.  The default is <strong>Flat Ledger Manager</strong> , which is clearly inapplicable with the frequent generation of new ledgers. </p><br><h2 id="ledger-entry--zapis">  Ledger Entry / Record </h2><br><p>  The record is an element of the ledger.  Each entry within the framework of the ledger has a sequential, increasing identifier - from 0 ... The entry contains arbitrary data in the form of a byte array.  Adding an entry can be done in synchronous and asynchronous mode.  In asynchronous mode, as usual, you can achieve higher performance for multi-user applications.  As previously mentioned, the call to the asynchronous part occurs when the record is added to the ledger, that is, in an orderly manner. </p><br><p>  Perhaps these three concepts - Bookie, Ledger (ledger) and Ledger Entry (writing) are essential elements for understanding the work of Apache BookKeeper. </p><br><h2 id="vmesto-zaklyucheniya">  Instead of conclusion </h2><br><p>  I must say that the Apache BookKeeper does not look like a silver bullet or a magic tablet, it is a very specific solution that does not contradict the CAP theorem and imposes a significant amount of restrictions on the problem being solved, which are often impossible to get around.  Fortunately for us, we were able to provide with this component horizontal scaling of the system, but to support our requirements, we had to solve several engineering tasks along the way, for example, how to read data from two ledgers correctly and how to store “sifted” lists for non-intersecting ledgers in Zookeeper. </p><br><p>  This article is introductory, introductory.  Making Apache BookKeeper Hello World is easy enough; the authors provide a detailed start-up <a href="http://bookkeeper.apache.org/docs/master/bookkeeperTutorial.html">guide</a> , while we were sorting out, rewriting its implementation on <a href="https://github.com/bwsw/bookkeeper-tutorial-scala">Scala</a> . </p><br><h3 id="o-rocksdb">  About RocksDB </h3><br><p>  RocksDB was chosen due to the fact that it has high performance and supports atomic packet writing (all or nothing), which ensures the correct behavior in case of emergency situations.  As part of our task, we loaded the previous state from RocksDB, read all the actions from the ledger (s), formed the final state in RAM, and recorded it <strong>atomically</strong> in RocksDB, while the numbers of the ledger we also processed went to the record. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/332686/">https://habr.com/ru/post/332686/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../332674/index.html">Why I switched from React to Cycle.js</a></li>
+<li><a href="../332676/index.html">3D mouse integration in Renga</a></li>
+<li><a href="../332678/index.html">Understanding oracles in the blockchain</a></li>
+<li><a href="../332682/index.html">Oracle Data Integrator. SubstitutionAPI: The order of the substitutions. Part 1</a></li>
+<li><a href="../332684/index.html">Vulnerability VKontakte: send a message with the page recovery code to someone else's number</a></li>
+<li><a href="../332688/index.html">Lecture about two libraries of Yandex for working with big data</a></li>
+<li><a href="../332690/index.html">Automation IP-network. Part 2 - Monitoring the speed of opening Web pages</a></li>
+<li><a href="../332692/index.html">Binary image segmentation using the level set method</a></li>
+<li><a href="../332694/index.html">Configuring BGP Looking glass based on OpenBSD 6.1</a></li>
+<li><a href="../332698/index.html">The digest of interesting materials for the mobile developer # 211 (July 03 - July 09)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Logging, interfaces and allocations in Go</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi Habr. I published my last post relatively recently, so it is unlikely that you managed to forget that my name is Marco. Today I am publishing a tra...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Logging, interfaces and allocations in Go</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/web/9be/d9c/1d7/9bed9c1d78c841e9994304c4d580cf6f.jpg"></p><br><p>  <em>Hi Habr.</em>  <em>I published my last post relatively recently, so it is unlikely that you managed to forget that my name is Marco.</em>  <em>Today I am publishing a translation of a small note that concerns several very tasty optimizations from the not yet released Go 1.9.</em>  <em>These optimizations allow you to generate less garbage in most Go programs.</em>  <em>Less garbage - less delay and the cost of collecting this garbage.</em> </p><br><p>  This article is about new compiler optimizations that are preparing for the release of Go 1.9, but I would like to start a conversation with logging. </p><a name="habracut"></a><br><p>  A couple of weeks ago, Peter Burgon started a <a href="https://groups.google.com/forum/">thread</a> on <a href="https://groups.google.com/forum/">golang-dev</a> with a proposal to standardize logging.  It is used everywhere, so the issue of performance is quite acute.  The <a href="https://github.com/go-kit/kit/tree/master/log">go-kit</a> package uses structural logging, which is based on the following interface: </p><br><pre><code class="hljs haskell"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">type</span></span></span><span class="hljs-class"> </span><span class="hljs-type"><span class="hljs-class"><span class="hljs-type">Logger</span></span></span><span class="hljs-class"> interface { </span><span class="hljs-type"><span class="hljs-class"><span class="hljs-type">Log</span></span></span><span class="hljs-class">(</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">keyvals</span></span></span><span class="hljs-class"> ...</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">interface</span></span></span><span class="hljs-class">{}) error }</span></span></code> </pre> <br><p>  Call example: </p><br><pre> <code class="hljs pgsql">logger.Log("transport", "HTTP", "addr", addr, "msg", "listening")</code> </pre> <br><p>  Note: everything that is passed to the Log call is converted to an interface.  This means that there will be many memory allocations. </p><br><p>  Compare to another <a href="https://github.com/uber-go/zap">zap</a> structured logging package.  Calling logging in it is much less convenient, but this is done in order to avoid interfaces and, accordingly, allocations: </p><br><pre> <code class="hljs pgsql">logger.<span class="hljs-keyword"><span class="hljs-keyword">Info</span></span>("Failed to fetch URL.", zap.String("url", url), zap.Int("attempt", tryNum), zap.Duration("backoff", sleepFor), )</code> </pre> <br><p>  The arguments for <code>logger.Info</code> are of type <code>logger.Field. logger.Field</code>  <code>logger.Field. logger.Field</code> is a union union structure that contains a type and a field for each of the <code>string</code> , <code>int</code> , and <code>interface{}</code> .  And it turns out that interfaces are not needed to transfer basic types of values. </p><br><p>  But enough about logging.  Let's see why converting a value to an interface sometimes requires memory allocation. </p><br><p>  Interfaces are represented by two words: a pointer to the type and a pointer to the value.  Russ Cox <a href="https://research.swtch.com/interfaces">wrote an excellent article</a> about this, and I will not even try to repeat it here.  Just go and read it. </p><br><p>  But his data is still a bit out of date.  The author points to an obvious optimization: when the size of the value is equal to or smaller than the pointer, we can simply put the value instead of the pointer in the second word of the interface.  However, with the advent of the competitive garbage collector, this optimization has <a href="https://golang.org/issue/8405">been removed from the compiler</a> , and now the second word is always just a pointer. </p><br><p>  Suppose we have this code: </p><br><pre> <code class="hljs css"><span class="hljs-selector-tag"><span class="hljs-selector-tag">fmt</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.Println</span></span>(1)</code> </pre> <br><p>  Before Go 1.4, it did not result in memory allocation, since the value 1 could be put directly into the second word of the interface. </p><br><p>  That is, the compiler did something like this: </p><br><pre> <code class="hljs objectivec">fmt.Println({<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>}),</code> </pre> <br><p>  Where <code>{typ, val}</code> represents two interface words. </p><br><p>  After Go 1.4, this code began to lead to memory allocation, since 1 is not a pointer, and the second word of the interface is now required to be a pointer.  And it turns out that the compiler and runtime did something like this: </p><br><pre> <code class="hljs go">i := <span class="hljs-built_in"><span class="hljs-built_in">new</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>) <span class="hljs-comment"><span class="hljs-comment">// allocates! *i = 1 fmt.Println({int, i})</span></span></code> </pre> <br><p>  It was unpleasant, and many copies were broken in the verbal battles after this change. </p><br><p>  The first <a href="https://github.com/golang/go/commit/22701339817a591cd352ecd43b0439b84dbe8095">significant optimization</a> to get rid of allocations was made a little later.  It worked when the resulting interface did not run away ( <em>translator's note: term from escape analysis</em> ).  In this case, a temporary value can be allocated on the stack instead of a heap.  Using the example above: </p><br><pre> <code class="hljs pgsql">i := <span class="hljs-built_in"><span class="hljs-built_in">new</span></span>(<span class="hljs-type"><span class="hljs-type">int</span></span>) // now doesn<span class="hljs-string"><span class="hljs-string">'t allocate, as long as e doesn'</span></span>t <span class="hljs-keyword"><span class="hljs-keyword">escape</span></span> *i = <span class="hljs-number"><span class="hljs-number">1</span></span> var e interface{} = {<span class="hljs-type"><span class="hljs-type">int</span></span>, i} // <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> things <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> e that don<span class="hljs-string"><span class="hljs-string">'t make it escape</span></span></code> </pre> <br><p>  Unfortunately, many interfaces run away, including those in <code>fmt.Println</code> and in my examples on logging above. </p><br><p>  Fortunately, in Go 1.9 there will be some more optimizations for the implementation of which the developers were inspired by the same conversation about logging (unless, of course, they are not rolled back at the last moment, which is always possible). </p><br><p>  The first optimization is to not allocate memory when we <a href="https://golang.org/issue/18704">convert a constant to an interface</a> .  So <code>fmt.Println(1)</code> will no longer result in memory allocation.  The compiler puts the value 1 in a global read-only memory area.  Like that: </p><br><pre> <code class="hljs cs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> = <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-comment"><span class="hljs-comment">// at the top level, marked as readonly fmt.Println({int, &amp;i})</span></span></code> </pre> <br><p>  This is possible, since the constants are unchanged (immutable) and will remain so anyway. </p><br><p>  This optimization of the developers was inspired by the discussion of logging.  In structural logging, a large number of arguments are constants (exactly all the keys, and probably some of the values).  Remember the <code>go-kit</code> example: </p><br><pre> <code class="hljs pgsql">logger.Log("transport", "HTTP", "addr", addr, "msg", "listening")</code> </pre> <br><p>  This code after Go 1.9 will result in only one memory allocation operation instead of six, since five of the six arguments are constant strings. </p><br><p>  The second new optimization is to not allocate memory <a href="https://golang.org/issue/17725">when converting boolean values ​​and bytes into interfaces</a> .  This optimization is implemented by adding a global <code>[256]byte</code> array called <code>staticbytes</code> to all resulting binaries.  For a given array, it is true that staticbytes [b] = b for all b.  When the compiler wants to put a boolean value, or <code>uint8</code> , or some other single-byte value into the interface, instead of allocating it, it puts a pointer to an element of this array.  For example: </p><br><pre> <code class="hljs go"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> staticbytes [<span class="hljs-number"><span class="hljs-number">256</span></span>]<span class="hljs-keyword"><span class="hljs-keyword">byte</span></span> = {<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">3</span></span>, <span class="hljs-number"><span class="hljs-number">4</span></span>, <span class="hljs-number"><span class="hljs-number">5</span></span>, ...} i := <span class="hljs-keyword"><span class="hljs-keyword">uint8</span></span>(<span class="hljs-number"><span class="hljs-number">1</span></span>) fmt.Println({<span class="hljs-keyword"><span class="hljs-keyword">uint8</span></span>, &amp;staticbytes[i]})</code> </pre> <br><p>  And the third optimization, which is still being reviewed, is to not allocate memory <a href="https://golang.org/cl/36476">when converting standard zero values ​​to an interface</a> .  This refers to zero values ​​for integers, floating-point numbers, strings, and slices.  Rantaim checks the value for equality to zero, and, if so, it uses a pointer to an <a href="">existing large piece of zeros</a> instead of allocating memory. </p><br><p>  If everything goes according to plan, Go 1.9 will remove a large number of allocations during the conversion to interfaces.  But it will not remove all such allocations, and this means that the issue of performance will remain relevant when discussing the standardization of logging. </p><br><p>  The interaction between the API and some solutions in the implementation is quite interesting. </p><br><p>  Selecting and creating an API requires thinking about performance issues.  It’s not by chance that the io.Reader interface allows the calling code to use its buffer. </p><br><p>  Productivity is an important aspect of certain solutions.  As we saw above, the implementation details of the interfaces affect where and when memory allocations will occur.  And at the same time, these very solutions depend on what code people write.  Compiler and runtime authors seek to optimize real, frequently used code.  So, the decision to save in Go 1.4 two words for interfaces instead of adding the third, which would cause an extra memory allocation operation in <code>fmt.Println(1)</code> , was based on considering the code that real people write. </p><br><p>  And since what code people write often depends on which APIs they use, we get such feedback, which on the one hand delights, and on the other, sometimes difficult to manage. </p><br><p>  Perhaps this is not a very deep observation, but still: if you are designing an API and are worried about performance, keep in your head not only what the compiler and runtime do, but what they could do.  Write code for the present, but design an API for the future. </p><br><p>  And if you are not sure, ask.  It worked (slightly) for logging. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/328722/">https://habr.com/ru/post/328722/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../328708/index.html">Development of a password manager for Android</a></li>
+<li><a href="../328710/index.html">Google I / O 2017: notes from the event from the Android developer</a></li>
+<li><a href="../328712/index.html">Five books on programming worth reading</a></li>
+<li><a href="../328718/index.html">Speed ​​- Do Bank Sites Need It?</a></li>
+<li><a href="../328720/index.html">Google I / O co-browsing at the Avito office</a></li>
+<li><a href="../328726/index.html">Search for devices on the network by SSDP using Poco</a></li>
+<li><a href="../328728/index.html">Theory of cone antennas BowTie</a></li>
+<li><a href="../328732/index.html">Let there be a movie with Xamarin.Forms</a></li>
+<li><a href="../328734/index.html">We raise the price monitoring service of competitors</a></li>
+<li><a href="../328738/index.html">Linux staff monitoring: when demand creates supply</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

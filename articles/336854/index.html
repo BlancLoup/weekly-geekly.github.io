@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Multithreading in C ++ and SObjectizer with CSP channels, but without any actors ...</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Previously, we talked about SObjectizer as an actor framework for C ++, although in reality this is not quite the case. For example, for a long time i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Multithreading in C ++ and SObjectizer with CSP channels, but without any actors ...</h1><div class="post__text post__text-html js-mediator-article"><p>  Previously, we talked about <a href="https://habrahabr.ru/post/304386/">SObjectizer</a> as an actor framework for C ++, although in reality this is not quite the case.  For example, for a long time in SObjectizer there is such a cool thing as <a href="https://www.slideshare.net/YauheniAkhotnikau/dive-into-sobjectizer-55-ninth-part-message-chains">mchains</a> (they are also channels from the <a href="https://en.wikipedia.org/wiki/Communicating_sequential_processes">CSP</a> model).  Mchains allow you to easily and naturally organize data exchange between workflows.  Without creating agents that are not always needed.  Just the other day, it was once again possible to take advantage of this feature and simplify one’s life by transferring data between streams via channels (ie, SObjectizer mchains).  So not only in Go you can enjoy the use of CSP.  In C ++ this is also possible.  Who cares what and how, I ask under the cat. </p><a name="habracut"></a><br><p>  The task was as follows: there is some kind of third-party system to which you need to make synchronous requests.  It was necessary to see how this system behaves, if requests to it go not into one stream, but into several.  For this, it was necessary to make an existing single-threaded multi-threaded client, the working threads of which would issue their own stream of requests to a third-party system. </p><br><p>  The complete list of requests to be executed was in a separate file.  So it was necessary to consistently read this file, get another request and give it to one of the free working threads.  Each thread counted the number of queries executed.  It was necessary to determine how long it would take to read and process all requests, as well as to calculate how many requests were completed. </p><br><p>  Obviously, a simple solution was suggested.  There is a main working thread that reads the request file.  Each request is placed in the general queue of requests.  Where requests are handled by worker threads.  Those.  The working thread takes the first request from the queue, executes it, then takes the new first request from the queue, and so on.  If the queue is empty, then the working thread should pause until something in the queue appears.  If it is very full, the main thread should be suspended until there is free space in the queue. </p><br><p>  <a href="https://sourceforge.net/p/sobjectizer/wiki/so-5.5%2520In-depth%2520-%2520Message%2520chains/">Mchains from SObjectizer</a> just allow you to do without writing your thread-safe queues. </p><br><p>  To solve this problem, two mchains were required.  The first mchain is used to send read requests to the worker threads.  Home thread writes requests to it, <br>  worker threads read requests from there.  When the request file is read completely, the main thread simply closes this mchain.  Accordingly, as soon as the worker threads see that there is nothing in mchain and it is closed, they will complete their work. </p><br><p>  The second mchain was required in order for the workers to be able to send information to the main thread that they had assured their work and how many requests they had processed.  In this mchain, worker threads write just one message each.  And the main thread only reads from this mchain. </p><br><p>  Well, now you can see how it all looks in the code.  Code without comments, because  it was a one-time program for emission.  Therefore, the necessary explanations will be given after the corresponding piece of code. </p><br><p>  Let's start with the run_app function, which is called from main () immediately after the program parses the command line parameters: </p><br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">run_app</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">( </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">app_args_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> &amp; args )</span></span></span><span class="hljs-function"> </span></span>{ so_5::<span class="hljs-keyword"><span class="hljs-keyword">wrapped_env_t</span></span> sobj( []( so_5::<span class="hljs-keyword"><span class="hljs-keyword">environment_t</span></span> &amp; ) {}, []( so_5::<span class="hljs-keyword"><span class="hljs-keyword">environment_params_t</span></span> &amp; params ) { params.infrastructure_factory( so_5::env_infrastructures::simple_mtsafe::factory() ); } ); <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> tasks_ch = create_mchain( sobj, <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::chrono::seconds(<span class="hljs-number"><span class="hljs-number">5</span></span>), <span class="hljs-number"><span class="hljs-number">50</span></span>, so_5::mchain_props::<span class="hljs-keyword"><span class="hljs-keyword">memory_usage_t</span></span>::preallocated, so_5::mchain_props::<span class="hljs-keyword"><span class="hljs-keyword">overflow_reaction_t</span></span>::abort_app ); <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> finish_ack_ch = create_mchain( sobj ); <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">vector</span></span>&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::thread &gt; workers; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> cleanup = cpp_util_3::at_scope_exit( [&amp;] { so_5::close_drop_content( finish_ack_ch ); so_5::close_drop_content( tasks_ch ); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span>( <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> &amp; t : workers ) t.join(); } ); cpp_util_3::n_times( args.m_threads_count, [&amp;] { workers.emplace_back( [&amp;] { worker_thread( args, tasks_ch, finish_ack_ch ); } ); } ); do_main_work( args, tasks_ch, finish_ack_ch ); }</code> </pre> <br><p>  Here you first create an instance of the SObjectizer Environment, which will own the mchains.  Without a SOEnvironment, you cannot create mchain, so you have to create an SOEnvironment. </p><br><p>  But we do not need a full-fledged SOEnvironment, which is designed to create a cloud of agents in the application, for which SOEnvironment is forced to efficiently manage to create several of its own auxiliary threads.  Therefore, in the parameters of SOEnvironment, we ask to use a <a href="https://sourceforge.net/p/sobjectizer/wiki/so-5.5.19%2520Environment%2520Infrastructure/">special, single-threaded version of SObjectizer</a> .  In this case, wrapped_env_t will create one auxiliary thread on which the so_5 :: launch () call will occur and that's it.  More SObjectizer will not do anything.  And this auxiliary thread will sleep in so_5 :: launch () until it returns from run_app. </p><br><p>  Next, we need mchain to distribute requests to the worker threads.  This is tasks_ch.  But this is not a simple mchain.  First, it is mchain limited capacity.  Attempting to add another message to the completed mchain will block the current thread.  But blocking is not forever, but only for 5 seconds.  If even after 5 seconds there is no free space in mchain, the entire application will be interrupted by calling std :: abort ().  In this case, it is justified, since  under normal conditions, none of the working threads should fall asleep for more than a few milliseconds, not to mention 5 seconds.  So if in 5 seconds there is no free space in tasks_ch, then something definitely goes wrong, so you need to call std :: abort ().  In addition, since tasks_ch have a known size in advance, we order to immediately allocate the necessary memory for the entire message queue in mchain. </p><br><p>  With the second mchain, to which the worker threads will send finish_ack messages, everything is much simpler.  Therefore, finish_ack_ch is created by a simple call to create_mchain, with default parameters (dimensionless mchain without blocking on send operations). </p><br><p>  Next, we need to run N worker threads and save them in the workers vector.  But it's not so simple.  We can get an exception when creating the next working thread.  In this case, it would be useful for us to properly complete those threads that have already been created. </p><br><p>  To simplify life with a rollback of previously performed operations, use the analog of the D-shny scope_exit (well, or the analog of the BOOST_SCOPE_EXIT or Go-shny defer, here it is closer to someone).  The variable cleanup, in essence, is an object with a lambda inside.  This lambda is called when the destructor of the cleanup variable is called.  It is created by cleanup using the small <a href="">cpp_util</a> helper library.  Another clarification about cleanup: the first thing we need to do when cleaning is to close the mchains.  If one of the worker threads has already started and falls asleep on the receive call from tasks_ch, then closing tasks_ch in cleanup will immediately wake up this thread and allow it to complete its work. </p><br><p>  Well, then we create the worker threads and call do_main_work.  Inside do_main_work, the main work of the main thread of the application is performed: reading a file with requests, sending requests to working threads, collecting results.  Here is what the simplified version of do_main_work looks like, from which minor details have been removed: </p><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">do_main_work</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">( </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">app_args_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> &amp; args, so_5::</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">mchain_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> tasks_ch, so_5::</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">mchain_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> finish_ack_ch )</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">data_file_handler_t</span></span> file{ args.m_data_file, args.m_force_keep_alive }; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> started_at = hires_clock::now(); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>( !file.is_eof() ) { <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> request = file.get_next_request(); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( !request ) <span class="hljs-keyword"><span class="hljs-keyword">break</span></span>; so_5::send&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span> &gt;( tasks_ch, *request ); } so_5::close_retain_content( tasks_ch ); <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">long</span></span> <span class="hljs-keyword"><span class="hljs-keyword">long</span></span> total_requests{}; so_5::receive( from(finish_ack_ch).handle_n( args.m_threads_count ), [&amp;]( <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">finish_ack_t</span></span> &amp; what ) { total_requests += what.m_requests; } ); <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> total_time = hires_clock::now() - started_at; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>( total_requests ) { ... <span class="hljs-comment"><span class="hljs-comment">// Print the results... } }</span></span></code> </pre> <br><p>  All the most interesting here is collected in two places. </p><br><p>  First, inside while.  There, requests from a file are sequentially read and transmitted to the worker threads by calling send.  If send is called when tasks_ch is completely filled, the main thread will be suspended (but not longer than 5 seconds). </p><br><p>  Secondly, when the entire file with requests is read, we need to wait for answers from all the worker threads.  To do this, we first close tasks_ch, so that the worker threads understand that it’s time to complete their work.  But you need to close so that those requests that are already in the queue but have not yet been processed are not lost.  Therefore, close_retain_content is called (however, for cleanup actions, close_drop_content was used in run_app, because there we don’t need to save anything in the closed channel). </p><br><p>  After the tasks_ch is closed, you need to wait for a response from the N worker threads.  This expectation of exactly N responses is recorded in one magic line: </p><br><pre> <code class="cpp hljs">so_5::receive( from(finish_ack_ch).handle_n( args.m_threads_count ),</code> </pre> <br><p>  It says literally the following: read from the finish_ack_ch channel until exactly threads_count messages are read and processed. </p><br><p>  Well, to complete the picture you need to show how the code of the working thread looks.  It is quite simple: </p><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">worker_thread</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">( </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">app_args_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> &amp; args, so_5::</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">mchain_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> tasks_ch, so_5::</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">mchain_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> finish_ack_ch )</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">io_performer_t</span></span> io_performer{ args.m_srv, args.m_port }; <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">long</span></span> <span class="hljs-keyword"><span class="hljs-keyword">long</span></span> total_requests{}; so_5::receive( from(tasks_ch), [&amp;]( <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span> &amp; request ) { io_performer.request_response( request ); ++total_requests; } ); so_5::send&lt; <span class="hljs-keyword"><span class="hljs-keyword">finish_ack_t</span></span> &gt;( finish_ack_ch, total_requests ); }</code> </pre> <br><p>  The thread just hangs inside the receive from the tasks_ch channel.  The return from receive will occur when closing tasks_ch.  If tasks_ch is empty, then receive will sleep until <br>  until something enters the channel (or until the channel is closed).  And when the return from receive occurs, the working thread simply sends the finish_ack message to finish_ack_ch and ends. </p><br><p>  That's all. </p><br><p>  It must be said that with the multithreading itself and the exchange of information between the streams there were no problems.  Literally from the first time it started and earned.  Problems arose within the implementation of io_performer_t :: request_response, when due to errors in the implementation of the interaction between the client and the server, the current thread hung.  It was then that the 5-second limit helped to wait for the write to complete tasks_ch: when the threads started to hang, the timeout worked and the multi-threaded client crashed.  It immediately became clear that there is a bug, and the bug is in request_response, since  only hanging there could stop normal reading from tasks_ch. </p><br><p>  In conclusion, I would like to say that the Actor Model and the Interactive Sequential Process Model (aka CSP) are excellent pieces.  Somewhere one works well, somewhere second.  <a href="https://sourceforge.net/projects/sobjectizer/">SObjectizer</a> allows you to use both.  And then all at once, sometimes it is necessary. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/336854/">https://habr.com/ru/post/336854/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../336844/index.html">One method for solving different tasks: the percentage distribution of calls</a></li>
+<li><a href="../336846/index.html">Richard Hamming: "I often compare creativity with sex"</a></li>
+<li><a href="../336848/index.html">Transfer mail from Exchange to Zimbra</a></li>
+<li><a href="../336850/index.html">Back up configuration switches, or fasten a little automation to GLPI</a></li>
+<li><a href="../336852/index.html">Optimize the launch time of iOS applications</a></li>
+<li><a href="../336858/index.html">Entertaining math with colored cubes</a></li>
+<li><a href="../336860/index.html">How to hash passwords in high-load services. Yandex experience</a></li>
+<li><a href="../336864/index.html">Getting ready for Java 9. Review of the most interesting improvements.</a></li>
+<li><a href="../336866/index.html">Big Data and Odnoklassniki: what they do with the data in the 2nd most visited social network in Russia</a></li>
+<li><a href="../336868/index.html">How to write a good SLA</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

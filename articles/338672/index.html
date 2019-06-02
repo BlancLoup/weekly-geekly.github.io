@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Profiling project build</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A couple of months ago, I screwed profiling to our build system (the JamPlus fork). It was implemented on the Chrome Tracing View that I described ear...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Profiling project build</h1><div class="post__text post__text-html js-mediator-article">  A couple of months ago, I screwed profiling to our build system (the <a href="http://jamplus.org/">JamPlus</a> fork).  It was implemented on the <a href="https://habrahabr.ru/company/infopulse/blog/336584/">Chrome Tracing View</a> that I described earlier, so it was easy to add its support to Jam.  Jam is written in C, so I just found a suitable library for profiling in C (it was a <a href="https://github.com/hrydgard/minitrace">minitrace</a> ) and literally in several lines wrapped up the places of interest to me (the assembly itself). <br><br><img src="https://habrastorage.org/getpro/habr/post_images/93a/ae5/934/93aae5934dfea415c24976087da5d0d2.png" alt="image"><br><br>  There is nothing outstanding here.  However ... as soon as you get the first results of profiling, they often make you think and start to notice something. <br><a name="habracut"></a><br><h2>  Things seen </h2><br>  Once I was doing something unrelated to the topic of this article and for some reason I looked at the output of the profiler for the new build of my product.  Experience suggests that linking is the lion's share of C ++ code assembly.  This time, however, this was not the case: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/getpro/habr/post_images/561/876/50c/56187650c94b11f76fc91cc6939cadb6.png" alt="image"><br><br>  A big delay is easily seen in the diagram before the linking stage.  Most of the code is already compiled and only one file with C ++ code continues to be collected.  Then I was busy with another task, so I just added a task to figure it out on our board with tasks.  Another time I was building a build of another component of our product and again looked at the output of the build profiler: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/68d/b9f/2d6/68db9f2d6c7b2e18a1f41355b99c5d90.png" alt="image"><br><br>  And here things looked already frankly bad.  The total build time was about 10 minutes and almost 7 of them were compiled with just one file (5 of which nothing else was compiled).  At that moment, it became clear that the problem was in an assembly system of such a scale that does not allow it to be ignored or postponed anymore. <br><br>  The average compile time for C ++ files in this project and in this configuration was about 2 seconds.  There were a couple of files that were collected for 30 seconds, but 400+ seconds for the assembly went beyond all reasonable limits.  What is going on? <br><br>  I did some experiments and found out that: <br><br><ul><li>  Our assembly system, built on the principle of <a href="https://habrahabr.ru/post/117663/">Unity builds</a> , was not the culprit.  The whole thing was in one specific cpp-file. </li><li>  This behavior was interpreted by the MSVC compiler (clang worked 10 times faster), but then we needed MSVC </li><li>  The problem concerned only the release assemblies (or rather those assemblies where inlining was enabled) </li><li>  The problem concerned not only the old VS2010 compiler.  Compiling with VS2015 worked even slower </li><li>  A common point for all files, the compilation of which took more than 30 seconds, was the use of our “mathematical SIMD library”, which made it possible to write code in the HLSL style.  The implementation was based on highly sophisticated macros and templates. </li><li>  The same file, the compilation of which took 7 minutes, included a very large and complex SIMD-function, which also due to the use of templates required the creation of several typed implementations at the compilation stage (this way we got rid of the overhead on runtime, so this the approach made sense) </li></ul><br>  Whether our approach was ideal was a separate question, but then it gave us enough advantages not to abandon it out of the blue.  But all the same, something had to be done with the speed of compilation. <br><br><h2>  Compile acceleration </h2><br>  One simple change that was entirely at the mercy of the build system could be the exclusion of slowly compiled files from Unity builds.  Their whole point is to slightly save on compiler launches and preprocessing common header files.  However, for several files, the compilation of which takes 30+ seconds, this gain will be minimal, but the need to wait several minutes at each assembly because of the "stuck" at the end of the file assembly is a significant problem. <br><br>  It would be nice to somehow force the build system to start compiling the “slow” files as early as possible.  Let's start earlier - finish earlier.  The ideal option would be to fasten an analysis of historical data on previous assemblies to the assembly system and automatic compilation queue generation based on them.  But this was not necessary in this particular case - just the exclusion of files from the unity builds in our build system moved them to the top of the queue.  Ok, that's enough for us. <br><br>  This trick didn’t really speed up our 7-minute build of that “bad” file for a second, but it was easy to do and he immediately gave about one minute of total gain on the entire assembly (which had taken 10 minutes before). <br><br>  And after that, I did something that I generally had no hopes for - I broke the largest template function into several smaller ones in that “slow” file (some of which were no longer template).  Trivial refactoring.  Some IDEs are able to do such things in the mode “selected with a mouse a part of the code, right click, Extract Function”.  Well, that's just C ++ and the code, as I said, contained many macros and templates, so I had to do everything manually. <br><br>  After selecting about 5 functions, the compile time of the problem file dropped from 420 seconds to 70. It became 6 times faster! <br><br>  Of course, highlighting functions means that they are no longer an inline code and we have the costs of calling them (passing arguments, jump, return).  At the same time, this approach still allows the calling function to use registers (better or worse), to reduce the total amount of code, etc.  We measured the speed of the modified code on different platforms and concluded that the performance changes are insignificant.  So, this time it worked! <br><br>  Of course, a minute to compile a single file is still a lot.  But further attempts to speed up the compilation would entail significant changes in the design of our mathematical library.  This required more thoughtful planning. <br><br>  Build after the changes are made already looks better.  There are no more heaps of processor cores waiting to complete the compilation process on one of them.  Linking is still consistent, but this is not news.  The total assembly time fell from 10 minutes to 5 minutes 10 seconds, i.e.  It became almost 2 times faster. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/697/4c3/b66/6974c3b667782264e56e5c64f078e86b.png" alt="image"><br><br><h2>  Morality </h2><br><ul><li>  Having at least some kind of profiling system for an assembly of a project is better than not having any at all.  If we didn’t have such a system, we would have lost 5 minutes on each build of the project (not only on the build server, but also on the development machines). </li><li>  When your template function is compiled, N typed views are created.  And each view is a separate code that is automatically generated first and then compiled.  Moreover, for different versions of such code, depending on the types used, the compiler may also apply various optimizations.  Dividing a large template function into smaller (and possibly non-template) functions can actually speed up compilation. </li><li>  Complex template functions can be compiled for a long time due to the optimizer being too long to work.  For example, the MSVC compiler spends most of its time on this. </li><li>  Accelerating the assembly is a good thing.  Well, remember, that comic - "-Hey, where are you going? - The code is compiled!".  The less this happens in life, the better. </li></ul></div><p>Source: <a href="https://habr.com/ru/post/338672/">https://habr.com/ru/post/338672/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../338662/index.html">How to make a career in digital: the first year of the life of an internet marketer</a></li>
+<li><a href="../338664/index.html">I'd go to the programmers, let them teach me</a></li>
+<li><a href="../338666/index.html">DI for fully reusable JSX components</a></li>
+<li><a href="../338668/index.html">Kali Linux: monitoring and logging</a></li>
+<li><a href="../338670/index.html">Cat or shellCode?</a></li>
+<li><a href="../338674/index.html">Head, what should I do to get more money</a></li>
+<li><a href="../338676/index.html">The final release of 3CX Call Flow Designer and 3CX courses in Belarus</a></li>
+<li><a href="../338678/index.html">Moving to the cloud: 5 different stories</a></li>
+<li><a href="../338680/index.html">FrontFest ❄️ From Siberia with love</a></li>
+<li><a href="../338682/index.html">Overview of one Russian RTOS, part 6. Thread synchronization tools</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

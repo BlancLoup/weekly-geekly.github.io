@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Django ORM - slow? Optimize (hardcore)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Autumn came, and, despite the good weather, our viewers reached out for new video content. Backend servers serving video embeds began to run into CPU....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Django ORM - slow? Optimize (hardcore)</h1><div class="post__text post__text-html js-mediator-article"><p>  Autumn came, and, despite the good weather, our viewers reached out for new video content.  Backend servers serving video embeds began to run into CPU.  With system calls, system administrators came running and began to take laptops and desktops from the development department, threatening to put them in data centers "for gain".  The development of this course did not like everything and <del>  everyone was fired </del>  With this crap decided to do something. </p><a name="habracut"></a><br><p>  In general, there are a lot of solutions in the highload world, starting with the wild "let's rewrite the most difficult things on Go" and ending with the banal caching of everything.  However, this time we will talk about the acceleration of what you can not rewrite and not caches - the business logic of the process of display resolution of the video. </p><br><p>  The video display logic for five years of implementing business requirements absorbed the targeting of sponsored links, video delivery protocols, statistical counters, player appearance and much more that depends on geographic location, browser, device type, site where video embed is located , video content metadata - a total of about a dozen parameters. </p><br><p> As a result, for each specific viewing, you need to make about a dozen requests to MySQL, the formatted version of which does not fit on the screen.  Queries go to small tables, they are executed quickly, but the bottleneck is the formation of such queries using Django ORM.  After sitting for half an hour with the profiler and looking at the results, the author found out two things.  The first is that using the <code>django-rest-framework</code> in such a complex API pushes the programmer to copy-paste and re-call the same functions within the same request.  Record - 6 times parse the referrer URL into subdomains and path segments.  The second is that inside Django ORM <del>  really slow </del>  it takes up half the time to process the request. </p><br><p>  Before that, it was necessary to speed up the ORM, they reached quite quickly, and they thought of the sane implementation literally the other day.  Prior to this, various options were analyzed. </p><br><h2>  str.format () </h2><br><p>  Using line formatting queries would solve our performance problems right away and fundamentally, but would require rewriting dozens of pages of code, depriving developers of sleep for several months, and managers no hope that it will ever be released into production.  The option was dropped immediately. </p><br><h2>  SQLAlchemy + Baked Queries </h2><br><p>  Changing ORM to another, faster and with built-in support for caching, could be an excellent option if this were confused at the start of the project.  And so, despite the presence of tests, the question arises about the equivalence of rewritten code.  <a href="http://docs.sqlalchemy.org/en/latest/orm/extensions/baked.html">Baked Queries</a> from SQLAlchemy allows you to use a cache in the process memory instead of building a query from scratch to reuse a once-formatted SQL query when you retry calls with different parameters.  This idea was one of the most "delicious" until the version that caused the publication of this article. </p><br><h2>  Cache for Django ORM </h2><br><p>  It is clear that the implementation of caching inside Django ORM will not work, but what if you try to cache an already formatted SQL query?  In theory, it looks very simple: </p><br><pre> <code class="python hljs">queryset = get_some_complex_sql(flag1=<span class="hljs-keyword"><span class="hljs-keyword">True</span></span>, flag2=<span class="hljs-keyword"><span class="hljs-keyword">True</span></span>) sql, params = queryset.query.sql_with_params() raw_queryset = Model.objects.raw(sql, params=params)</code> </pre> <br><p>  We take the <a href="https://habrahabr.ru/post/50477/">memoization</a> technique, modify it so that not specific values ​​are taken into account, but their types, presence / absence (OK, <code>(True, False, None, 0, 1)</code> can also be taken into account).  We remember SQL, in the case of cache hit, we substitute new values ​​in <code>RawQuerySet</code> and our cache is ready. </p><br><p>  In practice, problems begin almost immediately.  <code>params</code> is always just a tuple of python built-in types, and it is impossible to distinguish where <code>flag2</code> is in it and where <code>flag2</code> is.  In addition, any filter of the type <code>filter(value__in=[1,2,3])</code> modifies the SQL query depending on the number of values ​​passed to the filter, and this leads to a combinatorial explosion of caching keys. </p><br><p>  Having accumulated an insane amount of coffee and cookies, the problem of matching the actual parameters to the formal ones was solved by circumventing the internal <code>Query</code> structures and searching where another parameter is inserted in them.  The result was a working, but terrifying construction. </p><br><div class="spoiler">  <b class="spoiler_title">I am ashamed of this code ...</b> <div class="spoiler_text"><pre> <code class="python hljs"><span class="hljs-meta"><span class="hljs-meta">@cached(   'play_qualityrule',   #      licensed=not_null_and_negate('licensed'),   protected=not_null_and_negate('protected', default=False),   is_active={'exact': True},   # QualityRule.rightholders.filter(rightholder_id=...)   rightholders__rightholder_id=null_or_equal('rightholder'),   # QualityRule.user_agents.filter(useragent_id=...)   user_agents__useragent_id=null_or_equal('user_agent'),   # QualityRule.groups.filter(group=...)   groups__group_id=null_or_in('group'),   # QualityRule.alternative_sales_rule.filter(   #    alternativesalesrule=...)   alternative_sales_rule__alternativesalesrule_id=null_or_equal(   'alternative_sales_rule'),   # QualityRule.users.filter(user_id=...)   users__user_id=null_or_equal('user')) def get_filtered_query(self, **kwargs): ....</span></span></code> </pre> </div></div><br><p>  That is, in fact, any parameter involved in the construction of an SQL query should have been described in the decorator along with the rules for its formation relative to the arguments passed to the function.  This jumble of code did not suit the complexity of the initial implementation and subsequent support. </p><br><h2>  Promise and lazy calculations </h2><br><p>  The next approach was inspired by <code>django.utils.functional.lazy</code> .  It works as follows. </p><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">compute</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(param)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> param ** <span class="hljs-number"><span class="hljs-number">2</span></span> compute_lazy = lazy(compute, int) lazy_value = compute_lazy(<span class="hljs-number"><span class="hljs-number">43</span></span>)</code> </pre> <br><p>  If lazy_value is passed to Django ORM, then until the last moment, the call to the <code>compute()</code> function will be postponed;  the function will be called each time the <code>Promise</code> object is explicitly cast to a real value. </p><br><p>  This property was used to get the actual values ​​of the parameters from the context manager. </p><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">lazy_param</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(name)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> ContextManager.instance.params[name]</code> </pre> <br><p>  The following idea was naively simple: </p><br><ul><li>  wrapping all the function parameters in a lazy proxy </li><li>  cache the queryery </li><li>  ... </li><li>  profit! </li></ul><br><p>  Unfortunately, it did not work out.  It turned out that Django-ORM, for some dirty purposes, performs type casting and checking list lengths even at the QuerySet design stage: for example, in the call to <code>filter(a__in=[1,2,3])</code> value is checked, and the corresponding the node, instead of adding a new condition to WHERE, throws an <code>EmptyResultSet</code> , such as to optimize the query, <del>  infection </del>  . </p><br><p>  Accordingly, there is no place left for any lazy calculations. </p><br><h2>  Lazy! </h2><br><p>  It was a pity to throw out such a great idea, so it was decided to write a class that remains lazy, no matter what happens. </p><br><ul><li>  When casting to str / unicode, LazyUnicode is returned </li><li>  When cast to int, LazyInt is returned. </li><li>  At attempts of iteration the iterator with one element is returned - LazyList. </li></ul><br><p>  Due to all this "laziness", it was possible to bring the Lazy wrappers to complete the formation of the SQL query, simultaneously solving the problem with a variable number of placeholders for checking the entry into the list. </p><br><pre> <code class="python hljs">sql, params = <span class="hljs-string"><span class="hljs-string">"SELECT * FROM bla WHERE a IN (%s) AND b = %s"</span></span>, ([<span class="hljs-number"><span class="hljs-number">1</span></span>,<span class="hljs-number"><span class="hljs-number">2</span></span>,<span class="hljs-number"><span class="hljs-number">3</span></span>], <span class="hljs-number"><span class="hljs-number">4</span></span>) placeholders = get_placeholders(params) sql = sql % placeholders params = flatten(params) <span class="hljs-comment"><span class="hljs-comment"># SELECT * FROM bla WHERE a IN (%s, %s, %s) AND b = %s", (1, 2, 3, 4)</span></span></code> </pre> <br><p>  When substituting the actual parameters, the expression <code>IN (%s)</code> is replaced by <code>IN (%s, %s, %s)</code> with the number of placeholders corresponding to the actual number of values ​​in the list, and the <code>params</code> tuple is made flat. </p><br><p>  Now the code using caching looks much more elegant. </p><br><pre> <code class="python hljs"><span class="hljs-meta"><span class="hljs-meta"> @cached def get_filtered_query(self, **params): ... return queryset def useful_method(self, **params): with LazyContext(**params): qs = self.get_filtered_query(**params) # query database return list(qs)</span></span></code> </pre> <br><p>  As a result, we defeated the slow ORM by caching SQL query texts, dealt with the combinatorial explosion of the number of caching keys, retained the business logic that was almost intact and retained all the capabilities of Django ORM to form queries to the database. </p><br><h2>  What's the price? </h2><br><p>  The fact that business logic has remained intact is marketing.  In practice, it was necessary to conduct a serious refactoring of the code, associated primarily with the removal of all possible branches for caching.  Why this is important can be demonstrated by example. </p><br><pre> <code class="python hljs"><span class="hljs-meta"><span class="hljs-meta">@cached def get_queryset(user): if user and user.is_authenticated(): return Model.objects.exclude(author=user) return Model.objects.filter(public=True)</span></span></code> </pre> <br><p>  It can be seen that the SQL query depends on two facts: </p><br><ul><li>  user passed to function </li><li>  This user is authorized. </li></ul><br><p>  That the user is passed to the function, the decorator is able to track in the state;  however, checking the authorization is not in its competence, as, for example, the fact that the ID of this user is a prime number.  Such cases of branching, based on method calls from the passed objects, on additional queries to the database and the state of the global context of the function (yes, even <code>datetime.now()</code> ) - all this needs to be bracketed.  Fortunately, the rules for this are quite simple: </p><br><ul><li>  do not transfer model objects (ID only), </li><li>  do not pass empty lists (None instead), </li><li>  do not use values ​​that cannot be calculated from the arguments passed. </li></ul><br><p>  The example above is changing quite a bit. </p><br><pre> <code class="python hljs"><span class="hljs-meta"><span class="hljs-meta">@cached def get_queryset(user_id, is_authenticated): #    ,   Lazy-   if reveal(is_authenticated): return Model.objects.exclute(author_id=user_id) return Model.objects.filter(public=True) def caller(user): if user and user.is_authenticated(): user_id = user.pk is_authenticated = True else: user_id = None is_authenticated = False with LazyContext(user_id=user_id, is_authenticated=...): qs = get_queryset(user_id, is_authenticated) return list(qs)</span></span></code> </pre> <br><h2>  Instead of conclusion </h2><br><p>  In our case, the story of optimizing the backends started suddenly, and we were very lucky to find another bottleneck, which allowed us to tackle this problem leisurely and not screw the first available solution.  The unit tests helped a lot where they were.  In production, the changes roll out with a gradually decreasing level of paranoia. </p><br><ul><li>  At the start, the combat traffic is mirrored to a separate backend, in order to compare the results of the original and modified version of the code </li><li>  The tests use the "paranoid" mode of operation, when along with the "lazy" implementation, the "normal" version of the code works, and if the SQL queries or their parameters do not match, this is considered an error </li><li>  A more sane mode compares the reference implementation with a lazy one when saving the result to the cache, and in case of discrepancies it turns off caching </li><li>  Finally, a set of feature flags allows us to quickly disable the SQL query cache for a particular method, if we notice that the code does not work correctly. </li></ul><br><p>  As for efficiency, on synthetic runs the ab of the same query managed to accelerate from 31 to 44 requests per second.  The result was obtained, firstly, for a specific business logic, secondly, in a wildly synthetic situation, and thirdly, on the first available machine.  And what is important, taking into account rounding, we received an acceleration of <a href="https://ru.wikipedia.org/wiki/%25D0%259E%25D1%2582%25D0%25B2%25D0%25B5%25D1%2582_%25D0%25BD%25D0%25B0_%25D0%25B3%25D0%25BB%25D0%25B0%25D0%25B2%25D0%25BD%25D1%258B%25D0%25B9_%25D0%25B2%25D0%25BE%25D0%25BF%25D1%2580%25D0%25BE%25D1%2581_%25D0%25B6%25D0%25B8%25D0%25B7%25D0%25BD%25D0%25B8,_%25D0%25B2%25D1%2581%25D0%25B5%25D0%25BB%25D0%25B5%25D0%25BD%25D0%25BD%25D0%25BE%25D0%25B9_%25D0%25B8_%25D0%25B2%25D1%2581%25D0%25B5%25D0%25B3%25D0%25BE_%25D1%2582%25D0%25B0%25D0%25BA%25D0%25BE%25D0%25B3%25D0%25BE">42%</a> . </p><br><p>  The query cache implementation is available on <a href="https://github.com/rutube/django_prepared_queries/">GitHub</a> . </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/339420/">https://habr.com/ru/post/339420/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../339410/index.html">Virtualization and Security</a></li>
+<li><a href="../339412/index.html">What taxes you need to pay when displaying revenue from applications in Apple iTunes</a></li>
+<li><a href="../339414/index.html">Promises in ES6: Patterns and Anti-Patterns</a></li>
+<li><a href="../339416/index.html">Android and sound: how to do it right</a></li>
+<li><a href="../339418/index.html">DevOops 2017: report review</a></li>
+<li><a href="../339422/index.html">The 3 main processes that the CRM system must automate. Automate the conversion process. Part 2</a></li>
+<li><a href="../339424/index.html">Aytreking: available solutions and their features</a></li>
+<li><a href="../339426/index.html">Monads for Go-programmers</a></li>
+<li><a href="../339432/index.html">Hash steganography in dataset. This time fast</a></li>
+<li><a href="../339434/index.html">How uneducated youth becomes educated. University response</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

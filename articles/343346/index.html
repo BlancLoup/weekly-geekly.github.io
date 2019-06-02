@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Distribution video. Ambush: nginx or php?</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I want to share my little experience in the implementation of the distribution of video content. 
+
+ so 
+ There is a service that distributes video con...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Distribution video. Ambush: nginx or php?</h1><div class="post__text post__text-html js-mediator-article">  I want to share my little experience in the implementation of the distribution of video content. <br><br><h3>  so </h3><br>  There is a service that distributes video content <b>for viewing</b> (i.e. download is not provided for). <a name="habracut"></a>  At the same time, all content is divided into 2 categories: <br><br>  1 - given entirely (file completely) / pause, forward-rewind; <br>  2 - given by one “virtual file” of the form [end of first file] + [some number of files completely] + [beginning of last file].  The mpegts format, each set is coded the same way, so you can simply glue the pieces together. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      These two categories differ logically (completely different things), have distinctly different URIs and are physically located in different places. <br><br><h3>  As originally proposed </h3><br>  A bunch of nginx + apache. <br><br>  The first category is the banal distribution of content in nginx with little tuning. <br>  The second part is via the apache-php script using a loop <br><br><pre><code class="php hljs"><span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(!feof($fp)){ ... <span class="hljs-keyword"><span class="hljs-keyword">echo</span></span> fread($fp, $buf) ... }</code> </pre> <br>  where $ fp is a pointer to the file with fseek () executed where appropriate. <br><br><h3>  What did not like </h3><br>  As it turned out, nginx is not very suitable for distributing statics with a large number of range-bytes requests (namely, such requests are mainly obtained when viewing online).  It is not possible to use AIO to service such requests.  As a result, there is a long queue to the disk, and the customers often watch the video with “brakes”.  It is useless to set a large number of buffers - just wasting memory. <br><br>  I tried the latest version of nginx (1.12.2 at the current time), and --with-file-aio, and --with-threads, and all sorts of things.  The effect is not received. <br><br>  Well, a bunch of "echo fread ()" in php is also very doubtful.  The output of fread goes to the intermediate php buffer and, accordingly, the script consumes memory not less than this buffer.  If you read the file in small pieces, the load on the CPU increases and the speed of return decreases.  If you read in large chunks, then too much memory is spent on each request. <br><br><h3>  What is the result? </h3><br>  Well, first of all refused apache.  Instead, php5-fpm.  This gave a significant increase in speed (response speed) + reduced memory consumption. <br><br><h4>  First category </h4><br>  content, for the sake of experiment, I decided to try to give my script. <br><br>  In nginx: <br><br><pre> <code class="hljs nginx"> <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> <span class="hljs-regexp"><span class="hljs-regexp">~* /media/.*\..*</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">fastcgi_pass</span></span> unix:/var/run/php5-fpm.sock; <span class="hljs-attribute"><span class="hljs-attribute">include</span></span> /etc/nginx/sites-available/fastcgi_params; <span class="hljs-attribute"><span class="hljs-attribute">fastcgi_param</span></span> SCRIPT_FILENAME /var/www/m_download.php; <span class="hljs-attribute"><span class="hljs-attribute">root</span></span> /var/www; <span class="hljs-attribute"><span class="hljs-attribute">send_timeout</span></span> <span class="hljs-number"><span class="hljs-number">1h</span></span>; }</code> </pre> <br>  m_download.php will not be fully quoted.  The main functionality: <br><br><pre> <code class="hljs lisp">fpassthru($fd)<span class="hljs-comment"><span class="hljs-comment">;</span></span></code> </pre> <br>  where $ fd is a pointer to a file.  Of course, you must first parse the HTTP_RANGE header, open the file and set the offset in it. <br><br>  fpassthru () gives the file "from the current to the end."  In this situation, it is quite suitable.  All players play correctly. <br><br>  To my great surprise, it was this way of giving that gave the result I needed.  There are no queues to the disk (system system is used more precisely, and with my SAS-3 12Gb / sec and await &lt;10ms is generally good).  Accordingly, there is no waiting for the processing of the request.  File upload speed (if downloaded) is about 250 Mbit / s.  "Brakes" customers are completely gone. <br><br>  At the same time, memory usage has greatly decreased, therefore more remains for the file cache.  The script itself consumes about 0.5 MB of private memory when executed.  The executable code still exists in memory in a single copy, so its size does not matter. <br><br><h4>  Second category </h4><br>  (this is where you need to make a few pieces of different files) also changed. <br><br>  Refused from the bunch "echo fread ()". <br><br>  Unfortunately, in php there is no function for direct output of an arbitrary piece of the file.  In fpassthru () there is no “how much to display” parameter, it always displays “to the end”. <br><br>  I tried to call the system dd using passthru (). <br>  Those.: <br><br><pre> <code class="hljs perl">passthru(<span class="hljs-string"><span class="hljs-string">'/bin/dd status=none if='</span></span>.$fffilename.<span class="hljs-string"><span class="hljs-string">' iflag="skip_bytes,count_bytes" skip='</span></span>.$ffseek.<span class="hljs-string"><span class="hljs-string">' count='</span></span>.$buf_size);</code> </pre> <br>  And ... lo and behold!  The memory consumption by the script is slightly more than 0.5 MB, the buffer size can be set to any (it does not affect memory).  The upload speed (with 4 MB buffer) ... whistles (same 250 Mbit / s). <br><br>  Here is a story.  As a result, I had to refuse to distribute content just nginx.  It is used, but only to redirect requests to php5-fpm. <br><br>  In short, my IMHO: nginx gives static well, but does not read well from disk. <br><br>  I never would have thought that distributing files through a php script could be more efficient. <br>  Well, add that I was looking for any httpd with AIO for range-bytes requests "out of the box."  It seems that the lighttpd version 2 may be, but the version is still unstable ... I did not find anything suitable. </div><p>Source: <a href="https://habr.com/ru/post/343346/">https://habr.com/ru/post/343346/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../343336/index.html">How to teach a neural network to invent the names of Russian settlements</a></li>
+<li><a href="../343338/index.html">27 free services for creating visual content without a designer</a></li>
+<li><a href="../343340/index.html">7 Short Rules for Conquering the Global Market</a></li>
+<li><a href="../343342/index.html">Yet another kaspersky crackme</a></li>
+<li><a href="../343344/index.html">LLVM source guide</a></li>
+<li><a href="../343348/index.html">3 Unusual Linux Networking Cases</a></li>
+<li><a href="../343350/index.html">“Do you want to be a system architect? There is only light and purity ... "</a></li>
+<li><a href="../343352/index.html">How we did a huge amount of communication for a rather big security structure</a></li>
+<li><a href="../343356/index.html">Interpolation polynomial on arbitrary functions</a></li>
+<li><a href="../343358/index.html">We collected the user activity in WPF</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

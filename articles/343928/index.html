@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Metrics storage: how we switched from Graphite + Whisper to Graphite + ClickHouse</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! In my last article I wrote about the organization of a modular monitoring system for microservice architecture. Nothing stands still, our proje...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Metrics storage: how we switched from Graphite + Whisper to Graphite + ClickHouse</h1><div class="post__text post__text-html js-mediator-article"><p>  Hello!  In my <a href="https://habrahabr.ru/company/avito/blog/335410/">last article</a> I wrote about the organization of a modular monitoring system for microservice architecture.  Nothing stands still, our project is constantly growing, and the number of stored metrics is also increasing.  How we organized the transition from Graphite + Whisper to Graphite + ClickHouse under conditions of high loads, read about the expectations from it and the migration results under the cat. </p><br><p><img src="https://habrastorage.org/webt/zo/_s/xo/zo_sxoifjr4bbtpkra52jdnw614.png"></p><a name="habracut"></a><br><p>  Before I tell you how we organized the transition from storing metrics in Graphite + Whisper to Graphite + ClickHouse, I would like to give information about the reasons for making this decision and about the shortcomings of Whisper with which we lived for a long time. </p><br><h1 id="problemy-graphitewhisper">  Graphite + Whisper Problems </h1><br><p>  <strong>1. High load on the disk subsystem</strong> </p><br><p>  At the time of the transition, about 1.5 million metrics per minute arrived to us.  With such a stream, disk utilization on servers was ~ 30%.  In general, this was quite acceptable - everything worked stably, was quickly written, read quickly ... Until such time as one of the development teams rolled out a new feature and sent us 10 million metrics per minute.  It was then that the disk subsystem was overloaded, and we saw 100% recycling.  The problem was quickly resolved, but the sediment remained. </p><br><p>  <strong>2. Lack of replication and consistency</strong> </p><br><p>  Most likely, as well as everyone who uses / used Graphite + Whisper, we poured the same flow of metrics to several Graphite servers at once to create fault tolerance.  And there were no special problems with this - until the moment when one of the servers for any reason did not fall.  Sometimes we managed to pick up the fallen server fairly quickly, and carbon-c-relay managed to upload metrics from its cache to it, and sometimes not.  And then in the metrics there was a hole that we tightened up with rsync.  The procedure was quite long.  Saved only what happened like this very rarely.  We also periodically took a random set of metrics and compared them with other ones on neighboring nodes of the cluster.  In about 5% of cases, several values ​​differed, which did not make us very happy. </p><br><p>  <strong>3. A large amount of space occupied</strong> </p><br><p>  Since we write to Graphite not only infrastructural, but also business metrics (and now also metrics from Kubernetes), quite often we get a situation where only a few values ​​are present in the metric, and the .wsp file is created taking into account the entire retention period, and occupies a pre-allocated amount of space, which we had was equal to ~ 2Mb.  The problem is aggravated by the fact that there are a lot of such files over time, and when building reports on them to read empty points it takes a lot of time and resources. </p><br><p>  Immediately I would like to note that the problems described above can be dealt with by various methods and with varying degrees of efficiency, but the more data begins to flow to you, the more they become more acute. </p><br><p>  Having all of the above (taking into account the previous <a href="https://habrahabr.ru/company/avito/blog/335410/">article</a> ), as well as the constant increase in the number of received metrics, the desire to transfer all the metrics to the storage interval of 30 seconds.  (if necessary - up to 10 seconds), we decided to try Graphite + ClickHouse as a promising alternative to Whisper. </p><br><h1 id="graphiteclickhouse-ozhidaniya">  Graphite + ClickHouse.  Expectations </h1><br><p>  Having visited several mitap guys from Yandex, having read a <a href="https://habrahabr.ru/company/yandex/blog/303282/">couple of articles on Habré</a> , reviewed the documentation and found the sane components for ClickHouse strapping under Graphite, we decided to act! </p><br><p>  I wanted to get the following: </p><br><ul><li>  reduce the utilization of the disk subsystem from 30% to 5%; </li><li>  reduce the amount of space occupied from 1TB to 100GB; </li><li>  be able to take 100 million metrics per minute to the server; </li><li>  data replication and fault tolerance out of the box; </li><li>  do not sit on this project for a year and make the transition for some imputed term; </li><li>  switch without downtime. </li></ul><br><p>  Quite ambitious, right? </p><br><h2 id="graphiteclickhouse-komponenty">  Graphite + ClickHouse.  Components </h2><br><p>  To obtain data using the Graphite protocol and then write them to ClickHouse, <a href="https://github.com/lomik/carbon-clickhouse">carbon-clickhouse</a> (golang) was chosen. </p><br><p>  The latest release of ClickHouse, a stable version 1.1.54253, was chosen as a database for storing time series.  There were problems when working with him: there were a lot of errors in the logs, and it was not entirely clear what to do with them.  In the discussion with <a href="https://github.com/lomik">Roman Lomonosov</a> (by carbon-clickhouse, graphite-clickhouse, and many, many things), the older <a href="https://github.com/yandex/ClickHouse/releases/tag/v1.1.54236-stable">release 1.1.54236</a> was chosen.  Errors disappeared - everything began to work with a bang. </p><br><p>  <a href="https://github.com/lomik/graphite-clickhouse">Graphite-clickhouse</a> (golang) was chosen for reading data from ClickHouse.  The API for Graphite is <a href="https://github.com/go-graphite/carbonapi">carbonapi</a> (golang).  To organize replication between ClickHouse tables, a <a href="https://github.com/apache/zookeeper">zookeeper</a> was used.  For routing metrics, we left us the beloved <a href="https://github.com/grobian/carbon-c-relay">carbon-c-relay</a> (C) <a href="https://habrahabr.ru/company/avito/blog/335410/">(see previous article)</a> . </p><br><h2 id="graphiteclickhouse-struktura-tablic">  Graphite + ClickHouse.  Table structure </h2><br><p>  “Graphite” is the database we created for monitoring tables. </p><br><p>  “Graphite.metrics” is a table with a ReplicatedReplacingMergeTree engine (replicated <a href="https://clickhouse.yandex/docs/ru/table_engines/replacingmergetree.html">ReplacingMergeTree</a> ).  This table stores the names of the metrics and the paths to them. </p><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> graphite.metrics ( <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Level</span></span> UInt32, <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span> <span class="hljs-keyword"><span class="hljs-keyword">String</span></span>, Deleted UInt8, <span class="hljs-keyword"><span class="hljs-keyword">Version</span></span> UInt32 ) <span class="hljs-keyword"><span class="hljs-keyword">ENGINE</span></span> = ReplicatedReplacingMergeTree(<span class="hljs-string"><span class="hljs-string">'/clickhouse/tables/replicator/graphite.metrics'</span></span>, <span class="hljs-string"><span class="hljs-string">'r1'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, (<span class="hljs-keyword"><span class="hljs-keyword">Level</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span>), <span class="hljs-number"><span class="hljs-number">8192</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Version</span></span>);</code> </pre> <br><p>  “ <a href="https://clickhouse.yandex/docs/ru/table_engines/graphitemergetree.html">Graphite.data</a> ” is a table with the ReplicatedGraphiteMergeTree engine (replicated by <a href="https://clickhouse.yandex/docs/ru/table_engines/graphitemergetree.html">GraphiteMergeTree</a> ).  This table stores metric values. </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> graphite.data ( <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span> <span class="hljs-keyword"><span class="hljs-keyword">String</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Value</span></span> Float64, <span class="hljs-built_in"><span class="hljs-built_in">Time</span></span> UInt32, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Timestamp</span></span> UInt32 ) <span class="hljs-keyword"><span class="hljs-keyword">ENGINE</span></span> = ReplicatedGraphiteMergeTree(<span class="hljs-string"><span class="hljs-string">'/clickhouse/tables/replicator/graphite.data'</span></span>, <span class="hljs-string"><span class="hljs-string">'r1'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, (<span class="hljs-keyword"><span class="hljs-keyword">Path</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Time</span></span>), <span class="hljs-number"><span class="hljs-number">8192</span></span>, <span class="hljs-string"><span class="hljs-string">'graphite_rollup'</span></span>)</code> </pre> <br><p>  “Graphite.date_metrics” is a conditionally filled table with the ReplicatedReplacingMergeTree engine.  The names of all metrics that met during the day are recorded in this table.  The reasons for the creation are described in the <a href="https://habr.com/ru/company/avito/blog/343928/">“Problems”</a> section at the end of this article. </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">MATERIALIZED</span></span> <span class="hljs-keyword"><span class="hljs-keyword">VIEW</span></span> graphite.date_metrics ( <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span> <span class="hljs-keyword"><span class="hljs-keyword">String</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Level</span></span> UInt32, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ENGINE</span></span> = ReplicatedReplacingMergeTree(<span class="hljs-string"><span class="hljs-string">'/clickhouse/tables/replicator/graphite.date_metrics'</span></span>, <span class="hljs-string"><span class="hljs-string">'r1'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, (<span class="hljs-keyword"><span class="hljs-keyword">Level</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>), <span class="hljs-number"><span class="hljs-number">8192</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> toUInt32(<span class="hljs-keyword"><span class="hljs-keyword">length</span></span>(splitByChar(<span class="hljs-string"><span class="hljs-string">'.'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span>))) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Level</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">Path</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> graphite.data</code> </pre> <br><p>  “Graphite.data_stat” is a conditionally filled table with the ReplicatedAggregatingMergeTree engine (replicated by <a href="https://clickhouse.yandex/docs/ru/table_engines/aggregatingmergetree.html">AggregatingMergeTree</a> ).  This table records the number of incoming metrics broken down to 4 levels of nesting. </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">MATERIALIZED</span></span> <span class="hljs-keyword"><span class="hljs-keyword">VIEW</span></span> graphite.data_stat ( <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, Prefix <span class="hljs-keyword"><span class="hljs-keyword">String</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Timestamp</span></span> UInt32, <span class="hljs-keyword"><span class="hljs-keyword">Count</span></span> AggregateFunction(<span class="hljs-keyword"><span class="hljs-keyword">count</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">ENGINE</span></span> = ReplicatedAggregatingMergeTree(<span class="hljs-string"><span class="hljs-string">'/clickhouse/tables/replicator/graphite.data_stat'</span></span>, <span class="hljs-string"><span class="hljs-string">'r1'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, (<span class="hljs-built_in"><span class="hljs-built_in">Timestamp</span></span>, Prefix), <span class="hljs-number"><span class="hljs-number">8192</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> toStartOfMonth(<span class="hljs-keyword"><span class="hljs-keyword">now</span></span>()) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>, replaceRegexpOne(<span class="hljs-keyword"><span class="hljs-keyword">Path</span></span>, <span class="hljs-string"><span class="hljs-string">'^([^.]+\\.[^.]+\\.[^.]+).*$'</span></span>, <span class="hljs-string"><span class="hljs-string">'\\1'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> Prefix, toUInt32(toStartOfMinute(toDateTime(<span class="hljs-built_in"><span class="hljs-built_in">Timestamp</span></span>))) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Timestamp</span></span>, countState() <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Count</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> graphite.data <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Timestamp</span></span>, Prefix</code> </pre> <br><h1 id="graphiteclickhouse--shema-vzaimodeystviya-komponentov">  Graphite + ClickHouse.  Component Interaction Scheme </h1><br><p><img src="https://habrastorage.org/webt/wc/5x/lq/wc5xlqols2s07ibwky_duzxdw6i.png"></p><br><h1 id="graphiteclickhouse-migraciya-dannyh">  Graphite + ClickHouse.  Data migration </h1><br><p>  As we remember from the expectations of this project, the transition to ClickHouse should be without downtime, respectively, we had to somehow switch our entire monitoring system to a new repository as transparently as possible for our users. <br>  We did it like this. </p><br><ul><li><p>  In carbon-c-relay, they added a rule to send an additional stream of metrics to the carbon-clickhouse of one of the servers participating in the replication of ClickHouse tables. </p><br></li><li><p>  We wrote a small python script that, using the whisper-dump library, read all the .wsp files from our repository and sent this data to the above described carbon-clickhouse in 24 threads.  The number of metrics accepted in carbon-clickhouse reached 125 ppm, and ClickHouse did not even sweat. </p><br></li><li><p>  We created a separate DataSource in Grafana in order to debug functions used in existing dashboards.  We identified a list of functions that we used, but they were not implemented in carbonapi.  We added these functions, and sent PR `s to authors carbonapi (special thanks to them). </p><br></li><li>  To switch the reading load in balancers settings, endpoints were changed from graphite-api (API interface for Graphite + Whisper) to carbonapi. </li></ul><br><h1 id="graphiteclickhouse-rezultaty">  Graphite + ClickHouse.  results </h1><br><ul><li><p>  reduced utilization of the disk subsystem from 30% to 1%; <br><br><img src="https://habrastorage.org/webt/sw/ga/ym/swgaymmpvaiuawg0om7pz8_lkxg.png"></p><br></li><li>  reduced the amount of space occupied from 1 TB to 300 GB; </li><li>  we have the ability to take 125 million metrics per minute to the server (peaks at the time of migration); </li><li>  translated all metrics to a thirty-second storage interval; </li><li>  received data replication and fault tolerance; </li><li>  switched without downtime; </li><li>  spent all about 7 weeks. </li></ul><br><h2 id="graphiteclickhouse-problemy">  Graphite + ClickHouse.  Problems </h2><br><p>  In our case, it was not without pitfalls.  That's what we encountered after the transition. </p><br><ol><li>  ClickHouse does not always re-read configs on the fly, sometimes it needs to be reloaded.  For example, in the case of the description of the zookeeper cluster in the ClickHouse config, it was not used until the restart of the clickhouse-server. </li><li>  There were no large ClickHouse requests, so in our graphite-clickhouse, the ClickHouse connection string looks like this: <br><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">url</span></span> = <span class="hljs-string"><span class="hljs-string">"http://localhost:8123/?max_query_size=268435456&amp;max_ast_elements=1000000"</span></span></code> </pre> </li><li>  In ClickHouse, quite often new versions of stable releases are released, there may be surprises in them: be careful. </li><li>  Dynamically created containers in kubernetes send a large number of metrics with a short and random period of life.  There are not many points on such metrics, and there are no problems with space.  But when building queries, ClickHouse raises a huge amount of these same metrics from the 'metrics' table.  In 90% of cases, data on them for the window (24 hours) is missing.  But the time to search for this data in the table 'data' is spent, and ultimately rests on a timeout.  In order to solve this problem, we began to conduct a separate view with information on the metrics that we met during the day.  Thus, when building reports (graphs) for dynamically created containers, we only poll those metrics that were encountered within a given window, and not for all the time that has speeded up the construction of reports on them several times.  For the above solution, a <a href="https://goo.gl/W2z1zP">graphite-clickhouse (fork)</a> was compiled, including the implementation of working with the date_metrics table. </li></ol><br><h2 id="graphiteclickhouse-tegi">  Graphite + ClickHouse.  Tags </h2><br><p>  Since version 1.1.0, Graphite has officially <a href="http://graphite.readthedocs.io/en/latest/tags.html">supported tags</a> .  And we are actively thinking about what and how to do to support this initiative on the graphite + clickhouse stack. </p><br><h2 id="graphiteclickhouse-detektor-anomaliy">  Graphite + ClickHouse.  Anomaly detector </h2><br><p>  Based on the infrastructure described above, we implemented a prototype of the anomaly detector, and it works!  But about him - in the next article. </p><br><p>  Subscribe, click the up arrow and be happy! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/343928/">https://habr.com/ru/post/343928/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../343916/index.html">How to evaluate the effectiveness of advertising in the application: ARPDAU, seasonality and a few secrets</a></li>
+<li><a href="../343918/index.html">ASO Monthly # 17: September 2017</a></li>
+<li><a href="../343922/index.html">Performance as Perception: Managing Perception</a></li>
+<li><a href="../343924/index.html">As we schedule public transport in 2GIS added</a></li>
+<li><a href="../343926/index.html">Announcement of the conference Mobius 2018 Piter</a></li>
+<li><a href="../343930/index.html">Tcl / Tk. Thematic TTK widgets and designer TKproE-2.20</a></li>
+<li><a href="../343932/index.html">Name Assignment: Programmer's Guide</a></li>
+<li><a href="../343934/index.html">Why repository in pom.xml is a bad idea</a></li>
+<li><a href="../343936/index.html">RubyMine 2017.3. Faster IDE, WSL, Embedded Puppet, and more</a></li>
+<li><a href="../343938/index.html">Pass the NS0-507 exam - NetApp Certified Implementation Engineer — SAN Specialist</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

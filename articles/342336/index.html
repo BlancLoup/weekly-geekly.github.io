@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Migrating a database from InnoDB to MyRocks</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Zoji La, India 
+
+
+ Hi, Habr! My name is Oleg Efimov, I work at Badoo in the Platform team, I’m working on storing photos, service interfaces and much ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Migrating a database from InnoDB to MyRocks</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/ca/qf/1t/caqf1tn5lriitlwkbwi6rgxgezs.jpeg"><br>  <em>Zoji La, India</em> </p><br><p>  <em>Hi, Habr!</em>  <em>My name is Oleg Efimov, I work at Badoo in the Platform team, I’m working on storing photos, service interfaces and much more.</em> </p><br><p>  <em>I often hear that in terms of server technology, Badoo is a rather conservative company.</em>  <em>This is partly true, but in fact we use many young programming languages, new tools and technologies.</em>  <em>One of them is RocksDB, on the basis of which Facebook created the MySQL storage engine - MyRocks.</em>  <em>A post about how Facebook migrated one of its databases from InnoDB to MyRocks and I wanted to translate for you.</em> </p><a name="habracut"></a><br><p>  Last year, <a href="https://code.facebook.com/posts/190251048047090/myrocks-a-space-and-write-optimized-mysql-database/">we introduced</a> MyRocks, our new database engine MySQL, which was designed to make recording and disk usage more efficient than compressed InnoDB.  We decided to migrate one of our main databases (UDB) with compressed InnoDB to MyRocks and halve the storage size and number of servers used.  The migration of the UDB database, which manages Facebook social graph data, has been carefully planned and implemented.  We completed the work last month and successfully “halved” the repository.  In this post we will talk about the preparation and implementation of migration, as well as lessons learned. </p><br><h3 id="udb-byla-ogranichena-obyomom-hranilischa">  UDB was limited to storage capacity </h3><br><p>  A few years ago, we replaced the UDB hardware with Flashcache with pure Flash to solve some performance problems.  The MySQL bundle with InnoDB worked quickly and reliably, but we wanted to use fewer servers to handle the same workload and data volume.  When using pure flash-storage UDB was limited by its volume.  And although we used compression in InnoDB, while having an excess of processor resources and throughput of random I / O operations, we could hardly force InnoDB to use less disk space. </p><br><p><img src="https://habrastorage.org/webt/ys/cw/mw/yscwmwgthxn0mfszf97oqqyxqzu.jpeg"></p><br><p>  <em>InnoDB was limited by the amount of free disk space, and CPU / IO resources were idle.</em>  <em>This is a common situation when using flash-storage.</em> </p><br><p>  This was one of the reasons for creating <a href="http://myrocks.io/">MyRocks</a> - the RocksDB storage engine for MySQL.  We implemented several features in InnoDB, where the size of the database was much larger than the RAM: </p><br><ul><li>  clustered index; </li><li>  transactions (atomicity, row locks, MVCC, Repeatable Read / Read Committed, 2PC between binlog and RocksDB); </li><li>  break-resistant slave and master; </li><li>  <a href="https://github.com/facebook/rocksdb/wiki/Single-Delete">SingleDelete</a> (efficient removal of secondary indexes); </li><li>  fast data loading, quick index creation and quick table deletion. </li></ul><br><p>  Our early experiments showed that MyRocks uses half the amount of compressed InnoDB, and without significantly increasing the consumption of processor resources and the number of I / O operations.  Therefore, we decided to completely migrate UDB from InnoDB to MyRocks. </p><br><p><img src="https://habrastorage.org/webt/ma/6g/kp/ma6gkpiwdggwlmkdlmzm6i3eoni.jpeg"><br>  <em>Load on MyRocks with twice the density of placements.</em>  <em>There is still a reserve for processor resources and I / O operations.</em> </p><br><h3 id="uproschenie-migracii-s-innodb-na-myrocks">  Simplify migration from InnoDB to MyRocks </h3><br><p>  For services where users access databases directly, such a migration can be a difficult task.  In general, for the current OLTP database this can be done without stopping services, without increasing delay and degradation of bandwidth, without returning erroneous data and without affecting the workload. </p><br><p>  MyRocks has a unique advantage over other databases: this is the MySQL storage engine, which greatly facilitates migration from InnoDB.  In particular: </p><br><ul><li>  I didn’t have to make changes to the application, because the MySQL client protocols and schema definitions are the same (in fact, there are small differences, like gap locks, but they were relatively easy to accommodate); </li><li>  our MySQL administration tools support both InnoDB and MyRocks; </li><li>  MyRocks can be replicated from InnoDB: we can add an instance of MyRocks by launching it as one of the read-only slaves; </li><li>  InnoDB can also be replicated from MyRocks: we can deploy MyRocks to the master without abandoning InnoDB, this allows you to roll back from MyRocks to InnoDB by switching the master if problems occur; </li><li>  Binary logs with Global Transaction Identifier (GTID) allow you to check the consistency of data between InnoDB and MyRocks instances without a long stop of replication (less than one second). </li></ul><br><h3 id="proverka-soglasovannosti-dannyh">  Data consistency check </h3><br><p>  MyRocks / RocksDB is a younger technology, so we had to resort to a comprehensive consistency check to prevent the emergence of new bugs in our database.  Verification is ongoing, both during the migration and after launch in production. </p><br><p>  <strong>Check the consistency of the primary and secondary key.</strong>  Each table compares the number of rows and checksums of the columns of primary and secondary keys.  For example, in table T1 there is a column (id, value1, value2) and a secondary index (value1);  then, for value1, primary and secondary keys are scanned, then the numbers of rows and checksums are compared.  If one of the keys is damaged, the checksums will not converge. </p><br><p>  <strong>Check the consistency of the two instances.</strong>  In the same replica set (master – slave pair), two different instances (MyRocks and InnoDB) are compared by the number of rows and the checksum of the primary key.  Thanks to GTID, you can start transactions with consistent snapshots with the same GTID for both instances.  Subsequent SELECT statements (returning the number of rows and checksums) for both instances must be consistent. </p><br><p>  <strong>Shadow validation of requests for two copies.</strong>  MySQL has a feature called Audit Plugin that allows you to register running queries.  We created a tool for shadow replay of these queries in several instances and comparison of results.  This allowed us to make sure that the queries in InnoDB and MyRocks give the same results. </p><br><h3 id="etapy-migracii">  Stages of migration </h3><br><p>  The migration was carried out in the manner described below, and we were greatly facilitated by the ability to configure replication between InnoDB and MyRocks. </p><br><p>  1) <strong>Deployed the first slave MyRocks.</strong>  We had one master and four slaves for each set of replicas in regions all over the world.  In each replica set, we created the first instance of MyRocks using a dump (mysqldump) from InnoDB in the same region.  During upload and download, we stopped replication in the original InnoDB slaves to speed up and simplify migration.  Also, during upload and download, all read requests were redirected to other available InnoDB slave instances. </p><br><p>  Since MyRocks was optimized for loading data and creating a secondary index, uploading and downloading did not take much time (the engine can copy hundreds of gigabytes per hour from InnoDB).  After the replication caught up and the consistency check was performed, we deleted InnoDB in the same region. </p><br><p><img src="https://habrastorage.org/webt/4u/vj/jr/4uvjjrottxhove_l4vrscepafrm.jpeg"></p><br><p>  2) <strong>Deployed the second slave MyRocks</strong> .  We wanted to avoid manipulations with a single copy of MyRocks, since its loss would lead to the need to reload and unload.  When working with two instances after the failure of one of them, it would be possible to recover using the MyRocks binary online copy (myrocks_hotbackup), which would be much easier compared to uploading and downloading.  Before deploying MyRocks, we had five instances of InnoDB for each set of replicas. </p><br><p>  In each region, after removing two instances of InnoDB, we added two instances of MyRocks.  The result is three InnoDB instances and two MyRocks for each replica set.  Since MyRocks loaded data faster, uploading to it was much easier than copying to InnoDB.  This allowed us to migrate without increasing the number of physical servers even during the migration itself. </p><br><p><img src="https://habrastorage.org/webt/hh/o9/-k/hho9-k4btcph1btg65crhowwebu.jpeg"></p><br><p>  3) <strong>Made slave MyRocks master.</strong>  It was much more difficult to deploy master than slave, because the master instance can handle both write and read requests.  For example, master simultaneously performs write operations on the same lines, so you need to implement proper handling of row locks.  Poor consistency implementation can lead to a lot of errors. </p><br><p><img src="https://habrastorage.org/webt/ja/o8/zj/jao8zjuuxcov3z60hiccbarydcw.jpeg"></p><br><p>  4) <strong>In all regions, MyRocks copied and deleted all InnoDB instances</strong> .  The final step was copying MyRocks and removing InnoDB.  Now the replica sets have completely migrated from InnoDB to MyRocks. </p><br><p><img src="https://habrastorage.org/webt/w3/5d/j1/w35dj12kghzdxp04cpomi8ukmrw.jpeg"></p><br><p>  In production, we first performed the first two steps for all UDB replica sets.  Then for the majority of sets the third stage was completed, and finally the last.  Since the most difficult was the deployment of master'ov, we spent a lot of tests before moving on.  With the help of our query duplication tool, we checked the master traffic, so that we could fix any consistency bugs before deploying the master in production. </p><br><h3 id="drugie-tehnicheskie-momenty">  Other technical issues </h3><br><p>  In InnoDB, we used direct I / O, but in MyRocks / RocksDB its support is limited, so we used buffered I / O operations.  Older Linux kernels have a known problem when, with the active use of buffered operations, paging begins from the disk and there are difficulties in allocating virtual memory.  Our team responsible for the Linux kernel fixed a problem with allocating virtual memory in Linux 4.6, and before the migration we updated the kernel to this version. </p><br><p>  We also ran multiple instances of MySQL on each machine.  The size of each instance was much smaller than the 5TB flash storage capacity, which helped improve the performance of database operations: backup, recovery, replica creation, and the prevention of replication lags.  During the migration, we gradually created instances of MyRocks following the removal of InnoDB instances.  In flash storage, active file deletion results in long TRIM delays lasting up to tens of seconds.  We knew about this limitation and created a simple tool for slowly deleting files in small chunks.  Instead of deleting 100GB InnoDB files with the "rm" command, he divided large files into pieces of ~ 64 MB each, and then each of them deleted within a short waiting period.  We slowed down the removal speed to about 128 MB per second. </p><br><h3 id="izvlechyonnye-uroki">  Lessons learned </h3><br><p>  Efficiency is important for our operations, and we were happy when we managed to quickly migrate without creating problems in production.  But in the process, we learned several important lessons. </p><br><ul><li>  One of the main criteria when choosing equipment is the projected duration of migration.  For example, with five years to migrate instead of one year, savings in storage may decrease, because you have to continue to buy new equipment until the migration ends.  Also, the process is facilitated by the automation and simplification of tests, for example: </li></ul><br><ol><li>  sending in the production-environment of shadow traffic for reading / writing and monitoring regressions (especially the number of errors and freezes and the level of delay); </li><li>  checking the consistency of data in InnoDB and MyRocks; </li><li>  the deliberate collapse of slave and master instances of MyRocks and testing their ability to recover. </li></ol><br><ul><li> You need to understand how the target service is used.  It was important for us to decide what features to add to MyRocks first.  To facilitate the migration, we added several important features, such as defining requests using gap locks, batch loading (bulk loading), and Read Committed isolation levels.  Proper prioritization simplifies and speeds up migration. </li><li>  Start small.  Ideally, new software must first be deployed on a very small, read-only instance, which can be rolled back if necessary.  The engineers responsible for the smooth operation of the site should not switch the entire service through the configuration file and hope that everything will work. </li><li>  MyRocks is an open-source tool that allows you to work with other products to create new features, as well as to find and fix bugs. </li></ul><br><h3 id="plany-na-buduschee">  Future plans </h3><br><p>  Migrating our core database from InnoDB to MyRocks has halved the storage space used.  We continue to improve MyRocks and RocksDB, including more aggressively consolidating instances to free servers for other tasks.  We are also working on supporting different engines.  MyRocks is optimized to save storage space and slow down the growth of data being written, while InnoDB is optimized for reading and has more specialized features like gap-blocking, foreign keys, full-text and spatial indices. </p><br><p>  Our current development of MyRocks does not imply the introduction of such things, but we plan to provide reliable support for several engines.  Using InnoDB and MyRocks in one copy at the same time will allow InnoDB to be used for small, actively read pages, and MyRocks for everything else (we often hear requests for the realization of this feature).  Finally, we will work on MyRocks support for the upcoming MySQL 8.0. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/342336/">https://habr.com/ru/post/342336/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../342324/index.html">Errors in smart contracts or Parity's new Security Alert</a></li>
+<li><a href="../342326/index.html">PVS-Studio report is now in Html format</a></li>
+<li><a href="../342330/index.html">Insight on metrics: how do I understand what metrics are and what is their main charm</a></li>
+<li><a href="../342332/index.html">Storage of personal data on a foreign hosting: if it is possible, how?</a></li>
+<li><a href="../342334/index.html">Introduction to Neural Networks</a></li>
+<li><a href="../342338/index.html">Where large companies are looking for innovation. Interview with Dmitry Izmestyev about the development of startups</a></li>
+<li><a href="../342340/index.html">Buy ready MDM or develop your own?</a></li>
+<li><a href="../342344/index.html">You are working in the wrong place (if you have an open office)</a></li>
+<li><a href="../342346/index.html">How JS: WebSocket and HTTP / 2 + SSE work. What to choose?</a></li>
+<li><a href="../342348/index.html">Growth Formula for Mobile Products</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

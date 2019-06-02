@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Experience implementing Tarantool in the service Calltouch</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the modern world of information technology, everyone, both large and small companies, has a large number of different APIs. And fault tolerance, de...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Experience implementing Tarantool in the service Calltouch</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/files/656/391/54f/65639154fc194c6589bf230e85c46cc1.jpg" alt="image"></p><br><p>  In the modern world of information technology, everyone, both large and small companies, has a large number of different APIs.  And fault tolerance, despite many best practices, most often does not allow to guarantee 100% ability to correctly process customer requests, as well as recover from a failure, and continue processing requests lost due to a failure.  This problem occurs even with large players on the Internet, not to mention not very large companies. </p><br><p>  I work at <a href="https://www.calltouch.ru/">Calltouch</a> , and our main goal is to achieve fault tolerance of services and to be able to manage the data and requests that customers made to the API service.  We need the ability to quickly restore service after a failure and process requests to the service that has problems.  Start processing from the moment of failure.  All this will allow to get closer to the state when it is almost impossible to lose customer requests on our side. </p><br><p>  Analyzing the solutions offered in the market, we discovered for ourselves excellent performance and almost unlimited possibilities for data management and processing - with very few requirements for technical and financial resources. </p><a name="habracut"></a><br><h2 id="predystoriya">  Prehistory </h2><br><p>  In Calltouch, there is an API service that receives client requests with data to build reports in the web interface.  These data are very important: they are used in marketing, and their loss can lead to unforeseen service work.  Like everyone else, sometimes after laying out or adding new features, the service has problems, for some time it can be denied.  Therefore, we need the ability to very quickly take and process those requests with data that were not delivered to the API service at the time of failure.  Balancing with backup alone is not enough for several reasons: </p><br><ol><li>  The amount of memory required for the service may require new equipment. </li><li>  The cost of equipment is now high. </li><li>  From an error with the killer request, no one is insured. </li></ol><br><p>  A fairly simple task (storing requests and quick access to them) generates high costs for the budget.  In this regard, we decided to conduct a study on how now you can save all incoming requests with very fast access to them. </p><br><h2 id="issledovanie">  Study </h2><br><p>  There were several options for storing incoming data. </p><br><p>  <strong>First option</strong> </p><br><p>  Save queries with data using nginx logs and add them to some place.  If problems arise, the API service will access the data that has been saved somewhere, and then do the necessary processing. </p><br><p>  <strong>Second option</strong> </p><br><p>  Make duplicate HTTP requests in several places.  Plus, write an additional service that will add the data somewhere. </p><br><p>  Configuring a web server to save data through the logs for further processing has its drawbacks.  This solution is not very cheap, and the speed of access to the data will be extremely slow.  You will need additional services to work with log files, aggregation and data storage.  Plus, it will require a large amount of financial costs - for the introduction of new services, training of operating personnel, and the likely purchase of new equipment.  And most importantly, if there was no such solution before, then you will have to find time for implementation.  For these reasons, we almost immediately abandoned the first option and began to explore opportunities to implement the second option. </p><br><h2 id="realizaciya">  Implementation </h2><br><p>  We chose between <a href="http://nginx.org/">nginx</a> , <a href="https://github.com/buger/goreplay">goreplay</a> and <a href="https://github.com/lpereira/lwan">lwan</a> . </p><br><p>  The first lwan was dropped, because goreplay is able to immediately everything we need.  It remains only to choose nginx with @post_action or goreplay.  Goreplay was the benchmark for this scheme, but we decided to stop and think about the queries: where and how to store them better. </p><br><p>  One could not particularly think about storage until a certain moment.  We needed an inverse relationship between the already processed and not yet processed data.  In the API, for which we make duplication of requests, IDs were not provided in requests from the client side.  And this situation arose: it took the opportunity to insert additional data into the incoming request.  This would allow to get feedback between the processed and unprocessed data, because all the data will get into the base, and not just the unprocessed.  Then somehow you need to deal with all incoming data. </p><br><p>  To get rid of request IDs, we decided to add a header with a UUID on the web server side and proxify such requests to the API - so that the API service modifies / deletes those requests that we duplicate in the database after processing.  At this point, we also give up goreplay in favor of nginx, since nginx supports many modules, including the ability to write to various databases.  This will simplify the data processing scheme and reduce the number of auxiliary services in solving this technical problem.  You do not have to spend time learning additional languages ​​and modifying goreplay to meet the requirements. </p><br><p>  The simplest option would be to take a module for nginx, which can write all the contents of incoming requests to any database.  Additional code and programming in configs would not be very desirable.  The <a href="https://github.com/tarantool/nginx_upstream_module">module for Tarantool</a> turned out to be the most flexible and suitable for us; they can proxy all the data in Tarantool without any additional actions. </p><br><p>  As an example, we present the simplest configuration and a small Lua script for Tarantool, in which all the bodies of incoming requests will be logged.  The interaction of services is shown in the diagram below. </p><br><p><img src="https://habrastorage.org/files/c74/a83/75f/c74a8375f7334a4fbad98e335eea7899.png" alt="image"></p><br><p>  For this we need a nginx with a set of modules and Tarantool. </p><br><p>  Additional modules to nginx: </p><br><ul><li>  <a href="https://github.com/tarantool/nginx_upstream_module">nginx_upstream_module</a> </li><li>  <a href="https://github.com/cybozu/nginx-uuid4-module">nginx-uuid4-module</a> </li></ul><br><p>  An example of an upstream configuration in nginx for working with Tarantool: </p><br><pre><code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">upstream</span></span> tnt { <span class="hljs-attribute"><span class="hljs-attribute">server</span></span> <span class="hljs-number"><span class="hljs-number">127.0.0.1:3301</span></span> max_fails=<span class="hljs-number"><span class="hljs-number">1</span></span> fail_timeout=<span class="hljs-number"><span class="hljs-number">1s</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">keepalive</span></span> <span class="hljs-number"><span class="hljs-number">10</span></span>; }</code> </pre> <br><p>  Configuration of proxying data in Tarantool using post_action: </p><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">location</span></span> <span class="hljs-variable"><span class="hljs-variable">@send_to_tnt</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">tnt_method</span></span> http_handler; <span class="hljs-attribute"><span class="hljs-attribute">tnt_http_rest_methods</span></span> all; <span class="hljs-attribute"><span class="hljs-attribute">tnt_pass_http_request</span></span> <span class="hljs-literal"><span class="hljs-literal">on</span></span> pass_body parse_args pass_headers_out; <span class="hljs-attribute"><span class="hljs-attribute">tnt_pass</span></span> tnt; } <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> / { <span class="hljs-attribute"><span class="hljs-attribute">uuid4</span></span> <span class="hljs-variable"><span class="hljs-variable">$req_uuid</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> x-request-uuid <span class="hljs-variable"><span class="hljs-variable">$req_uuid</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">add_header</span></span> x-request-uuid <span class="hljs-variable"><span class="hljs-variable">$req_uuid</span></span> always; <span class="hljs-attribute"><span class="hljs-attribute">proxy_pass</span></span> http://127.0.0.1:8080/; <span class="hljs-attribute"><span class="hljs-attribute">post_action</span></span> <span class="hljs-variable"><span class="hljs-variable">@send_to_tnt</span></span>; }</code> </pre> <br><p>  An example of a procedure in Tarantool that accepts input from nginx: </p><br><pre> <code class="hljs pgsql"><span class="hljs-type"><span class="hljs-type">box</span></span>.cfg { log_level = <span class="hljs-number"><span class="hljs-number">5</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">listen</span></span> = <span class="hljs-number"><span class="hljs-number">3301</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">log</span></span> = require(<span class="hljs-string"><span class="hljs-string">'log'</span></span>) <span class="hljs-type"><span class="hljs-type">box</span></span>.once(<span class="hljs-string"><span class="hljs-string">'grant'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">function</span></span>() <span class="hljs-type"><span class="hljs-type">box</span></span>.<span class="hljs-keyword"><span class="hljs-keyword">schema</span></span>.<span class="hljs-keyword"><span class="hljs-keyword">user</span></span>.<span class="hljs-keyword"><span class="hljs-keyword">grant</span></span>(<span class="hljs-string"><span class="hljs-string">'guest'</span></span>, <span class="hljs-string"><span class="hljs-string">'read,write,execute'</span></span>, <span class="hljs-string"><span class="hljs-string">'universe'</span></span>) <span class="hljs-type"><span class="hljs-type">box</span></span>.<span class="hljs-keyword"><span class="hljs-keyword">schema</span></span>.create_space(<span class="hljs-string"><span class="hljs-string">'example'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">function</span></span> http_handler(req) <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> headers = req.headers <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> body = req.body <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> body <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> <span class="hljs-keyword"><span class="hljs-keyword">log</span></span>.error(<span class="hljs-string"><span class="hljs-string">'no data'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> headers[<span class="hljs-string"><span class="hljs-string">'x-request-uuid'</span></span>] <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> <span class="hljs-keyword"><span class="hljs-keyword">log</span></span>.error(<span class="hljs-string"><span class="hljs-string">'header x-request-uuid not found'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> s, e = pcall(<span class="hljs-type"><span class="hljs-type">box</span></span>.space.example.<span class="hljs-keyword"><span class="hljs-keyword">insert</span></span>, <span class="hljs-type"><span class="hljs-type">box</span></span>.space.example, {headers[<span class="hljs-string"><span class="hljs-string">'x-request-uuid'</span></span>], body}) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> s <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> <span class="hljs-keyword"><span class="hljs-keyword">log</span></span>.error(<span class="hljs-string"><span class="hljs-string">'can not insert error:\n%s'</span></span>, e) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">true</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span></code> </pre> <br><p>  The solution is the small size of the Lua code and the rather simple nginx configuration.  The part with the API here does not make sense to take into account, it is necessary to do it in any implementation variant.  You can easily extend this master-master scheme with replication in Tarantool and load balance across multiple nodes using nginx or twemproxy. </p><br><p>  Since post_action sends data to Tarantool a few milliseconds later than the request arrives at the API and is processed, there is one nuance in the schema.  If the API works as fast as Calltouch, then you will have to make several requests to delete or time out before the request in Tarantool.  We chose several requests instead of timeouts, so that our services worked without delay, as quickly as before. </p><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  In conclusion, you can add the fact that just nginx and the nginx_upstream_module module together with Tarantool allow you to achieve incredible flexibility and simplicity in working with http requests, high speed data access without disrupting the operation of basic services, and significant changes when implementing into existing infrastructure.  The scope of tasks - from creating complex statistics to the usual save queries.  Not to mention that you can use it as a regular web service and implement an API based on this module for nginx and Tarantool. </p><br><p>  As a development for the future in Calltouch, I would like to mention the possibility of creating an interface in which you can almost instantly gain access to various data using some filters.  Use real queries on tests instead of synthetic load.  Debug applications in the event of problems, both to improve quality and to eliminate errors.  If it is possible to have such high availability of data and flexibility in work, it is possible to increase the number of services and their quality by a negligible amount of expenses for implementing Tarantool in various products. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/326902/">https://habr.com/ru/post/326902/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../326892/index.html">Research: businesses pay more attention to threats, not data protection</a></li>
+<li><a href="../326894/index.html">ITMO University Digest: materials for those who want to join Data Science</a></li>
+<li><a href="../326896/index.html">Transfer of intentions</a></li>
+<li><a href="../326898/index.html">Chat bot for VKontakte on Python on Callback API</a></li>
+<li><a href="../326900/index.html">As I made the fastest resize of images. Part 2, SIMD</a></li>
+<li><a href="../326904/index.html">To hell with motivation, you need discipline</a></li>
+<li><a href="../326906/index.html">What we should build automation. Using the HTTP API in Google Sheets</a></li>
+<li><a href="../326910/index.html">MTS and Ericsson are testing 5G in motion at Spartak Stadium - ONLINE Broadcast</a></li>
+<li><a href="../326912/index.html">"Computer as a device for communication" or how the future of the Internet was seen in 1968</a></li>
+<li><a href="../326914/index.html">Welcome to Android Devs Meetup April 26</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

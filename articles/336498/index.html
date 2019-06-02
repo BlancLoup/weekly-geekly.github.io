@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Know your tool: Event Loop in libuv</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Yudel Peng. Watchmaker. 1924 
+
+ “A computer is a state machine. Stream programming is necessary for those who cannot program finite automata. ” 
+ Alan...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Know your tool: Event Loop in libuv</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/830/526/c83/830526c832dce7a03f53f5545624c7c3.jpg" alt="image"><br>  <i>Yudel Peng.</i>  <i>Watchmaker.</i>  <i>1924</i> <br><br><blockquote>  “A computer is a state machine.  Stream programming is necessary for those who cannot program finite automata. ” <br>  Alan Cox, approx.  Wikipedia </blockquote><br><br>  “Know your instrument” - they say everything around and still trust.  They trust the module, trust the framework, trust someone else's example. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      A favorite question at <b>Node.js</b> interviews is the <b>Event Loop</b> device.  And for all that, the obvious fact that this knowledge will be useful to the application developer, few people try to immerse themselves in the device of the event cycle.  Basically, everyone is satisfied with the picture above.  Although it looks like a retelling of a film that you did not watch, but a friend told you about. <br><a name="habracut"></a><br><img src="https://habrastorage.org/getpro/habr/post_images/752/be5/35f/752be535f3ef3f5e0e531e77fc67757a.png" alt="image"><br><br>  The most difficult, probably for me, is to admit my mistakes and agree that I don’t know something.  Error do not like to talk and write.  Basically, everyone loves to write and talk about their successes and good stories, a person tries to build an image of an invincible hero. <br>  But as a rule, mistakes are made precisely because of ignorance, precisely because of superficial judgments, due to the fact that someone spent less time than necessary to study the question posed.  Evidence.  I know. <br><br>  Below, I will try to describe my understanding of the event loop using the example of the <b>libuv</b> source code <i>(in tandem with V8, this is the basis of Node.js)</i> , and I will also join a cohort of people who say: “You need to know your tool”. <br><br>  By the way, the latter, in modern realities, becomes a difficult task.  Only one <b>npm</b> has, at the current moment, almost half a million modules, I’m not even talking about the army of repositories on <i>github</i> .  But everything is arranged in such a way that in order to stay in place, you need to run, to move, you have to run twice as fast. <br><br>  This note is primarily a reminder to me, a reminder to be more attentive.  To the reader, I recommend to immerse yourself in the source code, draw some conclusions, and then return to this text. <br><br>  Also, described below is a huge approximation of what actually happens under the hood. Node.js.  Among many others, the note is based precisely on the libuv source code.  I will look <a href="https://github.com/libuv/libuv/tree/v1.x/src/unix">at the library code base in the unix part</a> .  The code for win will be different. <br><br><h3>  Well, in the beginning, some fundamental terminology: </h3><br>  <b><a href="https://en.wikipedia.org/wiki/Event-driven_programming">Event-oriented programming</a></b> (SOP, Event-Driven Programming / EDP) is a programming paradigm in which program execution is determined by events. <br><br>  The SOP paradigm is actively used in GUI development, however, it has also been applied on the server side.  In 1999, servicing Simtel's public FTP server, which was popular at the time, his administrator, <b>Dan Kegel,</b> noticed that a node on a gigabit channel would have to handle 10,000 connections in hardware, but the software did not allow this.  <a href="https://en.wikipedia.org/wiki/C10k_problem">The problem was associated with a large number of software threads</a> , each of which was created on a separate connection. <br><br>  The idea of ​​a single-event event loop solved this problem.  There are similar implementations not only in the JavaScript world (Node.js).  For example, <i>Asyncio</i> and <i>Twisted</i> in Python, <i>EventMachine</i> and <i>Celluloid</i> in Ruby, <i>Vert.x</i> in Java.  Another prominent representative of this implementation is the <i>Nginx</i> proxy server. <br><br>  At the heart of the SOP is the <b><u><a href="https://en.wikipedia.org/wiki/Event_loop">Event Loop (Event Loop)</a></u></b> - a software construct that deals with the scheduling of events and messages in the program. <br><br>  The loop, in turn, works with <b><u><a href="https://en.wikipedia.org/wiki/Asynchronous_I/O">asynchronous I / O</a></u></b> , or <b><u>non-blocking I / O</u></b> , which is a data processing form that allows other processes to continue execution before the transfer is completed. <br><br>  <b><u><a href="https://en.wikipedia.org/wiki/Callback_(computer_programming)">Callback function</a></u></b> - the ability to transfer executable code as one of the parameters of another code.  This technique allows us to conveniently work with asynchronous I / O. <br><br><h3>  “Hello World!” </h3><br>  Now let's start with the official example “Hello World!” Of <a href="http://docs.libuv.org/">http://docs.libuv.org</a> : <br><br><img src="https://habrastorage.org/getpro/habr/post_images/73d/3e9/fb8/73d3e9fb83c50661b17f9933198027d9.png" alt="image"><br><br>  The example is simple, the necessary RAM is reserved and the <a href="http://docs.libuv.org/en/v1.x/loop.html">structure of the event loop is</a> initialized, then it starts in <a href="http://docs.libuv.org/en/v1.x/loop.html">the default mode</a> (by the way, this is the mode used in Node.js). <br><br>  Then there is a closing of the cycle (stopping of all observers of events, observers of <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25B8%25D0%25B3%25D0%25BD%25D0%25B0%25D0%25BB%25D1%258B_(UNIX)">signals</a> , release of memory allocated for observers) and release of memory reserved by the cycle itself.  We will be interested in the function of the start-up loop ( <i>uv_run</i> ), let's see its source code (it is not quite original, I deleted strings not related to the default mode, so in the example the variable “ <i>mode</i> ” does not participate anywhere): <br><br><img src="https://habrastorage.org/getpro/habr/post_images/687/c71/0e4/687c710e436aa892e803707b86367536.png" alt="image"><br><br>  The body of the start function, as we see, does not begin with the “ <i>while</i> ” <i>loop</i> , but with the <i>uv__loop_alive</i> call.  In turn, this function checks for the presence of active <a href="http://docs.libuv.org/en/v1.x/handle.html">handlers</a> or <a href="http://docs.libuv.org/en/v1.x/request.html">requests</a> : <br><br><img src="https://habrastorage.org/getpro/habr/post_images/680/566/29c/68056629c700b3a4c70c8776c7eb81c8.png" alt="image"><br><br>  The result of the execution of this function will determine whether the “ <i>while</i> ” cycle starts or not.  In the absence of requests or handlers, the start-up function will simply update the execution time of the event loop and immediately terminate. <br>  If there is something to process ( <i>r! = 0</i> ) and the stop flag is not set ( <i>stop_flag == 0</i> ), then the cycle will start.  And the first <i>step</i> in the loop iteration will also be the update of the runtime ( <i>uv__update_time</i> ). <br><br><img src="https://habrastorage.org/getpro/habr/post_images/d3c/ea9/94a/d3cea994ab8fce79de8aabd4139fea5d.png" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/a62/0d7/7f3/a620d77f33e8355976c4d136c92215d1.png" alt="image"><br><br>  The next step in the iteration is to start the timers. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/1d7/328/18c/1d732818c8229c225a863cb69bd83fbf.png" alt="image"><br><br>  The structure of the event loop contains a so-called <a href="https://ru.wikipedia.org/wiki/%25D0%259A%25D1%2583%25D1%2587%25D0%25B0_(%25D1%2581%25D1%2582%25D1%2580%25D1%2583%25D0%25BA%25D1%2582%25D1%2583%25D1%2580%25D0%25B0_%25D0%25B4%25D0%25B0%25D0%25BD%25D0%25BD%25D1%258B%25D1%2585)">bunch of</a> timers.  The timer start function pulls from the heap the timer handler with the shortest time and compares this value with the execution time of the event loop.  If the timer is shorter, this timer stops (removed from the heap, its handler is also deleted from the heap).  Next comes a check whether you need to restart it. <br><br>  In Node.js (JavaScript), we have the <i><a href="https://nodejs.org/api/timers.html">setInterval</a></i> and <i><a href="https://nodejs.org/api/timers.html">setTimeout</a></i> functions, in terms of libuv, this is the same thing - the <a href="http://docs.libuv.org/en/v1.x/timer.html">timer ( <i>uv_timer_t</i> )</a> , with the only difference that the interval timer has a repeat flag ( <i>repeat = 1</i> ). <br><br>  <i>An interesting observation: in the case of the repeat flag set, the uv_timer_stop function will work twice for the timer handler.</i> <br><br>  Let us proceed to the next step in the iteration of the event loop, namely, the function of starting <b>pending callbacks</b> .  Calls are stored in the <a href="https://ru.wikipedia.org/wiki/%25D0%259E%25D1%2587%25D0%25B5%25D1%2580%25D0%25B5%25D0%25B4%25D1%258C_(%25D0%25BF%25D1%2580%25D0%25BE%25D0%25B3%25D1%2580%25D0%25B0%25D0%25BC%25D0%25BC%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25B0%25D0%25BD%25D0%25B8%25D0%25B5)">queue</a> .  These can be handlers for reading or writing a file, <a href="https://ru.wikipedia.org/wiki/Transmission_Control_Protocol">TCP</a> or <a href="https://ru.wikipedia.org/wiki/UDP">UDP</a> connections, in general, any <a href="https://en.wikipedia.org/wiki/Input/output">I / O operations</a> , because the type does not really matter, because, as you remember, <a href="https://en.wikipedia.org/wiki/Everything_is_a_file">in unix everything is a file</a> . <br><br><img src="https://habrastorage.org/getpro/habr/post_images/4c5/ce4/1b3/4c5ce41b3b6c881af486c9ccb6013bf0.png" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/bc7/a1b/ef7/bc7a1bef75768db08630f8bf6a748fb1.png" alt="image"><br><br>  Next in the iteration are two mystical lines: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/237/415/586/23741558657f37944ef7ccfeea6da7e5.png" alt="image"><br><br>  In fact, these are also callback start-up functions, but they have nothing to do with I / O.  In fact, these are some internal preparatory actions that it would be nice to take before starting the execution of external operations (meaning I / O).  In the case of “Hello World”, there are no such handlers, but there are examples on the site where such callbacks are registered. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/0d9/d23/46c/0d9d2346c3fd71db24cc7327d3ac057f.png" alt="image"><br><br>  In this example, the idle handler does nothing, it will be executed until the counter reaches a certain value.  In the same way, preparatory processors are registered (prepare). <br><br>  Node.js (JavaScript) has no equivalent for these handlers, i.e.  we cannot register any callback which would be executed on one of these steps.  However, one reservation must be made using <b><a href="https://nodejs.org/api/process.html">process.nextTick</a></b> , we can unintentionally execute the code in one of these steps, since this function is triggered directly at the current stage of the event cycle, and this, in particular, may be <i>uv__run_idle</i> or <i>uv__run_prepare</i> .  The <i>process.nextTick</i> function itself has nothing to do with the libuv library. <br><br>  On this topic (the work of <i>process.nextTick</i> ) I still have an old, but still relevant, stackoverflow diagram: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/0f0/d38/060/0f0d380605a65ab59204c3e531382687.png" alt="image"><br><br>  The next stage of the iteration is the most interesting - these are external I / O operations ( <b><a href="https://linux.die.net/man/2/poll">poll (2)</a></b> ). <br><br>  Here I combined two steps: calculating the time for performing an external operation and, directly, an external operation. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b68/f20/f10/b68f20f107cd64f215daa3d7cc9228d2.png" alt="image"><br><br>  The calculation of the execution time of the external I / O operation is similar to the implementation of the timer start function, since the value of this time is calculated based on the nearest timer.  This, by the way, and achieved a non-blocking model ( <b>non-blocking poll</b> ). <br><br><img src="https://habrastorage.org/getpro/habr/post_images/a1e/217/b27/a1e217b270ed1b427fbc972f884d4034.png" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/8b9/8de/aca/8b98deacaf3fdd7358e34a1420c289d7.png" alt="image"><br><br>  The source code of the <i>uv__io_poll</i> function <i>is</i> quite complex and not small.  There is a multi-threaded work, event observers, callbacks are registered and work is being done with <a href="https://ru.wikipedia.org/wiki/%25D0%25A4%25D0%25B0%25D0%25B9%25D0%25BB%25D0%25BE%25D0%25B2%25D1%258B%25D0%25B9_%25D0%25B4%25D0%25B5%25D1%2581%25D0%25BA%25D1%2580%25D0%25B8%25D0%25BF%25D1%2582%25D0%25BE%25D1%2580">file descriptors</a> . <br><br>  I will not give here the code of this function, the picture completely reflects the essence of this operation: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/0fd/b3b/2e9/0fdb3b2e986359c1aa073bfc34b5e36f.png" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/fbc/c07/ff9/fbcc07ff919de5a4fd4a0f075e1aff32.png" alt="image"><br><br>  The next operation in the command queue of the event loop iteration is <i>uv__run_check</i> .  It is essentially identical to the functions <i>uv__run_idle</i> and <i>uv__run_prepare</i> , i.e.  This is the launch of callbacks that register on the same principle and call after external operations.  However, in this case, we have the ability to register such handlers from Node.js.  This is the <a href="https://nodejs.org/api/timers.html"><i>setImmediate</i></a> function (i.e., immediate execution after an external I / O operation). <br><br>  The penultimate step is to start the closing handlers. <br><br>  This function bypasses the <a href="https://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25B2%25D1%258F%25D0%25B7%25D0%25BD%25D1%258B%25D0%25B9_%25D1%2581%25D0%25BF%25D0%25B8%25D1%2581%25D0%25BE%25D0%25BA">linked list of</a> closing handlers and tries to complete the closure for each.  If the handler has a special callback for closing, then, at the end, this callback is started. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/5e6/d54/952/5e6d549524c83df709d2058a32ca5d3f.png" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/862/a1d/daf/862a1ddafb99d632c553de57b9e7a133.png" alt="image"><br><br>  And the last step of the iteration, this is already a familiar function <i>uv__loop_alive</i> .  If this function returns a nonzero result, then the event loop will start a new iteration. <br><br><h3>  *** </h3><br>  If you have any comments or additions, I will be glad to see them in the comments or write to <i>artur.basak.devingrodno@gmail.com</i> <br><br><div class="spoiler">  <b class="spoiler_title">useful links</b> <div class="spoiler_text">  <a href="http://docs.libuv.org/en/v1.x/design.html">LibUV: Design Overview</a> <br>  <a href="https://nodejs.org/en/docs/guides/event-loop-timers-and-nexttick/">Nodejs.org: The Node.js Event Loop, Timers, and process.nextTick ()</a> <br>  <a href="https://medium.com/devschacht/event-loop-timers-and-nexttick-18579cd122e0">Translation of Nodejs.org documentation on</a> <br>  <a href="https://www.youtube.com/watch%3Fv%3D8aGhZQkoFbQ">Philip Roberts: What the heck is the event loop anyway?</a> <br>  <a href="https://blog.risingstack.com/node-js-at-scale-understanding-node-js-event-loop/">RisingStack.com: Understanding Node.js Event Loop</a> <br>  <a href="https://nodesource.com/blog/understanding-the-nodejs-event-loop/">Nodesource.com: Understanding Node.js Event Loop</a> <br>  <a href="https://developer.mozilla.org/ru/docs/Web/JavaScript/EventLoop">Mozilla.org: EventLoop</a> <br></div></div></div><p>Source: <a href="https://habr.com/ru/post/336498/">https://habr.com/ru/post/336498/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../336488/index.html">The digest of interesting materials for the mobile developer # 218 (August 21 - August 27)</a></li>
+<li><a href="../336490/index.html">I'm too busy to do anything</a></li>
+<li><a href="../336492/index.html">ggplot2: how to easily combine multiple graphs in one, part 1</a></li>
+<li><a href="../336494/index.html">Quick registration of image focal points using big-vote</a></li>
+<li><a href="../336496/index.html">Architectural Pyramid Applications</a></li>
+<li><a href="../336500/index.html">PHP Digest number 115 - the latest news, materials and tools (August 14 - 27, 2017)</a></li>
+<li><a href="../336502/index.html">Revit API Vector Geometry for Developers</a></li>
+<li><a href="../336504/index.html">Check dependency injection on Swift</a></li>
+<li><a href="../336506/index.html">XBRL: just about the complex - Chapter 6. Immersion in XBRL - Part 5. New dimensions</a></li>
+<li><a href="../336508/index.html">Change payment service using A / B test through HAProxy</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>The choice of algorithm for calculating quantiles for a distributed system</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! My name is Alexander, I lead the Data Team in Badoo. Today I will tell you how we chose the optimal algorithm for calculating quantiles in our ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>The choice of algorithm for calculating quantiles for a distributed system</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/web/103/7e1/19b/1037e119bb5245e78df583dbf26df87f.png"></p><br><p>  Hello!  My name is Alexander, I lead the Data Team in Badoo.  Today I will tell you how we chose the optimal algorithm for calculating quantiles in our distributed event processing system. </p><a name="habracut"></a><br><p>  Earlier we talked about how our UDS (Unified Data Stream) <a href="https://www.youtube.com/watch%3Fv%3D3XJhBRiVKW8">event handling system is</a> arranged.  In short, we have a stream of heterogeneous events on which we need to aggregate data in various sections in a sliding window.  Each type of event is characterized by its own set of aggregate functions and measurements. </p><br><p>  During the development of the system, we needed to implement support for the aggregate function for quantiles.  You can learn more about what percentiles are and why they better represent the behavior of a metric than min / avg / max, in our post <a href="https://habrahabr.ru/company/badoo/blog/331866/">about using Pinba in Badoo</a> .  We could probably take the same implementation that Pinba uses, but the following features of UDS should be taken into account: </p><br><ol><li>  The calculations are spread over the Hadoop cluster. </li><li>  System design involves grouping by an arbitrary set of attributes.  This means that the number of metrics of the "percentile" type is in the millions. </li><li>  Since calculations are performed using Map / Reduce, all intermediate calculations of aggregate functions must have the property of additivity (we must be able to “merge” them from different nodes that perform calculations independently). </li><li>  Pinba and UDS have different implementation languages ​​- C and Java, respectively. </li></ol><br><h3 id="kriterii-ocenki">  Criteria for evaluation </h3><br><p>  Based on these architectural features, we have put forward a number of parameters by which we will evaluate quantile calculation algorithms: </p><br><h4 id="tochnost-vychisleniya">  Calculation accuracy </h4><br><p>  We decided that we would be satisfied with the accuracy of calculations up to 1.5%. </p><br><h4 id="vremya-vypolneniya">  lead time </h4><br><p>  It is important for us to minimize the time period from the occurrence of the event to the visualization of its quantiles on the graphs.  This factor is made up of three others: </p><br><ul><li>  “Mathematics” time (Map stage) - overhead for initializing data structures and adding data to them; </li><li>  serialization time - in order to merge two data structures, they must be serialized and transmitted over the network. </li><li>  merge time (stage Reduce) - the overhead of merging the two data structures calculated independently. </li></ul><br><h4 id="obyom-pamyati">  Memory </h4><br><p>  Millions of metrics are processed in our system, and it is important for us to monitor the rational use of computational resources.  By memory, we mean the following: </p><br><ul><li>  RAM is the volume occupied by quantile data structures. </li><li>  Shuffle - since the calculation is performed using Map / Reduce, the exchange of intermediate results between the nodes is inevitable.  In order for this to be possible, the data structure must be serialized and written to disk / network. </li></ul><br><p>  We also set the following conditions: </p><br><h4 id="tipy-dannyh">  Data types </h4><br><p>  The algorithm must support calculations for nonnegative values ​​represented by double type. </p><br><h4 id="yazyk-programmirovaniya">  Programming language </h4><br><p>  There must be Java implementation without using JNI. </p><br><h3 id="uchastniki-issledovaniya">  Study participants </h3><br><p><img src="https://habrastorage.org/web/2ef/09e/749/2ef09e749e954e3492e85c78cb86494f.png"></p><br><h4 id="naive">  Naive </h4><br><p> In order to have some reference for comparison, we wrote an implementation "in the forehead", which stores all incoming values ​​in <code>double[]</code> .  If it is necessary to calculate a quantile, the array is sorted, the cell corresponding to the quantile is calculated, and its value is taken.  The merging of two intermediate results occurs by concatenating two arrays. </p><br><h4 id="twitter-algebird">  Twitter algebird </h4><br><p>  This solution was found by us during consideration of the algorithms ground under Spark (used in the basis of UDS).  The <a href="https://github.com/twitter/algebird">Twitter</a> library <a href="https://github.com/twitter/algebird">Algebird is</a> designed to extend the algebraic operations available in the Scala language.  It contains a number of widely used functions <code>ApproximateDistinct</code> , <code>CountMinSketch</code> and, among other things, the <a href="https://github.com/twitter/algebird/blob/d14c81a89a713e947ebe8ce82face4185e511c4b/algebird-core/src/main/scala/com/twitter/algebird/QTree.scala">implementation of</a> percentiles based on the Q-Digest algorithm.  Mathematical justification of the algorithm can be found <a href="http://www.cs.virginia.edu/~son/cs851/papers/ucsb.sensys04.pdf">here</a> .  In brief, the structure is a binary tree in which each node stores some additional attributes. </p><br><h4 id="ted-dunning-t-digest">  Ted dunning t-digest </h4><br><p>  <a href="https://github.com/tdunning/t-digest/">The library</a> is an improvement to the aforementioned Q-Digest algorithm with lower memory consumption, improved performance and higher accuracy. </p><br><h4 id="airlift-quantile-digest">  Airlift Quantile Digest </h4><br><p>  We stumbled upon <a href="https://github.com/airlift/airlift">this product</a> during reverse engineering of <a href="https://prestodb.io/">Facebook Presto</a> distributed SQL engine.  It was somewhat surprising to see the implementation of quantiles in the REST framework, but the high speed and Presto architecture (similar to Map / Reduce) pushed us to test this solution.  Again, Q-Digest is used as a mathematical tool. </p><br><h4 id="high-dynamic-range-hdr-histogram">  High Dynamic Range (HDR) Histogram </h4><br><p>  This <a href="https://github.com/HdrHistogram/HdrHistogram">decision</a> was the ideological inspiration for the implementation of percentiles in Pinba.  Its distinguishing feature is that it is necessary to know the upper range of data when initializing the structure.  The whole range of values ​​is divided into the N-th number of cells, and when added, we increment the value into one of them. </p><br><h3 id="metodika-provedeniya-testa">  Test procedure </h3><br><p><img src="https://habrastorage.org/web/39d/a31/6c0/39da316c0b34423d829ca378a5dc3063.png"></p><br><h4 id="kachestvennaya-ocenka">  Qualitative assessment </h4><br><p>  Each of the considered software solutions was wrapped by some layer (model) (in order to adapt it for testing framework).  Before conducting performance tests for each model, unit tests were written to test its validity.  These tests verify that the model (its underlying software solution) can produce quantiles with a given accuracy (1% and 0.5% accuracy were checked). </p><br><h4 id="performance-testy">  Performance Tests </h4><br><p>  For each model, tests were written using <a href="http://openjdk.java.net/projects/code-tools/jmh/">JMH</a> .  They were divided into categories, about each of which I will tell in detail.  I will not “litter” the post with the raw output from JMH - I'd rather immediately visualize it in the form of graphs. </p><br><h5 id="raw-test">  <strong>Raw test</strong> </h5><br><p>  In this test, we measure the performance of data structures by insertion, that is, measurements are made of the time required to initialize the structure and fill it with data.  We will also look at how this time changes depending on the accuracy and number of elements.  Measurements were made for sequences of monotonically increasing numbers in the ranges of 10, 100, 1000, 10,000, 100,000, 1,000,000 with a calculation error of 0.5% and 1%.  The insert was made in a pack (if the structure supports) or elementwise. </p><br><p>  As a result, we got the following picture (the logarithmic ordinate scale, smaller values ​​— better): </p><br><p><img src="https://habrastorage.org/web/5c5/826/a66/5c5826a663ac43e1965c0e4a6409285a.png"></p><br><p>  The results are shown for an accuracy of 1%, but for an accuracy of 0.5%, the picture does not fundamentally change.  To the naked eye, it is clear that in terms of HDR insertion is the best option, provided that there are more than 1000 elements in the model. </p><br><h5 id="volume-test">  <strong>Volume test</strong> </h5><br><p>  In this test, we measure the volume occupied by the models in memory and in serialized form.  The model is filled with data sequences, then its size is estimated.  It is expected that the best model will be with a smaller amount of memory occupied.  <a href="https://github.com/apache/spark/blob/a1e40b1f5d651305bbd0ba05779263a44f607498/core/src/main/scala/org/apache/spark/util/SizeEstimator.scala">Measured</a> using Spark <a href="https://github.com/apache/spark/blob/a1e40b1f5d651305bbd0ba05779263a44f607498/core/src/main/scala/org/apache/spark/util/SizeEstimator.scala">SizeEstimator</a> . </p><br><p><img src="https://habrastorage.org/web/1a0/835/8fe/1a08358fe3e24ce4b76de6809c45a27a.png"></p><br><p>  As can be seen, with a small number of elements HDR loses to other implementations, however, it has the best growth rate in the future. </p><br><p>  The serialized size estimate was made by serializing the model through <a href="https://github.com/EsotericSoftware/kryo">Kryo</a> , which is the de facto standard in the field of serialization.  For each model, its own serializer was written, which transforms it as quickly and compactly as possible. </p><br><p><img src="https://habrastorage.org/web/748/39d/a56/74839da56b3140d4852e0487c5096435.png"></p><br><p>  The ultimate champion is again HDR. </p><br><h5 id="mapreduce-test">  <strong>Map / Reduce Test</strong> </h5><br><p>  This test most fully reflects the behavior of the system in a combat situation.  The test procedure is as follows: </p><br><ol><li>  Predefined ten models containing the n-th number of values. </li><li>  They are merged (emulation map-side combine). </li><li>  The resulting value is serialized and deserialized ten times (emulation of transmission over the network from different workers). </li><li>  Deserialized models are merged (emulation of the final reduce-stage). </li></ol><br><p>  Test results (lower values ​​are better): </p><br><p><img src="https://habrastorage.org/web/61f/446/782/61f446782e524f8099f6ba8efd3fe660.png"></p><br><p>  And in this test, we again clearly see the confident dominance of HDR in the long term. </p><br><h3 id="analiz-rezultatov">  Results analysis </h3><br><p>  After analyzing the results, we came to the conclusion that HDR is the optimal implementation on a large number of elements, while on models with a small amount of data there are more profitable implementations.  The specificity of aggregation in many dimensions is such that one physical event affects several aggregation keys.  Imagine that one EPayment event should be grouped by country and gender of the user.  In this case, we get four aggregation keys: </p><br><p><img src="https://habrastorage.org/web/be1/6e8/c60/be16e8c601c5432abf7da45cbd41d23e.png"></p><br><p>  Obviously, when processing a stream of events, keys with a smaller number of dimensions will have a greater number of values ​​for percentiles.  The usage statistics of our system gives us the following picture: </p><br><p><img src="https://habrastorage.org/web/4b4/946/c20/4b4946c20f894fdcba6920bdaead4d01.png"></p><br><p>  These statistics allowed us to decide on the need to look at the behavior of metrics with a large number of measurements.  As a result, we found that 90 percentile of the number of events per metric (that is, our test model) is within 2000. As we saw earlier, with a similar number of elements, there are models that behave better than HDR.  So we have a new model - Combined, which combines the best of two worlds: </p><br><ol><li>  If the model contains less than n elements, the Naive model algorithms are used. </li><li>  When the threshold n is exceeded, the HDR model is initialized. </li></ol><br><p>  See the results of this new member! </p><br><p><img src="https://habrastorage.org/web/b7b/dcb/1e3/b7bdcb1e3b2043ab8ade6a8e7a8b2ba7.png"></p><br><p><img src="https://habrastorage.org/web/a81/88a/d17/a8188ad17b3147fda160c31ded50b935.png"></p><br><p><img src="https://habrastorage.org/web/ef6/4e0/256/ef64e0256f2647a19e9bb411db5617f5.png"></p><br><p>  As can be seen from the graphs, the Combined model really behaves better than HDR on a small sample and is compared with it with an increase in the number of elements. </p><br><p>  If you are interested in the research code and examples of the API of the considered algorithms, you can find all this <a href="https://github.com/alex-krash/quantiles-benchmark">on GitHub</a> .  And if you know the implementation that we could add to the comparison, write about it in the comments! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/332568/">https://habr.com/ru/post/332568/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../332558/index.html">Identification of cointegrated pairs of shares in stock markets</a></li>
+<li><a href="../332560/index.html">JDI UI Testing Framework: How and Why to Use</a></li>
+<li><a href="../332562/index.html">Android Architecture Components. Part 1. Introduction</a></li>
+<li><a href="../332564/index.html">Web development: how to recognize a problem client at the start</a></li>
+<li><a href="../332566/index.html">Video recordings from the CocoaHeads meeting on June 23, 2017 from Tutu.ru office</a></li>
+<li><a href="../332570/index.html">Moya - how to stop worrying about the network part and start living</a></li>
+<li><a href="../332572/index.html">Is it time to use CSS Grid Layout?</a></li>
+<li><a href="../332574/index.html">AliveScript - a programming language for children 12+</a></li>
+<li><a href="../332578/index.html">Vs interface</a></li>
+<li><a href="../332580/index.html">Protecting your site with ZIP bombs</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

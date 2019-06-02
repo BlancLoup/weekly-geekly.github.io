@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Micro-optimizations are important: prevent 20 million system calls</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This publication is a logical continuation of the post " How to tune the TZ environment variable avoids thousands of system calls ." Here we look at t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Micro-optimizations are important: prevent 20 million system calls</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/files/158/a8f/d7c/158a8fd7c1bd45a68158ceccfdb1f03e.jpg"><br><p>  This publication is a logical continuation of the post " <a href="https://blog.packagecloud.io/eng/2017/02/21/set-environment-variable-save-thousands-of-system-calls/">How to tune the TZ environment variable avoids thousands of system calls</a> ."  Here we look at the characteristic situation where micro-optimizations (for example, deleting a system call) have a very strong effect on performance. </p><a name="habracut"></a><br><h2 id="chto-takoe-zametnoe-uluchshenie">  What is a noticeable improvement? </h2><br><p>  We previously described <a href="https://blog.packagecloud.io/eng/2017/02/21/set-environment-variable-save-thousands-of-system-calls/">an environment variable that an application can tune to avoid thousands of additional system calls</a> .  This article was greeted with fair questions with some skepticism: </p><br><ul><li>  “Subtle, but does deleting a single system call significantly affect the performance of the entire program?” </li><li>  “It looks unnecessary;  Linux calls make system calls so fast. ” </li></ul><br><p>  It is difficult to say that each of the developers is investing in the concept of "noticeable improvement" in relation to a specific application.  Developers of the kernel and drivers often spend a lot of time micro-optimizing code and data structures in order to use the processor’s cache as fully as possible and reduce the consumption of the CPU itself.  Even if most programmers find the benefit very insignificant.  Do I need to pay less attention to such optimizations?  Someone can even say that micro-optimization can not be regarded as noticeable. </p><br><p>  In this article, we define the noticeable as easily measurable and quite obvious.  Can we show a real example when deleting a fragment (code path) of a slow ( <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">without vDSO</a> ) system call from a code results in an easily measurable and completely obvious result? </p><br><p> There are many real examples: from package sniffers to runtime (runtime) software languages.  Consider such an infamous case as the influence of <code>sigprocmask</code> on the Ruby runtime. </p><br><h2 id="chto-takoe-sigprocmask">  What is <code>sigprocmask</code> ? </h2><br><p>  <code>sigprocmask</code> is a system call used to check or configure the signal mask of the current process.  It allows the program to block or allow signals, which is useful when you need to execute a critical piece of code whose work cannot be interrupted. </p><br><p>  This is not a particularly complex system call.  <a href="">Kernel code related to sigprocmask</a> tells us that the call writes <code>sigset_t</code> to a C-structure containing the state of the current process (called as <code>task_struct</code> in the kernel).  This is a very fast operation. </p><br><p>  Let's create a simple test program that in a small loop calls <code>sigprocmask</code> .  We will measure using <code>strace</code> and <code>time</code> : </p><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;stdlib.h&gt; #include &lt;signal.h&gt; int main(int argc, char *argv[]) { int i = 0; sigset_t test; for (; i &lt; 1000000; i++) { sigprocmask(SIG_SETMASK, NULL, &amp;test); } return 0; }</span></span></span></span></code> </pre> <br><p>  Compile with <code>gcc -o test test.c</code>  First we execute with <code>time</code> , and then with <code>strace</code> and <code>time</code> . </p><br><p>  On my test system: </p><br><ul><li>  The execution of <code>time ./test</code> showed: 0.047 seconds — real time, 0.012 seconds — user time, 0.036 seconds — system time. </li><li>  The execution of <code>time strace -ttT ./test</code> showed: 52.364 seconds — real time, 9.313 seconds — user time, 14.349 seconds — system time. </li></ul><br><p>  In the case of <code>strace</code> for each <code>sigprocmask</code> call (your system will probably be displayed as <code>rt_sigprocmask</code> ), the approximate duration of execution will be shown.  They are very small.  On my test system, in most cases I received values ​​in the region of 0.000003 seconds - with an unexpected surge of up to 0.000074 seconds. </p><br><p>  It is quite difficult to measure the exact time of the system call for a variety of reasons.  They go far beyond the issue discussed in this article.  So we can assume that all measurements were taken equally incorrectly. </p><br><p>  So, what we already know: </p><br><ul><li>  <code>sigprocmask</code> is a system call used to configure or check the signal mask of the current process. </li><li>  Kernel code is simple and must be executed very quickly. </li><li>  Measurements with <code>time</code> and <code>strace</code> show that when a million calls of sigprocmask are made in a small cycle, each call takes very little time. </li></ul><br><p>  So why do we need to get rid of additional <code>sigprocmask</code> , will it be worth our effort? </p><br><h2 id="razberyomsya-podrobnee">  We will understand more </h2><br><p>  Sometimes someone else's code that we use in our applications (system libraries, kernel, glibc, etc.) does unexpected things or has side effects that are not obvious at first glance.  As an example below, I will show how the indirect use of <code>sigprocmask</code> in a test program leads to a serious decrease in performance.  And then I will demonstrate how this manifests itself in a real application. </p><br><p>  One of the most prominent examples of how additional <code>sigprocmask</code> calls resulted in an obvious and easily measured performance decrease was associated with Ruby 1.8.7.  This was noted in cases where the code was compiled with one particular <code>configure</code> flag. </p><br><p>  We start with the default configuration flag values ​​that were used on most operating systems (Debian, Ubuntu, etc.) during the widespread use of Ruby 1.8.7. </p><br><h2 id="testirovanie-sigprocmask">  <code>sigprocmask</code> testing </h2><br><p>  Take a look at the test code: </p><br><pre> <code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">make_thread</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Thread</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">new</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">do</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">a</span></span></span><span class="hljs-function"> = </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">[]</span></span></span><span class="hljs-function"> 10</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">_000_000</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">times</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">do</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">a</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">&lt;&lt;</span></span></span><span class="hljs-function"> "</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">a</span></span></span><span class="hljs-function">" </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">a</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">pop</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">end</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">end</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">end</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">t</span></span></span><span class="hljs-function"> = </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">make_thread</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">t1</span></span></span><span class="hljs-function"> = </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">make_thread</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">t</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">join</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">t1</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">join</span></span></span></span></code> </pre> <br><p>  Everything is simple: we create two threads of execution, each of which adds and deletes data from an array 10 million times.  If we run with the default configuration flags and <code>strace</code> values, we get amazing results: </p><br><pre> <code class="bash hljs">$ strace -ce rt_sigprocmask /tmp/<span class="hljs-built_in"><span class="hljs-built_in">test</span></span>-ruby/usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/ruby /tmp/test.rb Process 30018 attached Process 30018 detached % time seconds usecs/call calls errors syscall ------ ----------- ----------- --------- --------- ---------------- 0.50 0.139288 0 20033025 rt_sigprocmask</code> </pre> <br><p>  The Ruby virtual machine has generated more than <strong>20 million</strong> <code>sigprocmask</code> system calls.  You say: “But they took very little time!  What's the big deal? ” </p><br><p>  As already mentioned, it is not so easy to measure the duration of a system call.  Restart the test program with <code>time</code> instead of <code>strace</code> and see how long it will take to complete on my system: </p><br><pre> <code class="bash hljs">$ time /tmp/gogo/usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/ruby /tmp/test.rb real 0m6.147s user 0m5.644s sys 0m0.476s</code> </pre> <br><p>  About 6 seconds of real execution.  That is about 3.3 million calls <code>sigprocmask</code> per second.  Wow. </p><br><p>  And if you configure one <code>configure</code> flag, the Ruby virtual machine will build the system, avoiding calls to <code>sigprocmask</code> ! </p><br><p>  Restart tests with <code>strace</code> and <code>time</code> , but this time we <code>sigprocmask</code> little Ruby so that it avoids calling <code>sigprocmask</code> : </p><br><pre> <code class="bash hljs">$ strace -ce rt_sigprocmask /tmp/<span class="hljs-built_in"><span class="hljs-built_in">test</span></span>-ruby-2/usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/ruby /tmp/test.rb % time seconds usecs/call calls errors syscall ------ ----------- ----------- --------- --------- ---------------- -nan 0.000000 0 3 rt_sigprocmask</code> </pre> <br><p>  Cool!  We reduced the number of <code>sigprocmask</code> calls from 20 million to 3. It seems that <code>strace</code> had problems calculating the time it <code>sigprocmask</code> to execute system calls :( </p><br><p>  Let's see what <code>time</code> will say: </p><br><pre> <code class="bash hljs">$ time /tmp/<span class="hljs-built_in"><span class="hljs-built_in">test</span></span>-ruby-2/usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/ruby /tmp/test.rb real 0m3.716s user 0m3.692s sys 0m0.004s</code> </pre> <br><p>  Approximately 40% faster (real time) than in the previous example, and less than one <code>sigprocmask</code> call per second. </p><br><p>  Excellent result, but several questions arise: </p><br><ul><li>  Isn't the example a bit contrived? </li><li>  When is it really relevant in real projects? </li><li>  What exactly when setting the configure flags leads to a decrease in the number of calls? </li></ul><br><p>  Let's first look at a real-life example, and then look at the details. </p><br><h2 id="realnyy-primer-puppet">  Real-life example: Puppet </h2><br><p>  <a href="https://projects.puppetlabs.com/issues/1781">The bug found in Puppet</a> accurately demonstrates the effect of additional <code>sigprocmask</code> calls on the Ruby virtual machine: </p><br><p>  <em>I just ran into a serious performance issue.</em>  <em>Puppet is very slow.</em> </p><br><p>  <em>First example:</em> </p><br><pre> <code class="bash hljs">$ time puppet —version 0.24.5 real 0m0.718s user 0m0.576s sys 0m0.140s</code> </pre> <br><p>  <em>At this time, hundreds, if not thousands of rt_sigprocmask calls (SIG_BLOCK, NULL, [], 8) were made.</em>  <em>And all this for the sake of displaying the version.</em> </p><br><p>  If you read the correspondence, you will find <a href="https://projects.puppetlabs.com/issues/1781">other comments</a> in which people complain about the poor performance of Puppet.  <a href="http://serverfault.com/questions/514827/puppet-hang-on-100-cpu-usage">Questions on Stackoverflow are</a> also devoted to the same problem. </p><br><p>  But this problem is not only Ruby and Puppet.  Users of other projects also write about <a href="https://secure.phabricator.com/T4627">such bugs</a> , reporting full CPU usage and hundreds of thousands of <code>sigprocmask</code> calls. </p><br><h2 id="pochemu-tak-proishodit-legko-li-eto-ispravit">  Why it happens?  Is it easy to fix? </h2><br><p>  The point is that calls to <code>sigprocmask</code> made by two functions from glibc (non-system calls): <code>getcontext</code> and <code>setcontext</code> . </p><br><p>  They are used to save and restore the state of the processor.  They are widely used by programs and libraries that implement exception handling or threads in user space.  In the case of Ruby 1.8.7, <code>setcontext</code> and <code>getcontext</code> are needed in the implementation of threads in user space — to switch context between threads. </p><br><p>  You might think that these two functions should be performed fairly quickly.  After all, they just save or restore a small set of processor registers.  Yes, saving is a very fast operation.  But, apparently, the implementation of these functions in glibc is such that the <code>sigprocmask</code> system calls are used to save and restore the signal mask. </p><br><p>  Recall that Linux provides a mechanism ( <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">vDSO</a> ), which instead of the kernel is responsible for making certain system calls.  This reduces the cost of their implementation.  Unfortunately, <code>sigprocmask</code> not one of them.  All <code>sigprocmask</code> system calls lead to a transition from user space to the kernel. </p><br><p>  The cost of such a transition is much higher than the cost of other operations in <code>setcontext</code> and <code>getcontext</code> (representing simple entries in memory).  If you call these functions very often, then you will perform a slow operation (in this case, the <code>sigprocmask</code> system call that <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">does not go through vDSO</a> ) every time you need to do something quickly (for example, save or restore a set of processor registers to switch threads of execution). </p><br><h2 id="pochemu-izmenenie-konfiguracionnogo-flaga-uluchshaet-situaciyu">  Why does changing the configuration flag improve the situation? </h2><br><p>  At the time of widespread use of Ruby 1.8.7, the default <code>--enable-pthread</code> flag was used, activating a separate execution thread at the OS level that was started on a timer (timer thread).  It started as needed to intercept (pre-empt) the Ruby virtual machine.  Thus, the machine learned that it was time to switch between threads in the user space that were mapped to threads created in Ruby programs.  Also, a call to <code>--enable-pthread</code> caused the <code>configure</code> script to find and use the <code>getcontext</code> and <code>setcontext</code> functions. </p><br><p>  Without <code>--enable-pthread</code> the <code>configure</code> script will search for and use <code>_setjmp</code> and <code>_longjmp</code> (note the underscores).  These functions do not save or restore the signal mask, and therefore do not generate <code>sigprocmask</code> system calls. </p><br><p>  So: </p><br><ul><li>  <code>--enable-pthread</code> and <code>--disable-pthread</code> intended to control multithreading in the user space of the Ruby virtual machine: either an OS-level execution thread was used, or a simple <code>VTALRM</code> signal notifying the VM that it was time to switch to another Ruby thread. </li><li>  An unexpected side effect of switching between these two methods of interception (pre-empt) was that the primitives for the implementation of switching were looking for either <code>setcontext/getcontext</code> or <code>_setjmp/_longjmp</code> . </li><li>  This led to the fact that if the <code>setcontext/getcontext</code> pair was used, then additional <code>sigprocmask</code> calls were <code>sigprocmask</code> . </li><li>  And this, in turn, reduced productivity. </li><li>  What the creator of a number of projects faced, including Puppet. </li></ul><br><p>  And all this because of a single flag that enables or disables a single system call. </p><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  Micro-optimizations are important.  But the degree of their importance, of course, depends on the specifics of the application itself.  Keep in mind that libraries and code that you depend on can do what you do not expect (for example, to perform a slow system call).  If you know how to identify and correct such problems, it will have a huge impact on your users.  And in some cases - on the users of your users. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/324466/">https://habr.com/ru/post/324466/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../324456/index.html">Cryptocurrency Ethereum: write an exploit under a vulnerable smart contract and get tokens</a></li>
+<li><a href="../324458/index.html">Differences, advantages, disadvantages: public and private blockchains</a></li>
+<li><a href="../324460/index.html">Intel launches first SSD with 3D Xpoint technology</a></li>
+<li><a href="../324462/index.html">He tested the most famous methods of personal effectiveness and wrote one of the best books on productivity.</a></li>
+<li><a href="../324464/index.html">How work was done to improve navigation in Uber</a></li>
+<li><a href="../324468/index.html">Google Device Day Video</a></li>
+<li><a href="../324470/index.html">Tool for easy code editing right in the browser</a></li>
+<li><a href="../324476/index.html">Guide for novice programmer graphics shaders</a></li>
+<li><a href="../324478/index.html">Top 5 jQuery UI Alternatives</a></li>
+<li><a href="../324480/index.html">Pwn2Own 2017: the results of the tenth hacker competition</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How dtraceasm works in JMH</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The latest version of Java Microbenchmark Harness (JMH) has a new profiler - dtraceasm ,  long awaited  perfasm port on Mac OS X, which can display th...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How dtraceasm works in JMH</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/s3/ah/0d/s3ah0daqhbjisgkl-i9juatjjo0.png" align="left" width="260" height="330" title="Official DTrace logo">  The <a href="http://mail.openjdk.java.net/pipermail/jmh-dev/2018-January/002723.html">latest</a> version of Java Microbenchmark Harness (JMH) has a new profiler - <code>dtraceasm</code> , <del>  long awaited </del>  <code>perfasm</code> port on Mac OS X, which can display the Java benchmark assembler profile. </p><br><p>  The survey showed that not everyone understands how, in principle, it is possible to get a Java method at the input, to show an output listing of the compiled method with the hottest instructions, their distribution and a small profile like "And another 5% of the time the virtual machine spent in Method <code>Symbol::as_C_string(char*, int)</code> ". </p><br><p>  In the process of <code>perfasm</code> porting <code>perfasm</code> it turned out that in fact ™ everything is not very difficult and there was a desire to tell how such a profiler works. </p><br><p>  To understand the article, it is highly desirable to familiarize yourself with JMH, for example, by looking at <a href="http://hg.openjdk.java.net/code-tools/jmh/file/tip/jmh-samples/src/main/java/org/openjdk/jmh/samples/">examples of</a> its use. </p><a name="habracut"></a><br><h2 id="vvedenie">  Introduction </h2><br><p><img src="https://habrastorage.org/webt/2x/tl/gn/2xtlgnfvgkrs813g70rj4wfgzpq.png" height="443" align="left" title="Dtraceasm output for Math.log">  What should such a profiler do? <br>  For a Java benchmark, it must show exactly <strong>where</strong> most of the CPU time <strong>is</strong> spent at the level of the generated code. </p><br>  At the same time, the generated code is usually very much, so it should be able to do it quite precisely so that it is not necessary to search for the information we need in the output of the profiler with fire. <br><p>  For example, for a method that counts logarithm: </p><br><pre> <code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Benchmark</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">double</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">log</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">double</span></span></span></span><span class="hljs-function"><span class="hljs-params"> x)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> Math.log(x); }</code> </pre> <br><p>  <code>dtraceasm</code> or <code>perfasm</code> will show the profile as in the screenshot on the left, accusing the <code>fstpl</code> instruction in everything.  Because of the strong pipelining of modern processors, such a profile can be wrong, and it often makes sense to look not only at the instruction, which is considered hot, but also at the previous one.  Here it is <a href="https://c9x.me/x86/html/file_module_x86_id_130.html"><code>fyl2x</code></a> , which counts the logarithm. </p><br><p>  In fact, such a profiler is very similar to <a href="https://perf.wiki.kernel.org/index.php/Tutorial"><code>perf annotate</code></a> , but it can work with JIT-compiled Java code. </p><br><h3 id="zachem">  What for? </h3><br><p>  And why bother <code>*asm</code> -profiler may be needed if you are not writing your JIT compiler?  Not least, of course, out of curiosity, because it helps to answer the following questions very quickly: </p><br><ul><li>  And what did my method compile at all?  ( <code>PrintAssembly</code> course, you can go to the <code>PrintAssembly</code> output and find the right place or use <a href="https://github.com/AdoptOpenJDK/jitwatch">JITWatch</a> , but this is usually less convenient) </li><li>  What optimizations the JIT compiler can or cannot do, can it be tricked or confused? </li><li>  How to change the generated code, if you change the garbage collector? </li><li>  How much your own perception of reality ("in this method <code>Math.sqrt</code> will definitely slow down") differs from the harsh reality </li><li>  And why does the code written in one way work faster than the same code, but written a little differently? </li></ul><br><p>  In addition to curiosity, it is useful to be able to answer the same questions if you suddenly decide to optimize a small place, for example, your thread-safe <a href="http://psy-lob-saw.blogspot.ru/2018/01/what-difference-jvm-makes.html">queue</a> or a <a href="https://shipilev.net/blog/2015/faster-atomic-fu/">highly specialized class</a> . </p><br><p>  Well, if you use the tool, it is useful to at least understand approximately how it works inside, so as not to perceive it as some kind of magic and to have an idea of ​​its capabilities and limitations. </p><br><h2 id="printassembly">  PrintAssembly </h2><br><p><img src="https://habrastorage.org/webt/-w/qt/o_/-wqto_dkjoqnlt6u5rl7l2smqeo.png" height="443" align="left" title="Piece of output PrintAssembly">  To build a profile using the generated code, you first need to get this generated code from somewhere <del>  but we have no money </del>  .  Fortunately, everything is already invented for us and the virtual machine (hereinafter I mean only hotspot) can print all compiled code to stdout, you just need to enable the necessary flag ( <code>-XX:+PrintAssembly</code> ) and put a special disassembler in <code>$JAVA_HOME</code> .  There are enough <a href="http://jcdav.is/2015/08/30/reading-assembly-from-hotspot/">instructions on the</a> Internet on how to do this, usually you don’t need to collect anything yourself and you just need to download the assembled disassembler for your platform. </p><br><p>  PrintAssembly is useful, but not the most convenient.  Its output has a previously known format, it is even annotated with comments to which bytecode instructions the current line belongs, which method is now typed or in which case is the argument, but it is measured in megabytes, and it will contain all versions of the compiled method (C1-compiler, C2 compiler, version after de-optimization, GOTO 1), therefore, to find the desired in it is usually extremely difficult. </p><br><p>  The profiler in this huge output should show <em>exactly where</em> we need to look to see the hottest part of the benchmark.  And for writing such a profiler, in this output we are interested in information on which method the instructions refer to, what is their address in memory and, optionally, comments from the disassembler. </p><br><h2 id="dtrace">  DTrace </h2><br><p>  <a href="http://dtrace.org/blogs/about/">DTrace</a> is a dynamic trace framework supported in Solaris, FreeBSD, Mac OS X and, in part, in Linux.  It consists of a kernel module, which implements the basic functionality and client programs in a special language D (do not confuse with <a href="https://dlang.org/">another</a> language D).  The client program declares what event is interesting to it, and the kernel module compiles the program into a special bytecode, does some preparatory work, and starts this program at the necessary events to execute.  In this case, the D language is safe and does not allow to unfold strongly, for example, to go into an infinite loop or paint an application, so programs on it can be executed directly in the core.  The framework itself is very powerful and allows you to do many very interesting and non-trivial things that remain beyond the scope of this article; I will only consider the functionality necessary for <code>dtraceasm</code> . </p><br><p>  <code>dtraceasm</code> uses the <a href="http://dtrace.org/guide/chp-profile.html"><code>profile-n</code></a> event provider, which does not hang onto any special event, but simply calls the user program at fixed intervals. <br>  The mechanism is used simple, the kernel registers a timer with a given frequency and starts to interrupt the process that is now running on the CPU, and in the handler calls our DTrace script. </p><br><p>  The script itself looks like this: </p><br><pre> <code class="hljs perl">profile-<span class="hljs-number"><span class="hljs-number">1001</span></span> /arg1/ { <span class="hljs-keyword"><span class="hljs-keyword">printf</span></span>(<span class="hljs-string"><span class="hljs-string">"%d 0x%lx %d"</span></span>, pid, arg1, timestamp); ufunc(arg1)}</code> </pre> <br><p>  You can read it like this: "1001 times per second, type the pid of the current executable process, its PC, the current time and the name of the executable method (along with the library name) if the process is currently running in userspace." <br>  The PC ( <a href="https://en.wikipedia.org/wiki/Program_counter">program counter</a> ) is a special register containing the address of the instruction that is currently being executed.  But where does the name of the method come from? <br>  Since the kernel knows everything about loaded libraries, executable files and their symbols (methods are symbols), and the addresses at which they are loaded, it can use this knowledge to build the index "instruction address -&gt; library -&gt; specific method".  That is, knowing the value of the PC, you can find out where it came from. </p><br><h3 id="primer">  Example </h3><br><p>  In the <code>lib.so</code> library <code>lib.so</code> the <code>foo()</code> method starts at offset <code>1024</code> , the next <code>bar()</code> method starts at offset <code>2048</code> , and the library itself is loaded into the process at address <code>1048576</code> .  If the current value of the PC is in the interval <code>[1048576 + 1024, 1048576 + 2048]</code> , then the <code>foo()</code> method from <code>lib.so</code> is now executed. </p><br><p>  But if the code was loaded dynamically (actually, what the JIT compilers do) and there is no information about the characters, the kernel will not find the method name. </p><br><h2 id="prosto-dobav-vody">  Just add water </h2><br><p>  How to get an annotated assembler benchmark now? <br>  The benchmark is launched in a separate JVM with the <code>PrintAssembly</code> flag and immediately after its launch a DTrace script is launched, which writes its result to the file. </p><br><p>  Having on hand this data it is necessary only to do the following steps: </p><br><ol><li>  The DTrace exhaust is filtered by the pid and time of the measured benchmark iterations. </li><li>  Strings without symbol names are combined with instruction addresses from the PrintAssembly output, they have a string representation of the form <code>inc %r10d</code> and an optional comment from the disassembler </li><li>  The result is aggregated into a profile in which identical lines collapse and their frequency counter is wound for them. </li><li>  With the help of some heuristics, the profile contains a continuous region of hot instructions.  For example, if instructions in a region add up to 10% of the total profile and adding neighboring instructions adds a small number to the weight of the region, then we can assume that we are interested in watching it </li><li>  Native methods fall into a separate profile, "hot methods", also sorted by frequency </li><li>  The result of the work is beautifully formatted and sent to the user in the console. </li></ol><br><p>  At the same time, the problems with the fact that in the PrintAssembly output there is a code compiled by both the C1 compiler and C2 go off themselves, because only one version of the compiled code will get into the hot profile after warmup iterations (if you have a steady state there are constant recompilations, plus <code>*asm</code> profilers filter events from warmup iterations, and native methods (internals of the JVM itself, native calls, etc.) will get to the top of hot methods. </p><br><p>  <strong>NB:</strong> from the point of view of porting to Mac OS X, it was necessary to <a href="http://hg.openjdk.java.net/code-tools/jmh/rev/ae08c0b9db44">“only”</a> do a part with PC gaming using DTrace, the rest of the infrastructure for processing the results in JMH existed since <code>perfasm</code> and the author of the article (I) didn’t do anything. </p><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  Using a combination of simple tools, you get a fairly powerful profiler, which for an unprepared developer can look like a black box, and now you know how it actually works and that there is no magic or rocket science in it (and you can easily understand how it works, for example, <code>perfasm</code> ). </p><br><p>  Special thanks to <a href="https://twitter.com/shipilev">Alexey Shipilyov</a> for having read all the inaccuracies in the article and made sure that I bring knowledge to the masses, but not nonsense :) </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/347124/">https://habr.com/ru/post/347124/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../347110/index.html">Attention! S in Ethereum stands for Security. Part 3. Solidity in practice</a></li>
+<li><a href="../347112/index.html">US exchanges accused of illegally providing benefits to high-frequency traders</a></li>
+<li><a href="../347114/index.html">Let there be rock: PHDays 8 will host a music festival</a></li>
+<li><a href="../347118/index.html">VMware Dispatch: a new framework for working with serverless applications</a></li>
+<li><a href="../347120/index.html">Own pix2code with blackjack, but without neurons</a></li>
+<li><a href="../347126/index.html">Reactive forms (reactive forms) Angular 5 (2+). Part 2</a></li>
+<li><a href="../347128/index.html">JUndo - undo library for Java</a></li>
+<li><a href="../347130/index.html">7 types of office loafers - part one</a></li>
+<li><a href="../347132/index.html">We comprehend C deeper using assembler. Part 3</a></li>
+<li><a href="../347134/index.html">16 Tons. How I saved a dying WordPress site with very superficial knowledge of this CMS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

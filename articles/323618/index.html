@@ -1,0 +1,140 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL data change audit</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="There was a need to audit data changes in the existing system. 
+
+ Requirements: 
+
+
+- Easy to connect / disable logging of individual tables. 
+- Minimi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL data change audit</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/0fc/2e2/d68/0fc2e2d6848575d59e0795d620d26de8.jpg" alt="image"><br><br>  There was a need to audit data changes in the existing system. <br><br><h4>  Requirements: </h4><br><ul><li>  Easy to connect / disable logging of individual tables. </li><li>  Minimize changes to existing database functions. </li><li>  Minimize performance degradation. </li></ul><br><a name="habracut"></a>  My first thought was to add _user, _create_date, _delete_date to logged tables. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      On operations INSERT, UPDATE, DELETE hang triggers working with these fields. <br>  When adding an entry, fill in the _user and _create_date fields. <br><br>  Instead of updating, make a copy of the updated string (with changed values), and fill in the _delete_date field in the updated row itself. <br><br>  Instead of deleting the entry, fill in the _delete_date field. <br><br>  When referring to such a table in the <b>WHERE clause</b> , _delete_date IS NULL must be added. <br><br>  This mechanism could have worked if it had been incorporated into the database architecture initially, but at the time of introducing logging, we had more than 3000 functions written, each of which would have to be modified. <br><br>  Then came the idea to keep the logs separate from the data.  The idea was as follows: <br>  In the logs scheme, a copy of the table structure is created, plus several service fields. <br><br>  For each logged table, a trigger is hung, which performs all the dirty work of storing the changed data. <br><br><div class="spoiler">  <b class="spoiler_title">Trigger code</b> <div class="spoiler_text"><pre><code class="hljs vhdl">CREATE <span class="hljs-keyword"><span class="hljs-keyword">OR</span></span> REPLACE <span class="hljs-keyword"><span class="hljs-keyword">FUNCTION</span></span> logs.tf_log_table() RETURNS trigger AS $<span class="hljs-keyword"><span class="hljs-keyword">BODY</span></span>$ DECLARE query <span class="hljs-literal"><span class="hljs-literal">text</span></span>; safe_table_name <span class="hljs-literal"><span class="hljs-literal">text</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> quote_ident(nspname||'.'||relname) FROM pg_class cl INNER JOIN pg_namespace nsp <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (cl.relnamespace=nsp.oid) WHERE cl.oid=TG_RELID INTO safe_table_name; query=<span class="hljs-symbol"><span class="hljs-symbol">'INSERT</span></span> INTO logs.'||safe_table_name||' <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> ($<span class="hljs-number"><span class="hljs-number">1</span></span>).*, now(),$<span class="hljs-number"><span class="hljs-number">2</span></span>,session_user;'; <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'DELETE</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> EXECUTE query using OLD,<span class="hljs-symbol"><span class="hljs-symbol">'D</span></span>'; <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> OLD; <span class="hljs-keyword"><span class="hljs-keyword">ELSIF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'UPDATE</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> EXECUTE query using OLD,<span class="hljs-string"><span class="hljs-string">'U'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">ELSIF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'INSERT</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> EXECUTE query using <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>,<span class="hljs-symbol"><span class="hljs-symbol">'I</span></span>'; <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span>; <span class="hljs-comment"><span class="hljs-comment">/*           ,   ,      */</span></span> EXCEPTION <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> SQLSTATE '<span class="hljs-number"><span class="hljs-number">42</span></span>P01' <span class="hljs-keyword"><span class="hljs-keyword">OR</span></span> SQLSTATE '<span class="hljs-number"><span class="hljs-number">42801</span></span>' <span class="hljs-keyword"><span class="hljs-keyword">OR</span></span> SQLSTATE '<span class="hljs-number"><span class="hljs-number">42804</span></span>' <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> PERFORM logs.create_log_tables(TG_RELID::regclass); <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'DELETE</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> EXECUTE query using OLD,<span class="hljs-symbol"><span class="hljs-symbol">'D</span></span>'; <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> OLD; <span class="hljs-keyword"><span class="hljs-keyword">ELSIF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'UPDATE</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> EXECUTE query using OLD,<span class="hljs-string"><span class="hljs-string">'U'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">ELSIF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'INSERT</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> EXECUTE query using <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>,<span class="hljs-symbol"><span class="hljs-symbol">'I</span></span>'; <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span>; <span class="hljs-comment"><span class="hljs-comment">/*  - ,      */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OTHERS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span> (TG_OP = <span class="hljs-symbol"><span class="hljs-symbol">'DELETE</span></span>') <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> OLD; <span class="hljs-keyword"><span class="hljs-keyword">ELSE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RETURN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NEW</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span>; $<span class="hljs-keyword"><span class="hljs-keyword">BODY</span></span>$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER;</code> </pre> <br><br></div></div><br>  In this trigger there are several constructions, peculiar only plpgsql, I will try to paint them in more detail. <br><br><blockquote>  SELECT quote_ident (nspname || '.' || relname) <br>  FROM pg_class cl INNER JOIN pg_namespace nsp ON (cl.relnamespace = nsp.oid) <br>  WHERE cl.oid = TG_RELID INTO safe_table_name; </blockquote><br>  <b>TG_RELID is a</b> special variable that exists only when the trigger function is triggered. It contains the identifier of the table that caused the trigger. <br>  With its help, we generate the name of the table in which the logs will be written. <br><br><blockquote>  query = 'INSERT INTO logs.' || safe_table_name || '  SELECT ($ 1). *, Now (), $ 2, session_user; '; </blockquote><br>  Dynamic SQL is used to insert the data itself. <br>  The variable $ 1 is replaced with data from the line on which the trigger worked (the whole line is substituted there, it must be expanded into separate fields - this is done by construction <b>(ROW). *</b> <br>  <b>now ()</b> is a function that returns the start time of the transaction. <br>  <b>session_user</b> - current session username <br><br><blockquote>  IF (TG_OP = 'DELETE') <br>  THEN <br>  EXECUTE query USING OLD, 'D'; </blockquote><br>  <b>TG_OP</b> is another variable that exists only in trigger functions. It contains the name of the operation that triggered the trigger (INSERT, UPDATE, DELETE or TRUNCATE) <br>  <b>OLD, NEW</b> - the old and new versions of the string are stored in these variables. <br><br>  Further, in case something goes wrong, a fairly simple error handling is provided: <br><blockquote>  EXCEPTION <br>  WHEN SQLSTATE '42P01' OR SQLSTATE '42801' OR SQLSTATE '42804' THEN <br>  PERFORM logs.create_log_tables (TG_RELID :: regclass); </blockquote><br>  If the table structure has been changed, or for some reason the table with the logs has not been created, then it is created again and an attempt is made to write a log to it. <br>  In all other cases, if an error occurs, the logging procedure is ignored. <br><br><div class="spoiler">  <b class="spoiler_title">Code of the logging function</b> <div class="spoiler_text"><pre> <code class="hljs sql"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REPLACE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FUNCTION</span></span> logs.create_log_tables(table_oid <span class="hljs-keyword"><span class="hljs-keyword">oid</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">RETURNS</span></span> <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> $<span class="hljs-keyword"><span class="hljs-keyword">BODY</span></span>$ <span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> log_namespace <span class="hljs-keyword"><span class="hljs-keyword">oid</span></span>=(<span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">oid</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pg_namespace <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> nspname=<span class="hljs-string"><span class="hljs-string">'logs'</span></span>); p_relname text; new_tbl_name text; safe_table_name text; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> relname <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">oid</span></span>=table_oid <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> p_relname; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> quote_ident(nspname||<span class="hljs-string"><span class="hljs-string">'.'</span></span>||relname) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class cl <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span> <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> pg_namespace nsp <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (cl.relnamespace=nsp.oid) <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> cl.oid=table_oid <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> safe_table_name; <span class="hljs-comment"><span class="hljs-comment">/*    */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> safe_table_name||<span class="hljs-string"><span class="hljs-string">'_'</span></span>||(<span class="hljs-keyword"><span class="hljs-keyword">now</span></span>()::<span class="hljs-built_in"><span class="hljs-built_in">date</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>||<span class="hljs-string"><span class="hljs-string">'('</span></span>||i||<span class="hljs-string"><span class="hljs-string">')'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>,<span class="hljs-number"><span class="hljs-number">10</span></span>) a(i) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> safe_table_name||<span class="hljs-string"><span class="hljs-string">'_'</span></span>||(<span class="hljs-keyword"><span class="hljs-keyword">now</span></span>()::<span class="hljs-built_in"><span class="hljs-built_in">date</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>||<span class="hljs-string"><span class="hljs-string">'('</span></span>||i||<span class="hljs-string"><span class="hljs-string">')'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">select</span></span> relname <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pg_class <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> relnamespace=log_namespace <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> relpersistence=<span class="hljs-string"><span class="hljs-string">'p'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> new_tbl_name; <span class="hljs-comment"><span class="hljs-comment">/*    */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-string"><span class="hljs-string">'ALTER TABLE IF EXISTS logs.'</span></span>||safe_table_name|| <span class="hljs-string"><span class="hljs-string">' RENAME TO '</span></span>||quote_ident(new_tbl_name)||<span class="hljs-string"><span class="hljs-string">';'</span></span>; <span class="hljs-comment"><span class="hljs-comment">/*     ,  ,   */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-string"><span class="hljs-string">'create table logs.'</span></span>||safe_table_name||<span class="hljs-string"><span class="hljs-string">' (like '</span></span>||table_oid::regclass||<span class="hljs-string"><span class="hljs-string">');'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-string"><span class="hljs-string">'ALTER TABLE logs.'</span></span>||safe_table_name||<span class="hljs-string"><span class="hljs-string">' ADD COLUMN "'</span></span>||p_relname||<span class="hljs-string"><span class="hljs-string">'_timestamp" timestamp with time zone;'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-string"><span class="hljs-string">'ALTER TABLE logs.'</span></span>||safe_table_name||<span class="hljs-string"><span class="hljs-string">' ADD COLUMN "'</span></span>||p_relname||<span class="hljs-string"><span class="hljs-string">'_operation" char;'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-string"><span class="hljs-string">'ALTER TABLE logs.'</span></span>||safe_table_name||<span class="hljs-string"><span class="hljs-string">' ADD COLUMN "'</span></span>||p_relname||<span class="hljs-string"><span class="hljs-string">'_user" text;'</span></span>; <span class="hljs-comment"><span class="hljs-comment">/* */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> <span class="hljs-string"><span class="hljs-string">' DROP TRIGGER IF exists tr_log_table ON '</span></span>||table_oid::regclass::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>||<span class="hljs-string"><span class="hljs-string">'; CREATE TRIGGER tr_log_table BEFORE UPDATE OR DELETE OR INSERT ON '</span></span>||table_oid::regclass::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>||<span class="hljs-string"><span class="hljs-string">' FOR EACH ROW EXECUTE PROCEDURE logs.tf_log_table();'</span></span>; RETURN 0; <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>; $BODY$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER;</code> </pre><br></div></div><br>  The logging connection algorithm is quite simple.  To begin with, a clone is created based on the name of the logged table (if a table with that name already existed, the old table is renamed), then the necessary utility fields are added to this clone, and a trigger is connected to the logged table. <br><br><h4>  Advantages of this option: </h4><br><ul><li>  No need to change anything in existing functions. </li><li>  Requests for sampling will not be affected by performance. </li><li>  If there are changes in the structure of the logged table, the table with logs will be automatically recreated. </li><li>  Logs can be quickly cleared by deleting old tables. </li></ul></div><p>Source: <a href="https://habr.com/ru/post/323618/">https://habr.com/ru/post/323618/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../323606/index.html">Check Point. What is it, what is it eaten with or briefly about the main thing</a></li>
+<li><a href="../323608/index.html">Transition from DateTime to DateTimeOffset</a></li>
+<li><a href="../323612/index.html">The story of how we translated the project into almost a quarter of a million lines in TypeScript and survived</a></li>
+<li><a href="../323614/index.html">Pygest # 5. Releases, articles, interesting projects from the world of Python [February 28, 2017 - March 13, 2017]</a></li>
+<li><a href="../323616/index.html">A preliminary DUMP program is ready. Speakers from Dropbox, JetBrains, Mozilla, Mail.Ru, Yandex, Rambler & Co</a></li>
+<li><a href="../323620/index.html">Where the games go: the problem of preserving old video games. Part 2</a></li>
+<li><a href="../323622/index.html">Developing the mechanics of the game Bounce from Nokia JavaScript</a></li>
+<li><a href="../323624/index.html">Memory models underlying programming languages</a></li>
+<li><a href="../323626/index.html">Intel Software Guard Extensions Extensions Tutorial. Part 6, two branches of code</a></li>
+<li><a href="../323628/index.html">Testing Conference Heisenbag: Video recordings of reports-2016 and work on the bugs in 2017</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

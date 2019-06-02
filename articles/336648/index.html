@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Applications for Tarantool. Part 2. OAuth2 authentication</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="How to build your application for Tarantool and not to make a garden every time you want to do a seemingly elementary thing? This is a continuation of...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Applications for Tarantool. Part 2. OAuth2 authentication</h1><div class="post__text post__text-html js-mediator-article"><p>  How to build your application for Tarantool and not to make a garden every time you want to do a seemingly elementary thing?  This is a continuation of a series of articles on how to create your own applications for Tarantool. </p><br><p>  Today we will consider the issues of networking, installation and use of third-party modules. </p><br><p><img src="https://habrastorage.org/web/6bc/a42/ca2/6bca42ca2fc74d00923ad3348e4cdb09.png"></p><a name="habracut"></a><br><h2 id="soderzhanie-cikla-prilozheniya-dlya-tarantool">  Content of the cycle “Applications for Tarantool” </h2><br><p>  - <a href="https://habrahabr.ru/company/mailru/blog/334266/">Part 1. Stored procedures</a> <br>  - <a href="https://habrahabr.ru/company/mailru/blog/336648/">Part 2. OAuth2 authentication</a> <br>  - <a href="https://habr.com/company/mailru/blog/358706/">Part 3. Testing and running.</a> </p><br><h2 id="vzaimodeystvie-s-vneshnimi-servisami">  Interaction with external services </h2><br><p>  As an example, consider the implementation of OAuth2 authorization via Facebook in the <a href="https://github.com/mailru/tarantool-authman">tarantool-authman application</a> .  With OAuth2 authorization, the user follows the link that leads to the login window on the social network.  After entering the authorization data and confirming permissions (permisssions), the social network redirects the user back to the site with the authorization code in the GET request parameter.  The server must exchange this code for a token (or access and refresh for a pair of tokens).  With the token, you can get information about the user from the social network.  Learn more about OAuth2 authorization written <a href="https://habrahabr.ru/company/mailru/blog/115163/">in this article</a> . </p><br><p><img src="https://habrastorage.org/web/bd8/ad3/e34/bd8ad3e349dc419c864e4ebb83f3fff6.png"></p><br><p>  The Tarantool application will take over the exchange of the authorization code (code) for the access token (token) to the user information from the social network, and will also receive user data for this token.  In our case, this is email, first name and last name.  To exchange the authorization code for the access token, you need to send a request to Facebook with the code, as well as the Facebook application parameters - client_id and client_secret. </p><br><p> Tarantool from version 1.7.4-151 has a built-in http.client module that runs on <code>libcurl</code> .  The module allows you to receive and send HTTP requests.  We use this module to implement OAuth2 authentication.  First, create a helper function for sending HTTP requests in the authman / utils / http.lua module: </p><br><pre> <code class="lua hljs"><span class="hljs-keyword"><span class="hljs-keyword">local</span></span> http = {} <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> utils = <span class="hljs-built_in"><span class="hljs-built_in">require</span></span>(<span class="hljs-string"><span class="hljs-string">'authman.utils.utils'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> curl_http = <span class="hljs-built_in"><span class="hljs-built_in">require</span></span>(<span class="hljs-string"><span class="hljs-string">'http.client'</span></span>) <span class="hljs-comment"><span class="hljs-comment">-- config —    authman function http.api(config) local api = {} --    local timeout = config.request_timeout function api.request(method, url, params, param_values) local response, body, ok, msg if method == 'POST' then -- utils.format —      placeholder' body = utils.format(params, param_values) --   pcall        ok, msg = pcall(function() response = curl_http.post(url, body, { headers = {['Content-Type'] = 'application/x-www-form-urlencoded'}, timeout = timeout }) end) end return response end return api end return http</span></span></code> </pre> <br><p>  It is worth paying attention to the pcall function.  It handles exceptions that occurred during the execution of an anonymous function.  In our case, it is necessary to handle the network errors generated by the HTTP client.  The result of the pcall call is written to the variables ok (true / false) and msg (error message, nil if successful). </p><br><h2 id="oauth2-avtorizacii-v-prilozhenii">  OAuth2 authorization in the application </h2><br><p>  Create a social model and write a method to get a token using the <code>get_token(provider, code)</code> authorization code, as well as a method to get or update <code>get_profile_info(provider, token, user_tuple)</code> profile data.  Consider these methods: </p><br><pre> <code class="lua hljs"><span class="hljs-comment"><span class="hljs-comment">--    function model.get_token(provider, code) local response, data, token if provider == 'facebook' then --  http —  authman/utils/http.lua response = http.request( 'GET', 'https://graph.facebook.com/v2.8/oauth/access_token', '?client_id=${client_id}&amp;redirect_uri=${redirect_uri}&amp;client_secret=${client_secret}&amp;code=${code}', { -- config —  ,       --       client_id = config[provider].client_id, redirect_uri = config[provider].redirect_uri, client_secret = config[provider].client_secret, code = code, } ) if response == nil or response.code ~= 200 then return nil else data = json.decode(response.body) return data.access_token end end end --     function model.get_profile_info(provider, token, user_tuple) local response, data user_tuple[user.PROFILE] = {} if provider == 'facebook' then response = http.request( 'GET', 'https://graph.facebook.com/me', '?access_token=${token}&amp;fields=email,first_name,last_name', { token = token } ) if response == nil or response.code ~= 200 then return nil else data = json.decode(response.body) user_tuple[user.EMAIL] = data.email user_tuple[user.PROFILE][user.PROFILE_FIRST_NAME] = data.first_name user_tuple[user.PROFILE][user.PROFILE_LAST_NAME] = data.last_name return data.id end end end</span></span></code> </pre> <br><p>  Now add an API method to the application that allows you to create a user or log in under an existing one through Facebook.  The method will return the user along with the session data.  More information about how the session is formed and validated can be found <a href="">in the source code</a> . </p><br><pre> <code class="lua hljs"><span class="hljs-comment"><span class="hljs-comment">--  api  authman/init.lua function api.social_auth(provider, code) local token, social_id, social_tuple local user_tuple = {} if not (validator.provider(provider) and validator.not_empty_string(code)) then return response.error(error.WRONG_PROVIDER) end --  OAuth2- token = social.get_token(provider, code, user_tuple) if not validator.not_empty_string(token) then return response.error(error.WRONG_AUTH_CODE) end --     social_id = social.get_profile_info(provider, token, user_tuple) if not validator.not_empty_string(social_id) then return response.error(error.SOCIAL_AUTH_ERROR) end user_tuple[user.EMAIL] = utils.lower(user_tuple[user.EMAIL]) user_tuple[user.IS_ACTIVE] = true user_tuple[user.TYPE] = user.SOCIAL_TYPE -- ,    space     social_id social_tuple = social.get_by_social_id(social_id, provider) if social_tuple == nil then --   —   user_tuple = user.create(user_tuple) social_tuple = social.create({ [social.USER_ID] = user_tuple[user.ID], [social.PROVIDER] = provider, [social.SOCIAL_ID] = social_id, [social.TOKEN] = token }) else --    —    user_tuple[user.ID] = social_tuple[social.USER_ID] user_tuple = user.create_or_update(user_tuple) social_tuple = social.update({ [social.ID] = social_tuple[social.ID], [social.USER_ID] = user_tuple[user.ID], [social.TOKEN] = token }) end --    local new_session = session.create( user_tuple[user.ID], session.SOCIAL_SESSION_TYPE, social_tuple[social.ID] ) return response.ok(user.serialize(user_tuple, { session = new_session, social = social.serialize(social_tuple), })) end</span></span></code> </pre> <br><p>  How to verify that the method works?  First you need to register the application in Facebook.  We do this <a href="https://developers.facebook.com/">on the Facebook developer page</a> .  In the created application, you need to add the “Login through Facebook” product and specify redirect_uri - “Valid URLs for OAuth redirection”.  The redirect_uri parameter is the URL of your site, where the social network will redirect the user with the code parameter after successful authorization in the social network.  Then open the URL in your browser <code>https://www.facebook.com/v2.8/dialog/oauth?client_id=${client_id}&amp;redirect_uri=${redirect_uri}&amp;scope=email</code> , where </p><br><p>  • client_id - id of your application on Facebook; <br>  • redirect_uri - url for the redirect you specified earlier; <br>  • scope - a list of permissions (in this case, only email). </p><br><p>  Facebook will ask for confirmation of permissions, after confirmation it will redirect you with the code GET parameter.  This is the same authorization code that the <code>api.social_auth()</code> method <code>api.social_auth()</code> .  Before checking the performance of the code, create the configuration file authman / config / config.lua, in which we specify the settings of the Facebook application. </p><br><pre> <code class="lua hljs"><span class="hljs-keyword"><span class="hljs-keyword">return</span></span> { facebook = { client_id = <span class="hljs-string"><span class="hljs-string">'id from fb application'</span></span>, client_secret = <span class="hljs-string"><span class="hljs-string">'secret from fb application'</span></span><span class="hljs-string"><span class="hljs-string">', redirect_uri='</span></span>http://redirect_to_your_service<span class="hljs-string"><span class="hljs-string">', } }</span></span></code> </pre> <br><p>  Now check that the code works and the application receives information about the user from the social network: </p><br><pre> <code class="hljs ruby">$ tarantool version <span class="hljs-number"><span class="hljs-number">1.7</span></span>.<span class="hljs-number"><span class="hljs-number">4</span></span>-<span class="hljs-number"><span class="hljs-number">384</span></span>-g70898fd type <span class="hljs-string"><span class="hljs-string">'help'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> interactive help tarantool&gt; config = <span class="hljs-keyword"><span class="hljs-keyword">require</span></span>(<span class="hljs-string"><span class="hljs-string">'config.config'</span></span>) tarantool&gt; box.cfg({listen = <span class="hljs-number"><span class="hljs-number">3331</span></span>}) tarantool&gt; auth = <span class="hljs-keyword"><span class="hljs-keyword">require</span></span>(<span class="hljs-string"><span class="hljs-string">'authman'</span></span>).api(config) tarantool&gt; code = <span class="hljs-string"><span class="hljs-string">'auth_code_from_get_param'</span></span> tarantool&gt; ok, user = auth.social_auth(<span class="hljs-string"><span class="hljs-string">'facebook'</span></span>, code) tarantool&gt; user --- - <span class="hljs-symbol"><span class="hljs-symbol">is_active:</span></span> <span class="hljs-literal"><span class="hljs-literal">true</span></span> <span class="hljs-symbol"><span class="hljs-symbol">social:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">provider:</span></span> facebook <span class="hljs-symbol"><span class="hljs-symbol">social_id:</span></span> <span class="hljs-string"><span class="hljs-string">'000000000000001'</span></span> <span class="hljs-symbol"><span class="hljs-symbol">profile:</span></span> {<span class="hljs-string"><span class="hljs-string">'first_name'</span></span>: <span class="hljs-string"><span class="hljs-string">''</span></span>, <span class="hljs-string"><span class="hljs-string">'last_name'</span></span>: <span class="hljs-string"><span class="hljs-string">''</span></span>} <span class="hljs-symbol"><span class="hljs-symbol">id:</span></span> b1e1fe02-<span class="hljs-number"><span class="hljs-number">47</span></span>a2-<span class="hljs-number"><span class="hljs-number">41</span></span>c6-ac8e-<span class="hljs-number"><span class="hljs-number">44</span></span>dae71cde5e <span class="hljs-symbol"><span class="hljs-symbol">email:</span></span> ivanov@mail.ru <span class="hljs-symbol"><span class="hljs-symbol">session:</span></span> ... ...</code> </pre> <br><h2 id="ustanovka-storonnih-moduley">  Installing Third-Party Modules </h2><br><p>  To solve many problems, it is good to have ready-made solutions on hand.  For example, in versions of Tarantool below 1.7.4-151, an HTTP request "out of the box" could not be sent.  The <a href="https://github.com/tarantool/curl">tarantool-curl</a> module was required.  Now this module is no longer supported, it is not recommended to use it.  However, there are many other useful modules, one of which is <a href="https://github.com/tarantool/queue">tarantool-queue</a> - the implementation of a FIFO queue. </p><br><p>  There are several ways to install tarantool-queue.  The first, the easiest and most convenient, appeared relatively recently, in the version Tarantool 1.7.4-294. </p><br><pre> <code class="hljs sql">$ tarantoolctl rocks <span class="hljs-keyword"><span class="hljs-keyword">install</span></span> queue</code> </pre> <br><p>  Other Tarantool packages are also available for installation using the package manager.  A complete list of modules for Tarantool can be found <a href="https://tarantool.org/rocks.html">on the Rocks page</a> . </p><br><p>  The second way is using the package manager of your OS.  Here you need to connect the Tarantool repository, if you have not yet connected it <a href="https://tarantool.org/en/download.html">at the installation stage</a> , and also make sure that the corresponding package is in the repository.  For example, for Ubuntu: </p><br><pre> <code class="hljs swift">$ sudo apt-<span class="hljs-keyword"><span class="hljs-keyword">get</span></span> install tarantool-queue</code> </pre> <br><p>  The third method is more difficult, however, it allows using not only applications for Tarantool, but also ready-made Lua modules.  It is convenient to install modules for Tarantool and Lua using the LuaRocks package manager.  Details about it and the available modules can be found <a href="https://luarocks.org/">in the documentation</a> .  Install LuaRocks and configure it to work with the Tarantool repository: </p><br><pre> <code class="hljs swift">$ sudo apt-<span class="hljs-keyword"><span class="hljs-keyword">get</span></span> install luarocks</code> </pre> <br><p>  Now we will configure LuaRocks to install not only Lua-packages, but also packages for Tarantool.  To do this, you need to create a file ~ / .luarocks / config.lua with the following contents: </p><br><pre> <code class="lua hljs">rocks_servers = { <span class="hljs-string"><span class="hljs-string">[[http://luarocks.org/repositories/rocks]]</span></span>, <span class="hljs-string"><span class="hljs-string">[[http://rocks.tarantool.org/]]</span></span> }</code> </pre> <br><p>  Install the module itself and check its work: </p><br><pre> <code class="hljs pgsql">#  tarantool-queue $ sudo luarocks install queue #       : $ tarantool <span class="hljs-keyword"><span class="hljs-keyword">version</span></span> <span class="hljs-number"><span class="hljs-number">1.7</span></span><span class="hljs-number"><span class="hljs-number">.3</span></span><span class="hljs-number"><span class="hljs-number">-433</span></span>-gef900f2 <span class="hljs-keyword"><span class="hljs-keyword">type</span></span> <span class="hljs-string"><span class="hljs-string">'help'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> interactive help tarantool&gt; <span class="hljs-type"><span class="hljs-type">box</span></span>.cfg({<span class="hljs-keyword"><span class="hljs-keyword">listen</span></span> = <span class="hljs-number"><span class="hljs-number">3331</span></span>}) tarantool&gt; queue = require(<span class="hljs-string"><span class="hljs-string">'queue'</span></span>) tarantool&gt; test_queue = queue.create_tube(<span class="hljs-string"><span class="hljs-string">'test_queue'</span></span>, <span class="hljs-string"><span class="hljs-string">'fifo'</span></span>) tarantool&gt; test_queue:put({<span class="hljs-string"><span class="hljs-string">'task_1'</span></span>}) tarantool&gt; test_queue:put({<span class="hljs-string"><span class="hljs-string">'task_2'</span></span>}) tarantool&gt; test_queue:take() <span class="hljs-comment"><span class="hljs-comment">--- - [0, 't', ['task_1']] ...</span></span></code> </pre><br><p>  So, now we can create applications with complex architecture and external interactions.  In the next part, we will look at application testing, as well as configuration and launch in battle.  See you again! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/336648/">https://habr.com/ru/post/336648/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../336638/index.html">Links around the blocks</a></li>
+<li><a href="../336640/index.html">UPS on lithium-ion batteries: understand the pros and cons of the example of Schneider Electric products</a></li>
+<li><a href="../336642/index.html">Deep diving into Windows Server and Docker containers - Part 2 - Implementing Windows Server containers (translation)</a></li>
+<li><a href="../336644/index.html">5 interesting ICO in September 2017: lead generation, online payments and search for restaurants</a></li>
+<li><a href="../336646/index.html">User support, or emergency computer help. How it is done and how much it costs</a></li>
+<li><a href="../336650/index.html">In a section: the news aggregator on Android with backend. Monitoring and data visualization system (InfluxDB, Grafana)</a></li>
+<li><a href="../336654/index.html">Cheat Sheet with Docker Teams</a></li>
+<li><a href="../336656/index.html">Double bra * eyes programmer</a></li>
+<li><a href="../336660/index.html">How to write when you do not know how lazy</a></li>
+<li><a href="../336662/index.html">About Publish, Connect, RefCount and Share in RxSwift</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

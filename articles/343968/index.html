@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Productivity of unloading a large amount of data from Mongo to ASP.NET Core Web Api</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="There was a need to upload a large amount of data to the client from the MongoDB database. The data is json, with information about the car, received ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Productivity of unloading a large amount of data from Mongo to ASP.NET Core Web Api</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/in/wk/tc/inwktcluq10gkhmkdpjdiswrs-q.png" align="left">  There was a need to upload a large amount of data to the client from the MongoDB database.  The data is json, with information about the car, received from the GPS tracker.  This data comes in 0.5 seconds intervals.  For the day for one machine is obtained approximately 172,000 entries. </p><br><p>  The server code is written in ASP.NET CORE 2.0 using the standard MongoDB.Driver 2.4.4 driver.  In the process of testing the service, a significant memory consumption of the Web Api application process became clear - about 700 MB when executing one request.  When executing several queries in parallel, the amount of process memory can be larger than 1 GB.  Since it is intended to use the service in a container on the cheapest 0.7 GB RAM droplet, a large consumption of RAM led to the need to optimize the data upload process. </p><a name="habracut"></a><br><p>  Thus, the basic implementation of the method involves uploading all the data and sending it to the client.  This implementation is shown in the listing below. </p><br><h4 id="variant-1-vse-dannye-otpravlyayutsya-odnovremenno">  Option 1 (all data sent simultaneously) </h4><br><pre><code class="cs hljs"><span class="hljs-comment"><span class="hljs-comment">//      // GET state/startDate/endDate [HttpGet("{vin}/{startTimestamp}/{endTimestamp}")] public async Task&lt;StatesViewModel&gt; Get(string vin, DateTime startTimestamp, DateTime endTimestamp) { //  var builder = Builders&lt;Machine&gt;.Filter; //   var filters = new List&lt;FilterDefinition&lt;Machine&gt;&gt; { builder.Where(x =&gt; x.Vin == vin), builder.Where(x =&gt; x.Timestamp &gt;= startTimestamp &amp;&amp; x.Timestamp &lt;= endTimestamp) }; //   var filterConcat = builder.And(filters); using (var cursor = await database .GetCollection&lt;Machine&gt;(_mongoConfig.CollectionName) .FindAsync(filterConcat).ConfigureAwait(false)) { var a = await cursor.ToListAsync().ConfigureAwait(false); return _mapper.Map&lt;IEnumerable&lt;Machine&gt;, StatesViewModel&gt;(a); } }</span></span></code> </pre> <br><p>  As an alternative, the method of using queries with the number of the initial line and the number of unloaded lines was used, which is shown below.  In this case, the unloading is performed in the Response stream to reduce the consumption of RAM. </p><br><h4 id="variant-2-ispolzuyutsya-podzaprosy-i-zapis-v-potok-response">  Option 2 (using subqueries and writing to the Response stream) </h4><br><pre> <code class="cs hljs"> <span class="hljs-comment"><span class="hljs-comment">//      // GET state/startDate/endDate [HttpGet("GetListQuaries/{vin}/{startTimestamp}/{endTimestamp}")] public async Task&lt;ActionResult&gt; GetListQuaries(string vin, DateTime startTimestamp, DateTime endTimestamp) { Response.ContentType = "application/json"; await Response.WriteAsync("[").ConfigureAwait(false); ; //  var builder = Builders&lt;Machine&gt;.Filter; //   var filters = new List&lt;FilterDefinition&lt;Machine&gt;&gt; { builder.Where(x =&gt; x.Vin == vin), builder.Where(x =&gt; x.Timestamp &gt;= startTimestamp &amp;&amp; x.Timestamp &lt;= endTimestamp) }; //   var filterConcat = builder.And(filters); int batchSize = 15000; int total = 0; long count =await database.GetCollection&lt;Machine&gt; (_mongoConfig.CollectionName) .CountAsync((filterConcat)); while (total &lt; count) { using (var cursor = await database .GetCollection&lt;Machine&gt;(_mongoConfig.CollectionName) .FindAsync(filterConcat, new FindOptions&lt;Machine, Machine&gt;() {Skip = total, Limit = batchSize}) .ConfigureAwait(false)) { // Move to the next batch of docs while (cursor.MoveNext()) { var batch = cursor.Current; foreach (var doc in batch) { await Response.WriteAsync(JsonConvert.SerializeObject(doc)) .ConfigureAwait(false); } } } total += batchSize; } await Response.WriteAsync("]").ConfigureAwait(false); ; return new EmptyResult(); }</span></span></code> </pre> <br><p>  The option of setting the BatchSize parameter in the cursor was also used; data was also recorded in the Response stream. </p><br><h4 id="variant-3-ispolzuyutsya-parametr-batchsize-i-zapis-v-potok-response">  Option 3 (using the BatchSize parameter and writing to the Response stream) </h4><br><pre> <code class="cs hljs"> <span class="hljs-comment"><span class="hljs-comment">//      // GET state/startDate/endDate [HttpGet("GetList/{vin}/{startTimestamp}/{endTimestamp}")] public async Task&lt;ActionResult&gt; GetList(string vin, DateTime startTimestamp, DateTime endTimestamp) { Response.ContentType = "application/json"; //  var builder = Builders&lt;Machine&gt;.Filter; //   var filters = new List&lt;FilterDefinition&lt;Machine&gt;&gt; { builder.Where(x =&gt; x.Vin == vin), builder.Where(x =&gt; x.Timestamp &gt;= startTimestamp &amp;&amp; x.Timestamp &lt;= endTimestamp) }; //   var filterConcat = builder.And(filters); await Response.WriteAsync("[").ConfigureAwait(false); ; using (var cursor = await database .GetCollection&lt;Machine&gt; (_mongoConfig.CollectionName) .FindAsync(filterConcat, new FindOptions&lt;Machine, Machine&gt; { BatchSize = 15000 }) .ConfigureAwait(false)) { // Move to the next batch of docs while (await cursor.MoveNextAsync().ConfigureAwait(false)) { var batch = cursor.Current; foreach (var doc in batch) { await Response.WriteAsync(JsonConvert.SerializeObject(doc)) .ConfigureAwait(false); } } } await Response.WriteAsync("]").ConfigureAwait(false); return new EmptyResult(); }</span></span></code> </pre> <br><p>  One record in the database has the following structure: </p><br><pre> <code class="hljs json">{<span class="hljs-attr"><span class="hljs-attr">"Id"</span></span>:<span class="hljs-string"><span class="hljs-string">"5a108e0cf389230001fe52f1"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Vin"</span></span>:<span class="hljs-string"><span class="hljs-string">"357973047728404"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Timestamp"</span></span>:<span class="hljs-string"><span class="hljs-string">"2017-11-18T19:46:16Z"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Name"</span></span>:<span class="hljs-literal"><span class="hljs-literal">null</span></span>, <span class="hljs-attr"><span class="hljs-attr">"FuelRemaining"</span></span>:<span class="hljs-literal"><span class="hljs-literal">null</span></span>, <span class="hljs-attr"><span class="hljs-attr">"EngineSpeed"</span></span>:<span class="hljs-literal"><span class="hljs-literal">null</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Speed"</span></span>:<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Direction"</span></span>:<span class="hljs-number"><span class="hljs-number">340.0</span></span>, <span class="hljs-attr"><span class="hljs-attr">"FuelConsumption"</span></span>:<span class="hljs-literal"><span class="hljs-literal">null</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Location"</span></span>:{<span class="hljs-attr"><span class="hljs-attr">"Longitude"</span></span>:<span class="hljs-number"><span class="hljs-number">37.27543</span></span>,<span class="hljs-attr"><span class="hljs-attr">"Latitude"</span></span>:<span class="hljs-number"><span class="hljs-number">50.11379</span></span>}}</code> </pre> <br><p>  Performance testing was performed upon request using the HttpClient. <br>  I consider interesting not absolute values, but their order. </p><br><p>  The performance test results for the three implementation options are summarized in the table below. </p><br><img width="400" src="https://habrastorage.org/webt/p6/in/gt/p6ingtwutocecnaitq32ffhas08.png"><br><br><p>  The data from the table are also presented in the form of diagrams: </p><br><img width="600" src="https://habrastorage.org/webt/lm/fr/bc/lmfrbclxmf8mlopyy14xgjajsmw.png"><br><br><img width="600" src="https://habrastorage.org/webt/h_/i6/na/h_i6narhrtvg27n_u7k5lfdou7a.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4 id="vyvody">  findings </h4><br><p>  Summing up, we can say that the use of such measures to reduce the consumption of RAM leads to a significant deterioration in performance - more than 2 times.  I recommend not to unload fields that are not used by the client at the moment. <br>  Share your methods of solving a similar problem in the comments. </p><br><h3 id="dopolneniya">  Additions </h3><br><p>  Tested implementation option with yeild return </p><br><h4 id="variant-4-ispolzuyutsya-parametr-batchsize-i-yeild-return">  Option 4 (using the BatchSize and yeild Return parameter) </h4><br><pre> <code class="cs hljs">[<span class="hljs-meta"><span class="hljs-meta">HttpGet(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"GetListSync/{vin}/{startTimestamp}/{endTimestamp}"</span></span></span><span class="hljs-meta">)</span></span>] <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> IEnumerable&lt;Machine&gt; </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetListSync</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> vin, DateTime startTimestamp, DateTime endTimestamp</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> filter = Builders&lt;Machine&gt;.Filter .Where(x =&gt; x.Vin == vin &amp;&amp; x.Timestamp &gt;= startTimestamp &amp;&amp; x.Timestamp &lt;= endTimestamp); <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> cursor = _mongoConfig.Database .GetCollection&lt;Machine&gt;(_mongoConfig.CollectionName) .FindSync(filter, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> FindOptions&lt;Machine, Machine&gt; { BatchSize = <span class="hljs-number"><span class="hljs-number">10000</span></span> })) { <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (cursor.MoveNext()) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> batch = cursor.Current; <span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> doc <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> batch) { <span class="hljs-keyword"><span class="hljs-keyword">yield</span></span> <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> doc; } } } }</code> </pre> <br><p>  The augmented results are tabulated: </p><br><img width="600" src="https://habrastorage.org/webt/wh/fy/e2/whfye2v5m6kp4aty1a_h6tp9sre.png"><br><p>  It was also measured the time to move the cursor <code>await cursor.MoveNextAsync()</code> in option 3 and serialize batch objects </p><br><pre> <code class="hljs cs"><span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> doc <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> batch) { <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> Response.WriteAsync(JsonConvert.SerializeObject(doc)); }</code> </pre><br><p>  with writing to the output stream.  Moving the cursor takes 1/3 of the time, serialization and output 2/3.  Therefore, it is advantageous to use StringBuilder for Batch about 2000, while the memory gain is insignificant, and the data acquisition time is reduced by more than a third to 6-7 seconds, the number of <code>await Response.WriteAsync(JsonConvert.SerializeObject(doc))</code> calls decreases.  You can also serialize an object manually. </p></div><p>Source: <a href="https://habr.com/ru/post/343968/">https://habr.com/ru/post/343968/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../343958/index.html">“Img” evolution: Gif without GIF format</a></li>
+<li><a href="../343960/index.html">Configuring DTO Validation in the Spring Framework</a></li>
+<li><a href="../343962/index.html">Agile Kitchen office Tutu.ru</a></li>
+<li><a href="../343964/index.html">ASO Monthly # 18 October 2017</a></li>
+<li><a href="../343966/index.html">SOLID principles in action: from Slack to Twilio</a></li>
+<li><a href="../343970/index.html">On the way to seizing the world. Vivaldi for ARM</a></li>
+<li><a href="../343972/index.html">My Body Gadget (Part # 1)</a></li>
+<li><a href="../343974/index.html">Performance as Perception: Managing Patience</a></li>
+<li><a href="../343976/index.html">CRM system or Help Desk? What is the fundamental difference, where does the confusion come from, and what is on the Help Desk market?</a></li>
+<li><a href="../343978/index.html">RAIDIX and Intel Luster: how to make a chandelier on a lot of light bulbs</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Writing while reading in postgresql: scandals, intrigues, investigations</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I already talked about monitoring postgresql requests , at that moment it seemed to me that I completely figured out how postgresql works with various...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Writing while reading in postgresql: scandals, intrigues, investigations</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/files/44d/ec7/8b0/44dec78b0eda42b492c840c3fad58a7f.png" align="left" width="250">  I already talked about <a href="https://habrahabr.ru/company/okmeter/blog/311028/">monitoring postgresql requests</a> , at that moment it seemed to me that I completely figured out how postgresql works with various server resources. </p><br><p>  With constant work with statistics on postgres requests, we began to notice some anomalies.  I am helpful to understand, at the same time once again admired the clarity of the source code postgres) </p><br><p>  Under the cut is a short story about the unobvious behavior of postgresql. </p><a name="habracut"></a><br><h2 id="selecty-pachkayut-stranicy">  SELECT "smudge" pages </h2><br><p>  That is, SELECT causes a modification of some records that postgres will write to disk. </p><br><img src="https://habrastorage.org/files/bfc/45a/a02/bfc45aa02a1146ff937eafe81bedb42f.png"><br><br><p>  I’ll start with a brief explanation of the MVCC mechanism used by postgres to ensure transactional integrity. </p><br><p>  All changes in the database occur during transactions, each transaction has a txid (int32) identification number. </p><br><p>  Postgres operates data tables in the form of so-called tuple (tuple).  Tuple carries in itself both the data of a specific line in the table, and the metadata associated with this data: </p><br><img src="https://habrastorage.org/files/9cf/97f/327/9cf97f3270644503a4941f3558ce1fdf.png"><br><p>  <em>Picture: www.interdb.jp</em> </p><br><p>  <strong>xmin</strong> is the transaction number that created this tuple <br>  <strong>xmax</strong> is the transaction number that marked this tuple as deleted </p><br><ul><li>  If we do an INSERT into a table, it creates a new tuple (xmin = txid) </li><li>  DELETE - marks the stupid that fit the condition as deleted (xmax = txid) </li><li>  UPDATE makes conditional DELETE + INSERT. </li></ul><br><p>  When we perform a SELECT, in addition to directly searching and retrieving data from a table, it also does visibility check. </p><br><p>  Very simply, some transaction number txid1 "sees" this tuple if the conditions are met: </p><br><pre><code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">xmin</span></span> &lt; txid1 &lt; xmax</code> </pre> <br><p>  But changes in tuples occur immediately, and the transaction can be performed for a long time, so during the visibility check it is necessary to make sure whether the transactions with the numbers xmin, xmax were completed and, if so, with what status.  The postgres stores the current state of each transaction in the CLOG (commit log). </p><br><p>  Since checking the status of a large number of transactions in the CLOG is quite expensive in terms of resources, the developers decided to "cache" this information directly in the header of the plugin.  That is, when some SELECT sees, for example, that xmin is complete, it saves it to the so-called <a href="https://wiki.postgresql.org/wiki/Hint_Bits">hint bits</a> - a structure on top of the infomask, in which the xmin and xmax transaction states are written. </p><br><p>  How is the change in tupples when reading, we figured out, it remains to remember what “pages” are and why they are “dirty”) </p><br><p>  The fact is that working with data in memory and on the disk is almost always more efficient in large blocks.  Such a block in the postgress is a “page”, it contains a certain number of tuples and meta information about them.  When we modify at least one page stub, all of it is marked as "dirty", that is, different as it is on the disk, and must be synchronized.  Moreover, changes are almost always recorded in WAL in order to be able to restore the integrity of the data after the abnormal termination of the database process. </p><br><h2 id="select-mozhet-vyzyvat-sinhronnuyu-zapis-na-disk">  SELECT can cause synchronous write to disk </h2><br><p>  As you know, all work with the data in pg is done via buffer cache, if the necessary data is not there, the postgres will read it from the disk (using OS page cache) and put it in the cache. </p><br><p>  At the same time, if there is no space in the cache, then the least requested page is pushed out of it.  Finally, if the page for the expulsion candidate is dirty, it should be written to disk at the same point in time. </p><br><h2 id="frozentransactionid">  FrozenTransactionId </h2><br><p>  At the beginning of the article, I mentioned that the transaction counter in the 32-bit postgrece, that is, it is reset every ~ 2 billion transactions. </p><br><p>  So that the visibility check does not turn into a pumpkin when the transaction counter is reset, there is a special process - wraparound vacuum. </p><br><img src="https://habrastorage.org/files/b1b/eb2/8ab/b1beb28ab004425fbf035e0360c4bc03.png"><br><p>  Prior to version 9.4, this process replaced xmin with tupl with the special value FrozenTransactionId = 2.  The transaction with this number was considered older than any other transaction.  C 9.4 simply puts the flag in tupl that xmin is "frozen", and xmin itself remains unchanged. </p><br><p>  <em>For quite attentive: there is a special constant BootstrapTransactionId = 1, which is also older than all other transactions)</em> </p><br><h2 id="itogo">  Total </h2><br><p>  Most of the cases of "strange" (according to the narrow-minded opinion) postgres behavior are caused by performance optimization. </p><br><p>  While picking with postgres I found a wonderful book <a href="http://www.interdb.jp/pg/">"The Internals of PostgreSQL"</a> , I recommend to anyone who has not met before. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/324494/">https://habr.com/ru/post/324494/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../324482/index.html">We invite you to the All-Russian Student Olympiad in Applied Informatics and Cyber ​​Security at MEPhI</a></li>
+<li><a href="../324484/index.html">A programmer without a diploma: what can and what can not give "home schooling" in IT</a></li>
+<li><a href="../324488/index.html">The story of an investigation or how the DLP system revealed a targeted attack.</a></li>
+<li><a href="../324490/index.html">Where the games go: the problem of preserving old video games. Part 3</a></li>
+<li><a href="../324492/index.html">Problems and solutions: what can go wrong with the maintenance of complex iron</a></li>
+<li><a href="../324496/index.html">Features of localization of games on foreign markets</a></li>
+<li><a href="../324498/index.html">How we integrated with ownCloud and Nextcloud: pitfalls and how to overcome them</a></li>
+<li><a href="../324500/index.html">RCC 2017. Analysis of the tasks of the hottest warm-up round</a></li>
+<li><a href="../324502/index.html">The way to deal in CRM: automate it</a></li>
+<li><a href="../324504/index.html">Do you know the speed of loading your site from mobile devices? Time to figure it out</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

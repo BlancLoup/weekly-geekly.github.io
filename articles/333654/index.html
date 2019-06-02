@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Work-stealing scheduler in Go</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The task of the scheduler in Go is to distribute running gorutin between OS threads, which can be executed by one or more processors. In multithreaded...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Work-stealing scheduler in Go</h1><div class="post__text post__text-html js-mediator-article"><p>  The task of the scheduler in Go is to distribute running gorutin between OS threads, which can be executed by one or more processors.  In multithreaded computing, two paradigms emerged in planning: work sharing and work stealing. </p><br><ul><li>  <strong>Work-sharing</strong> : When a processor generates new threads, it tries to migrate them to other processors, in the hope that they will go to an idle or underloaded processor. </li><li>  <strong>Work-stealing</strong> : An insufficiently loaded processor actively searches for threads of other processors and "steals" some of them. </li></ul><br><p>  Migration of flows occurs less frequently with the <em>work stealing</em> approach than with <em>work sharing</em> .  When all processors are busy, threads do not migrate.  As soon as an idle processor appears, a migration option is considered. </p><br><p>  In Go, starting with version 1.1, the scheduler is implemented according to the work stealing scheme and was written by Dmitry Vyukov.  This article explains in detail the device work stealing planners and how it works in Go. </p><a name="habracut"></a><br><h1 id="osnovy-planirovaniya">  Planning Basics </h1><br><p>  Go scheduler is made according to M: N scheme and can use multiple processors.  At any time, M gorutin must be distributed among the N threads of the OS, which run on the maximum of GOMAXPROCS processors.  The Go scheduler uses the following terminology for gorutin, threads, and processors: </p><br><ul><li>  G: gorutina </li><li>  M: OS thread (M from Machine) </li><li>  P: processor </li></ul><br><p>  Next we have two queues that are specific to P. Each M must be assigned to its own P. The Ps may not have M if they are blocked or waiting for the end of the system call.  At any time, there can be a maximum of GOMAXPROCS processors — P. At any time, only one M can be executed for each P. More than M can be created by the scheduler, if required. </p><br><p><img src="https://habrastorage.org/web/110/61c/2bd/11061c2bd7de456cb541048c79e7afc4.png"></p><br><p>  Each planning cycle consists of finding a gorutina that is ready to be up and running.  With each cycle, the search occurs in the following order: </p><br><pre><code class="go hljs">runtime.schedule() { <span class="hljs-comment"><span class="hljs-comment">//  1/61   ,    G //   ,    //   , : //     P //   ,    //     ,  (poll)  }</span></span></code> </pre> <br><p>  As soon as a ready-to-execute G is found, it is executed until it is blocked. </p><br><p>  Note: It may seem that a global queue has an advantage over a local one, but regular checking of a global queue is critical in order to avoid M using only Gorutin from a local queue. </p><br><h2 id="krazha-stealing">  "Theft" (Stealing) </h2><br><p>  When a new G is created or an existing G becomes ready for execution, it is placed in the local queue of ready-for-execution Gorutin current P. When P ends G's execution, it tries to pull out (pop) G from its turn.  If the list is empty, P randomly chooses another processor (P) and tries to steal half of the gorutin from his turn. </p><br><p><img src="https://habrastorage.org/web/828/543/068/828543068c3043feb786e80452f49dd3.png"></p><br><p>  In the example above, P2 cannot find ready for execution gorutin.  Therefore, he randomly chooses another processor (P1) and steals three gorutines in turn.  P2 will now be able to start them and the work will be more evenly distributed among the processors. </p><br><h2 id="spinning-potoki">  Spinning threads </h2><br><p>  The scheduler always wants to distribute as many as possible M gorutin ready for execution in order to use all the processors, but at the same time, we should be able to suspend (park) highly voracious processes in order to save CPU resources and energy.  And at the same time, the scheduler must also be able to scale for tasks that really require a lot of processing power of the processor and greater performance. </p><br><p>  Constant preemption is both expensive and problematic for high-performance programs, where performance is most critical.  Gorutiny should not constantly jump between the threads of the OS, so this leads to increased latency.  In addition to everything, when system calls are called, the thread must be constantly blocked and unblocked.  This is expensive and leads to large overheads. </p><br><p>  To reduce these gorutin jumps back and forth, the Go scheduler implements the so-called spinning threads.  These threads use slightly more processor power, but reduce the crowding out of threads.  A thread is considered looped if: </p><br><ul><li>  M assigned to P is looking for a gorutin to be launched. </li><li>  M not assigned to P, searches for available P. </li><li>  the scheduler also starts an additional thread and loops it when it prepares a new gorutin and there is an idle P and there are no other looped threads. </li></ul><br><p>  At any time, there can be a maximum of GOMAXPROCS looped M. When the looped thread finds work, it goes out of the looped state. </p><br><p>  An idle thread assigned to any P is not blocked if there are other M not assigned to P. If a new gorutina is created or an M is blocked, the scheduler checks and ensures that there is at least one looped M. This ensures that all the gorutines can be launched if it is possible and avoids unnecessary locks / unlocks M. </p><br><h2 id="vyvody">  findings </h2><br><p>  Go scheduler does a lot to avoid overcrowding threads, distributing them to underused processors with theft method, and also implementing looped threads to avoid frequent transitions from blocking to nonblocking state and back. </p><br><p>  Planning events can be tracked using the <a href="https://golang.org/cmd/trace/">execution tracer</a> .  You can get to the bottom of everything that happens inside the scheduler, especially if you think that in your case the processor is not using efficiently. </p><br><h2 id="ssylki">  Links </h2><br><ul><li>  <a href="">The Go runtime scheduler source</a> </li><li>  <a href="https://golang.org/s/go11sched">Scalable Go Scheduler design document</a> </li><li>  <a href="https://morsmachine.dk/go-scheduler">The Go scheduler by Daniel Morsing</a> </li></ul><br><p>  If you have any suggestions or comments, write <a href="https://twitter.com/rakyll">@rakyll</a> . </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/333654/">https://habr.com/ru/post/333654/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../333642/index.html">Startup eyes of the developer. Which framework is better to choose</a></li>
+<li><a href="../333644/index.html">Kernel test automation in microservice architecture</a></li>
+<li><a href="../333648/index.html">What's new in IntelliJ IDEA 2017.2</a></li>
+<li><a href="../333650/index.html">From repository to CI / CD infrastructure in production for the week</a></li>
+<li><a href="../333652/index.html">5D market. Projection systems</a></li>
+<li><a href="../333656/index.html">XBRL: just about the complex - Chapter 2. What is XBRL?</a></li>
+<li><a href="../333658/index.html">Cost of data storage: “zero-sum game”</a></li>
+<li><a href="../333660/index.html">Use of vulcanization for polymer modules</a></li>
+<li><a href="../333662/index.html">DoT.js template engine improvements</a></li>
+<li><a href="../333664/index.html">Taming Multimedia with ffmpeg</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

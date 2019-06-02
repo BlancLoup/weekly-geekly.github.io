@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Spotify: Google Cloud event subsystem migration (part 3)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the first article of this series, we talked about how the old message delivery system works and some of the conclusions we made following its work....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Spotify: Google Cloud event subsystem migration (part 3)</h1><div class="post__text post__text-html js-mediator-article">  In the <a href="https://habrahabr.ru/company/google/blog/319772/">first article of</a> this series, we talked about how the old message delivery system works and some of the conclusions we made following its work.  In the <a href="https://habrahabr.ru/company/google/blog/320192/">second,</a> we looked at the design of the new system and why we chose <a href="https://cloud.google.com/pubsub/overview">Cloud Pub / Sub</a> as the transport mechanism for all events.  In this third and final article, we will explain how we intend to work with all published events using <a href="https://cloud.google.com/dataflow/">Dataflow</a> , and what we learned about this approach. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e6d/a8d/c98/e6da8dc9825fceab59be573714b9d896.png" alt="image"><a name="habracut"></a><br><br><h2>  Export events from Pub / Sub to (at) hourly intervals using Dataflow </h2><br>  Most of the tasks performed today in Spotify are batch jobs.  They require that events be reliably exported to persistent storage.  As such permanent storage, we traditionally use the <a href="http://hadoop.apache.org/">Hadoop</a> Distributed File System (HDFS) and <a href="https://hive.apache.org/">Hive</a> .  To match the growth of Spotify - which can be measured both by the size of the stored data and the number of engineers - we are slowly switching from HDFS to <a href="https://cloud.google.com/storage/">Cloud Storage</a> , and from Hive to <a href="https://cloud.google.com/bigquery/">BigQuery</a> . 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Extract, Transform and Load (ETL) tasks are the components that we use to export data from HDFS and Cloud Storage.  Hive and BigQuery exports are processed by batch jobs that convert data from hourly assemblies to HDFS and Cloud Storage. <br><br>  All exported data is divided, according to time stamps, into hourly packets.  This is an open interface, which was introduced in our very first event delivery system.  The system was based on the scp command and it copied the watch syslog files from all servers to HDFS. <br><br>  ETL tasks must determine with high certainty that all data for hourly assemblies are recorded in permanent storage.  When more data for the hourly assembly is not expected, it is marked as complete. <br><br>  Late to the already complete assembly data can not be added to it, as running tasks usually read the data from the assembly once.  To solve this problem, the ETL task must process the late data separately.  All late data is recorded in the current open time assembly, shifting the time stamp of the event into the future. <br><br>  To write an ETL assignment, we decided to experiment with <a href="https://cloud.google.com/dataflow/">Dataflow</a> .  This choice was due to the fact that we wanted for ourselves as little operational responsibility as possible and for others to solve big problems for us.  Dataflow is both a framework for pipelining data recording and a fully managed service in Google Cloud for executing such pipelines.  It can work out of the box with Cloud Pub / Sub, Cloud Storage and BigQuery. <br><br>  Writing pipelines in Dataflow is a lot like writing in Apache <a href="https://crunch.apache.org/">Crunch</a> .  This is not surprising, since both projects were inspired by <a href="https://research.google.com/pubs/pub35650.html">FlumeJava</a> .  The difference is that Dataflow offers a unified model for streaming and batch work, while Crunch has only a batch model. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/c4f/381/3a4/c4f3813a439f88a1c6a3e04163d69358.png" alt="image"><br><br>  To achieve a good end-to-end delay, we wrote our ETL as a streaming task.  Due to the fact that it is constantly running, we can incrementally fill in individual hourly assemblies as data arrives.  This gives us less latency compared to batch work, which exported data once at the end of each hour. <br><br>  The ELT task uses the <a href="https://cloud.google.com/dataflow/model/windowing">windowing (window)</a> concept of Dataflow to separate data into hourly assemblies based on time.  In Dataflow, windows can be assigned both by the time of events and by the processing time.  The fact that windows can be created based on a time stamp gives Dataflow advantages over other streaming frameworks.  Until now, only <a href="https://flink.apache.org/">Apache Flink</a> supports windowing in both time and processing. <br><br>  Each window consists of one or more blocks (pane), and each block contains a set of elements.  The trigger that is assigned to each window determines how blocks are created.  These blocks are allocated only after the data passes through <a href="https://cloud.google.com/dataflow/model/group-by-key">GroupByKey</a> .  Since GroupByKey groups by key and window, all aggregated elements in one block have the same key and belong to the same window. <br><br>  Dataflow provides a mechanism called a “watermark” (watermark, which here has a value rather than limits or borders, rather than the same as for images or bills), which can be used to determine when to close a window.  It is used by the time of the incoming data flow events to calculate the point in time when there is a high probability that all events for a particular window have already arrived. <br><br><h2>  Deep immersion in the implementation of ETL </h2><br>  In this section, we will look at some of the problems we encountered in the process of creating a Dataflow ETL task for event delivery.  They can be a bit difficult to understand if you have not had experience with Dataflow or a similar system.  A good helper in understanding (if the concept and terminology is new to you) is a <a href="http://research.google.com/pubs/pub43864.html">publication about</a> Google <a href="http://research.google.com/pubs/pub43864.html">'s DataFlow</a> . <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e6d/a8d/c98/e6da8dc9825fceab59be573714b9d896.png?w=730&amp;h=552" alt="image"><br><br>  In our event delivery system, we have a 1: 1 mapping between event types and tops of Cloud Pub / Sub.  One ETL task works with one stream of event types.  We use independent ETL tasks to process data from all types of events. <br><br>  In order to evenly distribute the load among all the available workers, the data stream is divided before it goes through a transformation that assigns a window to each event.  The number of shards that we use is a function of the number of workers assigned to the task. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/375/c1f/373/375c1f3735cb85bcc28a927ab6db1f77.png" alt="image"><br><br>  The "window" is a <a href="https://cloud.google.com/dataflow/model/composite-transforms">composite transformation</a> .  At the first stage of this transformation, we assign hourly fixed windows to all events in the incoming stream.  Windows are considered closed when the watermark goes beyond the hour. <br><br><pre><code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Override</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> PCollection&lt;KV&lt;String, Iterable&lt;Gabo.EventMessage&gt;&gt;&gt; apply( <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> PCollection&lt;KV&lt;String, Gabo.EventMessage&gt;&gt; shardedEvents) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> shardedEvents .apply(<span class="hljs-string"><span class="hljs-string">"Assign Hourly Windows"</span></span>, Window.&lt;KV&lt;String, Gabo.EventMessage&gt;&gt;into( FixedWindows.of(ONE_HOUR)) .withAllowedLateness(ONE_DAY) .triggering( AfterWatermark.pastEndOfWindow() .withEarlyFirings(AfterPane.elementCountAtLeast(maxEventsInFile)) .withLateFirings(AfterFirst.of(AfterPane.elementCountAtLeast(maxEventsInFile), AfterProcessingTime.pastFirstElementInPane() .plusDelayOf(TEN_SECONDS)))) .discardingFiredPanes()) .apply(<span class="hljs-string"><span class="hljs-string">"Aggregate Events"</span></span>, GroupByKey.create()); }</code> </pre> <br>  When assigning windows, we have an early trigger that is set to select every N elements in blocks until the window closes.  Thanks to the trigger, hourly packets are constantly filled as data arrives.  So the configured trigger helps us not only to achieve a smaller delay in export, but also to bypass the limitations of GroupByKey.  The amount of data collected in the panels must fit in memory on the workers' machines, since GroupByKey is a transformation in memory. <br><br>  When the window is closed, block selection is controlled later by a trigger.  This trigger creates a block from the data either after N elements or after 10 seconds of operation time.  Events are discarded if they are more than one day late. <br><br>  Materialization (creation of a temporary storage or table, for example) of blocks is performed in the “Event Aggregation” transformation, which is nothing more than a GroupByKey transformation. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/f4d/102/f98/f4d102f986a43ebf25d2721080c99ec4.png" alt="image"><br>  <i>Number of incoming events per second</i> <br><br>  In order to track the number of inbound events per second that go through the ETL task, we use the “Track Average RPS Of Timed or Late Events” (Monitor Average RPS Of Timely And Late Events) at the Assign Hourly Windows output.  All conversion metrics are sent as custom metrics to <a href="https://cloud.google.com/monitoring/">Cloud Monitoring</a> .  Indicators are calculated on sliding five-minute windows that are transmitted every minute. <br><br>  Information about the timeliness of an event can only be obtained after the event has been assigned to the window.  Comparing the maximum timestamp of window elements with the current watermark gives us this information.  Since watermark data is not synchronized between transformations, detecting timeliness in this way may not be accurate.  The number of falsely detected late events that we are seeing now is rather low: less than one per day. <br><br>  We can accurately accurately detect the timeliness of events if the monitoring transformation (or Monitor Average RPS Of Time And Late Events) is applied to the Aggregate Events output.  The disadvantage of this approach would be the unpredictability of obtaining metrics, since the window is obtained on the basis of the number of elements and the time of events. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/434/24d/9d2/43424d9d23f15375d18750ec9604b76f.png" alt="image"><br><br>  In the Write to HDFS / GCS conversion, we write data to either HDFS or Cloud Storage.  The mechanics of recording in HDFS and Cloud Storage are the same.  The only difference is which file system API is used.  In our implementation, both APIs are hidden behind the <a href="">IOChannelFactory</a> interface. <br><br>  To ensure that only one file is written to the block, even neglecting the possibility of failure, each block gets a unique ID.  The block identifier is then used as a unique ID for all the files to be written.  Files are written in Avro format with a scheme that follows the event ID scheme. <br><br>  Timely blocks are written into packages (bucket) based on the time of the event.  Late ones are written to the current hour packets, since the addition of closed assemblies is undesirable in working with data in Spotify.  To understand whether a block is timely, we use the <a href="">PaneInfo</a> object.  It is created when creating a block. <br><br>  The completeness marker for the hourly assembly is written only once.  For this, the main output action of the Write Pane action is re-processed (re-windowed) into the hour window and aggregated into Aggregated Write Successes. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/9db/5c9/d29/9db5c9d29bcbd35d7bdd901aa8c03bcf.png" alt="image"><br>  <i>The number of recorded files per second</i> <br><br><img src="https://habrastorage.org/getpro/habr/post_images/269/c82/314/269c82314454e103e21d4d1222b0bc57.png" alt="image"><br>  <i>Watermark Delay in milliseconds</i> <br><br>  Getting metrics is a by-product of Write Pane actions.  We get data that shows how many files are recorded per second, the average delay of events and the lag of the watermark compared to the current time.  All these metrics are calculated for a 5 minute window and transmitted every minute. <br><br>  Since we measure the backlog of a watermark after recording to HDFS / Cloud Storage, it is directly related to the entire latency of the system.  On the graph with a delay, you can see that the lag of the current character is generally less than 200 s (approximately 3.5 minutes).  You can see occasional bursts of up to 1500 s (approximately 25 minutes) in the same figure.  Such peaks are caused by fragmentation when writing to our Hadoop cluster via VPN.  For comparison, the latency in our old system is two hours on the “best day” and three hours on average. <br><br><h2>  Next steps in the ETL task </h2><br>  The implementation of the ETL task is still in the prototyping stage.  So far, we have four tasks running ETL (see the graph with the number of events per second).  The smallest task consumes about 30 events per second, and the largest reaches peak values ​​of 100K events per second. <br><br>  We have not yet found a good way to calculate the optimal number of workers for ETL tasks.  Their number is still determined manually after trial and error.  We use two workers for the smallest task and 42 for the greatest.  It is interesting to note that the execution of tasks also depends on the memory.  For one pipeline that processes about 20K events per second, we use 24 workers, while for the second one, processing events with the same speed, but with an average message size four times smaller, we only use 4. The management of conveyors can be much simpler when we implement the <a href="https://cloud.google.com/dataflow/faq">auto scaling</a> function. <br><br>  We must ensure that when the job is restarted (job), we will not lose any data.  Now this is not the case if the <a href="https://cloud.google.com/dataflow/pipelines/updating-a-pipeline">job update</a> does not work.  We are actively cooperating with Dataflow engineers in finding a solution to this problem. <br><br>  The behavior of the watermark is still a mystery to us.  We need to check that its calculation is predictable both in the case of a failure and in the case of normal operation. <br><br>  Finally, we need to define a good CI / CD model for fast and reliable ETL job updates.  This is a nontrivial task - we need to manage one ETL task for each type of event, and we have more than 1000 of them. <br><br><h2>  Cloud Event Delivery System </h2><br>  We are actively working to launch a new production system.  The preliminary numbers we received from the launch of the new system in the experimental phase are very encouraging.  The worst total delay time in the new system is four times less than the total delay time of the old platform. <br><br>  But increasing productivity is not the only thing we want to get from the new system.  We want to significantly reduce transaction costs with cloud products.  This, in turn, means that we will have much more time to improve Spotify products. </div><p>Source: <a href="https://habr.com/ru/post/323908/">https://habr.com/ru/post/323908/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../323898/index.html">Blast-off. From idea to release</a></li>
+<li><a href="../323900/index.html">PG Metricus - collecting metrics from plpgsql code or as three lines of code simplified life</a></li>
+<li><a href="../323902/index.html">New law on online cash registers: how the service of commercial equipment changes</a></li>
+<li><a href="../323904/index.html">Position-independent code (PIC) in shared libraries</a></li>
+<li><a href="../323906/index.html">Monitoring windows service using Zidium</a></li>
+<li><a href="../323910/index.html">IBM Watson will work as a tax specialist</a></li>
+<li><a href="../323912/index.html">Dark secrets of the "bright budget"</a></li>
+<li><a href="../323914/index.html">Explain the effect of the last line</a></li>
+<li><a href="../323916/index.html">Construction of DMZ DMZ in ACS TP systems using Modbus and IEC-60870-5-104 protocols</a></li>
+<li><a href="../323918/index.html">Report from OWASP Russia Meetup # 6: video and presentation of reports</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

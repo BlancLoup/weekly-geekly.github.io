@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Z-order vs R-tree, optimization and 3D</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Earlier ( 1 , 2 ) we substantiated and demonstrated the possibility of the existence 
+ spatial index, which has all the advantages of the usual B-Tree...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Z-order vs R-tree, optimization and 3D</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/files/896/195/5d4/8961955d4d5f4e23bf20a9f6f27d6ff9.png"></div><br>  Earlier ( <a href="https://habrahabr.ru/post/319096/">1</a> , <a href="https://habrahabr.ru/post/319810/">2</a> ) we substantiated and demonstrated the possibility of the existence <br>  spatial index, which has all the advantages of the usual B-Tree index and <br>  not inferior in performance index based on R-Tree. <br>  Under the cut, a generalization of the algorithm to three-dimensional space, optimization and benchmarks. <br><a name="habracut"></a><br><h4>  3D </h4><br>  Why do you need this 3D?  The fact is that we live in a three-dimensional world.  Therefore, the data are presented either in geo-coordinates (latitude, longitude) and then distorted all the more, the further they are from the equator.  Or a projection is attached to them, which is adequate only on a certain space of these coordinates.  Three-dimensional index allows you to place points on a sphere and thus avoid significant distortion.  To obtain a search extent, it suffices to determine the center of the desired cube on the sphere and retreat to the sides in all coordinates by radius. <br><br>  In principle, the three-dimensional version of the algorithm does not differ from the two-dimensional one — the only difference is in working with the key: <br><ul><li>  The alternation of discharges in the key now goes in steps of 3 and not 2;  ... z1y1x1z0y0x0 </li><li>  The key is now 96, not 64 bits.  The option to place everything in a 64-bit key is rejected because  gives a total of 21 digits per coordinate, which would make us a bit constrained.  In addition, 4 and 6 dimensional keys are coming (guess why), and there 64 is not enough, so why delay the inevitable.  Fortunately, it is not so difficult </li><li>  therefore, the key is no longer bigint, but numeric and in the key interface, methods for translating from numeric and back will be required </li><li>  methods of getting the key from the coordinates and back will change </li><li>  as well as the method of splitting the subquery.  Recall, for splitting a query, which is represented by two keys, corresponding to the lower left and upper right corners of it: <ul><li>  found in them the most senior bit different m </li><li>  the upper right corner of the smaller new subquery is obtained by setting all the bits in 1 corresponding to the m coordinate under m </li><li>  the lower left corner of the larger new subquery is obtained by setting all the bits to 0 corresponding to the m coordinate under m </li></ul>  Actually, nothing has changed, just the digits of one coordinate go with another step <br></li></ul><br><h4>  Numeric </h4><br>  Numeric itself is not directly accessible to us from the extension.  It is necessary to use the universal function call mechanism with marshalling - DirectFunctionCall [X] from 'include / fmgr.h', where X is the number of arguments. <br><br>  Inside numeric is arranged as an array of short, each of which contains 4 decimal digits - from 0 to 9999. There are no shifts or divisions with the return of the module in its interface.  As well as special functions for working with powers of 2 (with such a device, they are out of place).  Therefore, to parse numeric into two int64, you have to act like this: <br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">bit3Key_fromLong</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(bitKey_t *pk, Datum dt)</span></span></span><span class="hljs-function"> </span></span>{ Datum divisor_numeric; Datum divisor_int64; Datum low_result; Datum upper_result; divisor_int64 = Int64GetDatum((int64) (<span class="hljs-number"><span class="hljs-number">1U</span></span>LL &lt;&lt; <span class="hljs-number"><span class="hljs-number">48</span></span>)); divisor_numeric = DirectFunctionCall1(int8_numeric, divisor_int64); low_result = DirectFunctionCall2(numeric_mod, dt, divisor_numeric); upper_result = DirectFunctionCall2(numeric_div_trunc, dt, divisor_numeric); pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">0</span></span>] = DatumGetInt64(DirectFunctionCall1(numeric_int8, low_result)); pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">1</span></span>] = DatumGetInt64(DirectFunctionCall1(numeric_int8, upper_result)); pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">0</span></span>] |= (pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">1</span></span>] &amp; <span class="hljs-number"><span class="hljs-number">0xffff</span></span>) &lt;&lt; <span class="hljs-number"><span class="hljs-number">48</span></span>; pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">1</span></span>] &gt;&gt;= <span class="hljs-number"><span class="hljs-number">16</span></span>; }</code> </pre> <br>  And for the inverse transformation - like this: <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">Datum </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">bit3Key_toLong</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> bitKey_t *pk)</span></span></span><span class="hljs-function"> </span></span>{ uint64 lo = pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">0</span></span>] &amp; <span class="hljs-number"><span class="hljs-number">0xffffffffffff</span></span>; uint64 hi = (pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">0</span></span>] &gt;&gt; <span class="hljs-number"><span class="hljs-number">48</span></span>) | (pk-&gt;vals_[<span class="hljs-number"><span class="hljs-number">1</span></span>] &lt;&lt; <span class="hljs-number"><span class="hljs-number">16</span></span>); uint64 mul = <span class="hljs-number"><span class="hljs-number">1U</span></span>LL &lt;&lt; <span class="hljs-number"><span class="hljs-number">48</span></span>; Datum low_result = DirectFunctionCall1(int8_numeric, Int64GetDatum(lo)); Datum upper_result = DirectFunctionCall1(int8_numeric, Int64GetDatum(hi)); Datum mul_result = DirectFunctionCall1(int8_numeric, Int64GetDatum(mul)); Datum nm = DirectFunctionCall2(numeric_mul, mul_result, upper_result); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> DirectFunctionCall2(numeric_add, nm, low_result); }</code> </pre> <br>  Working with arbitrary precision arithmetic is generally not a quick thing, especially when it comes to divisions.  Therefore, the author had an overwhelming desire to 'hack' numeric and disassemble it on his own.  I had to duplicate the locally definitions from numeric.c and process the raw short'y.  It was easy and sped up work dozens of times. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Solid subqueries. </h4><br>  As we remember, the algorithm splits the subqueries until the data under it completely fits on one disk page.  It happens like this: <br><ol><li>  at the input is a subquery, it has a range of values ​​between the lower left (middle) and upper right (far) corners.  Coordinate has become more, but the essence is the same </li><li>  do a search in btree for a key smaller angle </li><li>  get to the leaf page and check its last value </li><li>  if the last value is&gt; = key values ​​of a larger angle, we look through the whole page and enter into output everything that got into the search extent </li><li>  if less, we continue to split the query </li></ol><br>  However, it may happen that a subquery whose data is contained on dozens or hundreds of pages is completely located inside the original search extent.  There is no point in cutting it further; data from the interval can be safely entered into the result without any checks. <br><br>  How to recognize such a subquery?  Pretty simple - <br><ul><li>  its size in all coordinates must be degrees 2 and equal (cube) </li><li>  the angles must lie on the corresponding grating in increments of the same degree 2 </li></ul><br>  This is what the subquery map looks like before cube optimization: <br><img src="https://habrastorage.org/files/b5e/f11/26b/b5ef1126b2a34fc4a29b8355309199b5.png"><br><br>  And so after: <br><img src="https://habrastorage.org/files/8a1/104/6c5/8a11046c5b1749cc8a5dbd0ef1634eba.png"><br><br><h4>  Benchmark </h4><br>  The table summarizes the comparative results of the original algorithm, its optimized version and the GiST R-Tree. <br>  R-Tree is two-dimensional; for comparison, pseudo-3D data was entered into the z-index, i.e.  (x, 0, z).  From the point of view of the algorithm, there is no difference, we just give the R-tree a certain head start. <br><br>  The data is 100 000 000 random points in [0 ... 1 000 000, 0 ... 0, 0 ... 1 000 000]. <br><br>  The measurements were conducted on a modest virtual machine with two cores and 4 GB of RAM, so the times have no absolute value, but the numbers of the read pages can still be trusted. <br>  The times are shown on the second runs, on the heated server and the virtual machine.  The number of buffers read is on a freshly raised server. <br><table><tbody><tr><th>  Npoints </th><th>  Nreq </th><th>  Type </th><th>  Time (ms) </th><th>  Reads </th><th>  Hits </th></tr><tr><td>  one </td><td>  100,000 </td><td>  old <br>  new <br>  rtree </td><td>  .37 <br>  .36 <br>  .38 </td><td>  1.13154 <br>  1.13307 <br>  1.83092 </td><td>  3.90815 <br>  3.89143 <br>  3.84164 </td></tr><tr><td>  ten </td><td>  100,000 </td><td>  old <br>  new <br>  rtree </td><td>  .40 <br>  .38 <br>  .46 </td><td>  1.55 <br>  1.57692 <br>  2.73515 </td><td>  8.26421 <br>  7.96261 <br>  4.35017 </td></tr><tr><td>  100 </td><td>  100,000 </td><td>  old <br>  new <br>  rtree (*) </td><td>  .63 <br>  .48 <br>  .50 ... 7.1 </td><td>  3.16749 <br>  3.30305 <br>  6.2594 </td><td>  45.598 <br>  31.0239 <br>  4.9118 </td></tr><tr><td>  1,000 </td><td>  100,000 </td><td>  old <br>  new <br>  rtree (*) </td><td>  2.7 <br>  1.2 <br>  1.1 ... 16 </td><td>  07.0775 <br>  13.0646 <br>  24.38 </td><td>  381.854 <br>  165.853 <br>  7.89025 </td></tr><tr><td>  10,000 </td><td>  10,000 </td><td>  old <br>  new <br>  rtree (*) </td><td>  22.3 <br>  5.5 <br>  4.2 ... 135 </td><td>  59.1605 <br>  65.1069 <br>  150.579 </td><td>  3606.73 <br>  651.405 <br>  27.2181 </td></tr><tr><td>  100,000 </td><td>  10,000 </td><td>  old <br>  new <br>  rtree (*) </td><td>  199 <br>  53.3 <br>  35 ... 1200 </td><td>  430.012 <br>  442.628 <br>  1243.64 </td><td>  34835.1 <br>  2198.11 <br>  186.457 </td></tr><tr><td>  1,000,000 </td><td>  1,000 </td><td>  old <br>  new <br>  rtree (*) </td><td>  2550 <br>  390 <br>  300 ... 10,000 </td><td>  3523.11 <br>  3629.49 <br>  11394 </td><td>  322776 <br>  6792.26 <br>  3175.36 </td></tr></tbody></table>  Where <br>  <b>Npoints</b> - the average number of points in the output <br>  <b>Nreq</b> - the number of requests in the series <br>  <b>Type</b> - 'old' - the original version <br>  'new' - with numeric optimization and solid subqueries; <br>  'rtree'- gist only 2D rtree, <br>  (*) - in order to compare the search time, <br>  I had to reduce the series by 10 times, <br>  otherwise the pages did not fit into the cache <br>  <b>Time (ms)</b> - the average query time <br>  <b>Reads</b> - the average number of reads per request <br>  <b>Hits</b> - the number of calls to buffers <br>  In the form of graphs, these data look like this: <br><img src="https://habrastorage.org/files/ac0/165/496/ac0165496c0d4a62a44efe5b61c99e13.png"><br>  Average request execution time by request size <br><br><img src="https://habrastorage.org/files/4e8/999/4e0/4e89994e05fa445da086e72fa47841f9.png"><br>  Average number of reads per request by request size <br><br><img src="https://habrastorage.org/files/0c7/07a/3b2/0c707a3b2c874482ac6dcf5cebe68ffe.png"><br>  The average number of hits to the page cache per request from the size of the request <br><br><h4>  findings </h4><br>  So far so good.  We continue to move in the direction of use for spatial indexation of the Hilbert curve, as well as full-fledged measurements on non-synthetic data. <br><br>  <b>PS: the</b> described changes are available <a href="https://github.com/bmuratshin/zcurve/tree/3D">here</a> . </div><p>Source: <a href="https://habr.com/ru/post/323192/">https://habr.com/ru/post/323192/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../323178/index.html">FixPrice Agile or SCRUM via F… ira</a></li>
+<li><a href="../323180/index.html">Internationalization (i18n) in Angular 2</a></li>
+<li><a href="../323182/index.html">Copyleft at risk: does Github lose GPL compatibility?</a></li>
+<li><a href="../323186/index.html">Metaregular expressions on D</a></li>
+<li><a href="../323188/index.html">Programmers can not write algorithms without help: once again about the interview</a></li>
+<li><a href="../323194/index.html">What are the authors of “Hello World?” Silent</a></li>
+<li><a href="../323198/index.html">Dagaz: From simple to complex</a></li>
+<li><a href="../323200/index.html">Power BI Embedded, IoT and machine learning for processing brain thermograms</a></li>
+<li><a href="../323202/index.html">Web scraper development to extract data from the open data portal of Russia data.gov.ru</a></li>
+<li><a href="../323204/index.html">Apache Ant - quick start</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Airflow Workshop: complex DAGs without crutches</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr! My name is Dean, and I am developing a game data warehouse for solving analytics problems in Mail.Ru Group. Our team uses Apache Airflow (he...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Airflow Workshop: complex DAGs without crutches</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/2i/xc/2g/2ixc2gvhhqkngqgdyplnxmkuq-g.jpeg"></p><br><p>  Hi, Habr!  My name is Dean, and I am developing a game data warehouse for solving analytics problems in Mail.Ru Group.  Our team uses Apache Airflow (hereinafter Airflow) to develop batch data processing processes, <a href="https://habrahabr.ru/users/yuryemeliyanov/" class="user_link">yuryemeliyanov</a> wrote about this in a recent <a href="https://habrahabr.ru/company/mailru/blog/339392">article</a> .  Airflow is a opensource library for developing ETL / ELT processes.  Individual tasks are combined into periodically executed task chains (DAG - Directed Acyclic Graph). </p><br><p>  As a rule, 80% of the project on Airflow are standard DAGs.  In my article we will discuss the remaining 20%, which require complex branches, communication between tasks - in a word, DAGs that require non-trivial algorithms. </p><a name="habracut"></a><br><h2 id="upravlenie-potokom">  Flow control </h2><br><h3 id="uslovie-perehoda">  Transition condition </h3><br><p>  Imagine that we are faced with the task of daily data collection from several shards.  We simultaneously write them into the staging area, and then build them on the target table in the repository.  If during the work for some reason an error occurred - for example, some shards were not available, the DAG will look like this: </p><br><p><img src="https://habrastorage.org/webt/ds/z_/dr/dsz_drkcnx1rbrjnqlomoym_c2w.png"></p><br><p>  In order to proceed to the next task, you need to handle errors in previous ones.  One of the operator’s parameters, <strong>trigger_rule,</strong> is responsible for this.  Its default value, <strong>all_success</strong> , means that the task will start if and only if all previous ones have been successfully completed. </p><br><p>  Also, <strong>trigger_rule</strong> can have the following values: </p><br><ul><li>  <strong>all_failed</strong> - if all previous tasks failed; </li><li>  <strong>all_done</strong> - if all previous tasks have completed, no matter whether it is successful or not; </li><li>  <strong>one_failed</strong> - if any of the previous tasks fell, the rest is not required; </li><li>  <strong>one_success</strong> - if any of the previous tasks ended successfully, the rest is not required. </li></ul><br><h3 id="vetvlenie">  Branching </h3><br><p>  To implement the if-then-else logic, you can use the branch operator <strong>BranchPythonOperator</strong> .  The called function must implement the algorithm for selecting the task, which will be launched next.  You can not return anything, then all subsequent tasks will be marked as not needing execution. </p><br><p>  In our example, it turned out that the inaccessibility of shards is connected with the periodic shutdown of the game servers, respectively, when they are turned off we don’t lose any data for the period we need.  True, the windows should be built taking into account the number of servers included. </p><br><p>  Here’s what the same DAG looks like with a bunch of two tasks with the <strong>trigger_rule</strong> parameter, which takes <strong>one_success</strong> values ​​(at least one of the previous tasks is successful) and <strong>all_done</strong> (all previous tasks ended), and the <strong>select_next_task</strong> branch <strong>operator</strong> instead of a single PythonOperator. </p><br><pre><code class="python hljs"><span class="hljs-comment"><span class="hljs-comment"># ,      all_done = DummyOperator(task_id='all_done', trigger_rule='all_done', dag=dag) # ,         one_success = DummyOperator(task_id='one_success', trigger_rule='one_success', dag=dag) #        def select_next_task(): success_shard_count = get_success_shard_count() if success_shard_count == 0: return 'no_data_action' elif success_shard_count == 6: return 'all_shards_action' else: return 'several_shards_action' select_next_task = BranchPythonOperator(task_id='select_next_task', python_callable=select_next_task, dag=dag)</span></span></code> </pre> <br><p><img src="https://habrastorage.org/webt/t6/2e/ut/t62eutcqg6z7muorh_k_zwpve_y.png"></p><br><p>  <a href="https://airflow.apache.org/concepts.html">Documentation on the parameter of the statement trigger_rule</a> <br>  <a href="https://airflow.apache.org/concepts.html">Operator Documentation BranchPythonOperator</a> </p><br><h2 id="makrosy-airflow">  Airflow Macros </h2><br><p>  Airflow operators also support the rendering of transmitted parameters using Jinja.  This is a powerful template engine, you can read more about it in the documentation, but I will only talk about its aspects that we use in working with Airflow. </p><br><p>  The template engine processes: </p><br><ul><li>  operator string parameters specified in the <strong>template_field</strong> tuple; </li><li>  the files transferred in the parameters of the operator, with the extension specified in the <strong>template_ext</strong> ; </li><li>  Any strings processed by the <strong>task.render_template</strong> function of the <strong>task</strong> entity passed through the context.  An example of a PythonOperator function with a passed context ( <code>provide_context=True</code> ): </li></ul><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">index_finder</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(conn_id, task, **kwargs)</span></span></span><span class="hljs-function">:</span></span> sql = <span class="hljs-string"><span class="hljs-string">"SELECT MAX(idtransaction) FROM {{ params.billing }}"</span></span> max_id_sql = task.render_template(<span class="hljs-string"><span class="hljs-string">""</span></span>, sql, kwargs) ...</code> </pre> <br><p>  Here is how we apply Jinja to Airflow: </p><br><ol><li>  Of course, this is work with dates.  <strong>{{ds}}, {{yesterday_ds}}, {{tomorrow_ds}}</strong> - after preprocessing, these templates are replaced by the launch date, the day before it and the next day in the format <strong>YYYY-MM-DD</strong> .  The same, but only numbers, without hyphens: <strong>{{ds_nodash}}, {{yesterday_ds_nodash}}, {{tomorrow_ds_nodash}}</strong> </li><li>  Use built-in functions.  For example, <strong>{{macros.ds_add (ds, -5)}}</strong> is a way to take or add a few days;  <strong>{{macros.ds_format (ds, “% Y-% m-% d”, “% Y”)}}</strong> - date formatting. </li><li>  Transfer parameters.  They are passed in the form of a dictionary in the params argument, and are obtained as follows: <strong>{{params.name_of_our_param}}</strong> </li><li>  Using custom functions, just passed in the parameters.  <strong>{{params.some_func (ds)}}</strong> </li><li>  Using built-in python libraries: <br>  <strong>{{(macros.dateutil.relativedelta.relativedelta (day = 1, months = -params.retention_shift)). strftime ("% Y-% m-% d")}}</strong> </li><li>  Using the if-else construct: <br>  <strong>{{dag_run.conf [“message”] if dag_run else “”}}</strong> </li><li>  Organization of cycles: <br>  <strong>{% for idx in range (params.days_to_load, -1, -1)%}</strong> <strong><br></strong>  <strong>{{macros.ds_add (ds, -idx)}}</strong> <strong><br></strong>  <strong>{% endfor%}</strong> </li></ol><br><p>  I will give a few examples of parameters rendering in the Airflow interface.  In the first, we delete records older than the number of days passed by the cut_days parameter.  This is what sql looks like using airflow jinja templates: </p><br><p><img src="https://habrastorage.org/webt/lq/et/_z/lqet_z0mqqilu_dst05yefzx4dw.png"></p><br><p>  In the processed sql, a specific date is already substituted for the expression: </p><br><p><img src="https://habrastorage.org/webt/k9/_g/he/k9_ghe-h9vmjv5__psisqdsbi44.png"></p><br><p>  The second example is more complicated.  It uses date conversion in unixtime to simplify the filtering of data at the source.  The construction "{: .0f}" is used to get rid of the display of decimals: </p><br><p><img src="https://habrastorage.org/webt/6x/xv/tu/6xxvtuep2lxxgnhsm9xytnpo7gu.png"></p><br><p>  Jinja replaces the expressions between the double braces with unixtime, which corresponds to the DAG's date of execution and the date following it: </p><br><p><img src="https://habrastorage.org/webt/n_/lo/kf/n_lokfakckmcm6uwtcsj8wsawxe.png"></p><br><p>  Well, in the last example we use the truncshift function, passed as a parameter: </p><br><p><img src="https://habrastorage.org/webt/we/g-/rh/weg-rhc5agqu6lrkzgqsuxpmrs8.png"></p><br><p>  Instead of this expression, the template engine substitutes the result of the function: </p><br><p><img src="https://habrastorage.org/webt/ep/2g/lm/ep2glm1kfmmuyyc2ijnefwrcftg.png"></p><br><p>  <a href="https://airflow.apache.org/concepts.html">Jinja template documentation</a> </p><br><h2 id="kommunikaciya-mezhdu-zadachami">  Communication between tasks </h2><br><p>  In one of our sources there is an interesting log storage system.  Every five days, the source creates a new table of this type: squads_02122017.  In its name there is a date, so the question arose how to calculate it.  For a while, we used tables with names from all five days.  Four requests fell, but <strong>trigger_rule = 'one_success'</strong> saved us (just the case when performing all five tasks is optional). </p><br><p>  After some time, instead of trigger_rule, we began to use the technology built in Airflow to exchange messages between tasks in one DAG - <strong>XCom</strong> (short for cross-communication).  XComs are defined by a key-value pair and the name of the task from which it was sent. </p><br><p><img src="https://habrastorage.org/webt/2i/pf/x0/2ipfx04lolsphz7oaj7ftu3vnmw.png"></p><br><p>  XCom is created in PythonOperator based on the value returned by it.  You can create an XCom manually using the <strong>xcom_push</strong> function.  After the task is completed, the value is stored in the context, and any subsequent task can receive XCom by the <strong>xcom_pull</strong> function in another PythonOperator or from the jinja template within any pre-processed string. </p><br><p>  Here is how getting the name of the table now: </p><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">get_table_from_mysql</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(**kwargs)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-string"><span class="hljs-string">"""         """</span></span> hook = MySqlHook(conn_name) cursor = hook.get_conn().cursor() cursor.execute(kwargs[<span class="hljs-string"><span class="hljs-string">'templates_dict'</span></span>][<span class="hljs-string"><span class="hljs-string">'sql'</span></span>]) table_name = cursor.fetchall() <span class="hljs-comment"><span class="hljs-comment">#  XCom   'table_name' kwargs['ti'].xcom_push(key='table_name', value=table_name[0][1]) #    XCom': # return table_name[0][1] #     -   # ,    PostgreSQL    select_table_from_mysql_sql = ''' SELECT table_name FROM information_schema.TABLES WHERE table_schema = 'jungle_logs' AND table_name IN ('squads_{{ macros.ds_format(ds, "%Y-%m-%d", "%d%m%Y") }}', 'squads_{{ macros.ds_format( macros.ds_add(ds, -1), "%Y-%m-%d", "%d%m%Y") }}', 'squads_{{ macros.ds_format( macros.ds_add(ds, -2), "%Y-%m-%d", "%d%m%Y") }}', 'squads_{{ macros.ds_format( macros.ds_add(ds, -3), "%Y-%m-%d", "%d%m%Y") }}', 'squads_{{ macros.ds_format( macros.ds_add(ds, -4), "%Y-%m-%d", "%d%m%Y") }}') ''' select_table_from_mysql = PythonOperator( task_id='select_table_from_mysql', python_callable=get_table_from_mysql, provide_context=True, templates_dict={'sql': select_table_from_mysql_sql}, dag=dag ) #  XCom   'select_table_from_mysql'   'table_name' sensor_jh_squad_sql = ''' SELECT 1 FROM jungle_logs.{{ task_instance.xcom_pull(task_ids='select_table_from_mysql', key='table_name') }} LIMIT 1 '''</span></span></code> </pre> <br><p>  Another example of using XCom technology is sending email notifications with text sent from Python Operator: </p><br><pre> <code class="python hljs">kwargs[<span class="hljs-string"><span class="hljs-string">'ti'</span></span>].xcom_push(key=<span class="hljs-string"><span class="hljs-string">'mail_body'</span></span>, value=mail_body)</code> </pre> <br><p>  But getting the text of the letter inside the operator EmailOperator: </p><br><pre> <code class="python hljs">email_notification_lost_keys = EmailOperator( task_id=<span class="hljs-string"><span class="hljs-string">'email_notification_lost_keys'</span></span>, to=alert_mails, subject=<span class="hljs-string"><span class="hljs-string">'[airflow] Lost keys'</span></span>, html_content=<span class="hljs-string"><span class="hljs-string">'''{{ task_instance.xcom_pull(task_ids='find_lost_keys', key='mail_body') }}'''</span></span>, dag=dag )</code> </pre> <br><p>  <a href="https://airflow.apache.org/concepts.html">XCom Technology Documentation</a> </p><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  I talked about branching techniques, communication between tasks, and substitution patterns.  Using the built-in mechanisms of Airflow, you can solve a variety of tasks without departing from the general concept of the implementation of DAGs.  At this interesting nuances Airflow does not end there.  My colleagues and I have ideas for the following articles on this topic.  If you are interested in this tool, write what you would like to read about next time. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/344398/">https://habr.com/ru/post/344398/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../344386/index.html">Formula 1 for drones: ITMO University team ranked first at Robotex-2017</a></li>
+<li><a href="../344388/index.html">ASO Monthly # 19 November 2017</a></li>
+<li><a href="../344390/index.html">How to check a car before you buy: we use databases and logic available on the Internet</a></li>
+<li><a href="../344392/index.html">Conveyor of games for stores from sophomores with love</a></li>
+<li><a href="../344394/index.html">Tutorial on the Unreal Engine. Part 1: familiarity with the engine</a></li>
+<li><a href="../344400/index.html">My Body Gadget (Part # 2)</a></li>
+<li><a href="../344402/index.html">Popularity statistics of operating systems in IaaS: Ubuntu is still number one, CentOS popularity is growing</a></li>
+<li><a href="../344406/index.html">How users perceive different authentication methods</a></li>
+<li><a href="../344408/index.html">How to write UI tests using Instagram accounts and not get a block</a></li>
+<li><a href="../344410/index.html">Creating a decentralized music player on IPFS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

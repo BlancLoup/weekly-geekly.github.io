@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Search for large documents in ElasticSearch</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="We continue a series of articles on how we comprehended ES in the process of creating Ambar . The first article of the cycle was about Highlighting la...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Search for large documents in ElasticSearch</h1><div class="post__text post__text-html js-mediator-article"><img align="left" width="200" src="https://habrastorage.org/files/055/df7/ed0/055df7ed0cc8404f8ab20eb3c1764caf.png"><br><p>  We continue a series of articles on how we comprehended ES in the process of creating <a href="https://github.com/RD17/ambar">Ambar</a> .  The first article of the cycle was about <a href="https://habrahabr.ru/post/320390/">Highlighting large text fields in ElasticSearch</a> . </p><br><p>  In this article we will talk about how to make ES work quickly with documents of more than 100 MB.  Search in such documents at the approach "in the forehead" takes tens of seconds.  We managed to reduce this time to 6 ms. </p><br><p>  We ask interested under the cat. </p><a name="habracut"></a><br><h2 id="problema-poiska-po-bolshim-dokumentam">  The problem of searching for large documents </h2><br><p> As you know, the whole search action in ES is built around the <code>_source</code> field - the source document that came to ES and then indexed by Lucene. </p><br><p>  Recall an example of a document that we store in ES: </p><br><pre> <code class="hljs pgsql">{ sha256: "1a4ad2c5469090928a318a4d9e4f3b21cf1451c7fdc602480e48678282ced02c", meta: [ { id: "21264f64460498d2d3a7ab4e1d8550e4b58c0469744005cd226d431d7a5828d0", short_name: "quarter.pdf", full_name: "//winserver/store/reports/quarter.pdf", source_id: "crReports", <span class="hljs-keyword"><span class="hljs-keyword">extension</span></span>: ".pdf", created_datetime: "2017-01-14 14:49:36.788", updated_datetime: "2017-01-14 14:49:37.140", extra: [], indexed_datetime: "2017-01-16 18:32:03.712" } ], content: { size: <span class="hljs-number"><span class="hljs-number">112387192</span></span>, indexed_datetime: "2017-01-16 18:32:33.321", author: "John Smith", processed_datetime: "2017-01-16 18:32:33.321", length: "", <span class="hljs-keyword"><span class="hljs-keyword">language</span></span>: "", state: "processed", title: "Quarter Report (Q4Y2016)", <span class="hljs-keyword"><span class="hljs-keyword">type</span></span>: "application/pdf", <span class="hljs-type"><span class="hljs-type">text</span></span>: "....     ...." } }</code> </pre> <br><p>  <code>_source</code> for Lucene is an atomic unit that by default contains all the fields in a document.  An index in Lucene is a sequence of tokens from all fields of all documents. </p><br><p>  So, the index contains <code>N</code> documents.  The document contains about two dozen fields, while all the fields are quite short, mainly of the <code>keyword</code> and <code>date</code> types, with the exception of the long text field <code>content.text</code> . </p><br><p>  Now we will try in a first approximation to understand what will happen when you try to perform a search on any of the fields in the above documents.  For example, we want to find documents with a creation date longer than January 14, 2017.  To do this, run the following query: </p><br><pre> <code class="hljs pgsql">curl -X POST -H "Content-Type: application/json" -d <span class="hljs-string"><span class="hljs-string">'{ range: { '</span></span>meta.created_datetim<span class="hljs-string"><span class="hljs-string">e': { gt: '</span></span><span class="hljs-number"><span class="hljs-number">2017</span></span><span class="hljs-number"><span class="hljs-number">-01</span></span><span class="hljs-number"><span class="hljs-number">-14</span></span> <span class="hljs-number"><span class="hljs-number">00</span></span>:<span class="hljs-number"><span class="hljs-number">00</span></span>:<span class="hljs-number"><span class="hljs-number">00.000</span></span><span class="hljs-string"><span class="hljs-string">' } } }'</span></span> "http://ambar:9200/ambar_file_data/_search"</code> </pre> <br><p>  The result of this query you will see very soon, for several reasons: </p><br><p>  Firstly, all fields of all documents will be involved in the search, although it would seem that we need them if we filter only by the date of creation.  This happens because  the atomic unit for Lucene is <code>_source</code> , and the default index consists of a sequence of words from <strong>all</strong> fields of documents. </p><br><p>  Secondly, ES, in the process of generating search results, will unload all documents from the index with huge <code>content.text</code> we don’t need. </p><br><p>  Third, collecting these huge documents in mind, ES will try to send them to us with one answer. </p><br><p>  Ok, the third reason is easy to solve by including <code>source filtering</code> in the request.  How to deal with the rest? </p><br><h2 id="uskoryaem-poisk">  Accelerate the search </h2><br><p>  Obviously, searching, dumping into memory, and serializing results with the larger <code>content.text</code> field is a bad idea.  To avoid this, it is necessary to force Lucene to separately store and process large fields separately from the rest of the document fields.  We describe the necessary steps for this. </p><br><p>  First, in the mapping for a large field, you must specify the parameter <code>store: true</code> .  So you will tell Lucene that you need to store this field separately from the <code>_source</code> , i.e.  from the rest of the document.  It is important to understand that at the level of logic, this field is not excluded from the <code>_source</code> !  Simply Lucene when accessing the document will collect it in two steps: take the <code>_source</code> and add the stored <code>content.text</code> field to it. </p><br><p>  Secondly, it is necessary to specify Lucene that the "heavy" field is no longer necessary to include in the <code>_source</code> .  Thus, when searching, we will no longer upload large 100 MB documents into memory.  To do this, add the following lines to the mapping: </p><br><pre> <code class="hljs css">_<span class="hljs-selector-tag"><span class="hljs-selector-tag">source</span></span>: { <span class="hljs-attribute"><span class="hljs-attribute">excludes</span></span>: [ <span class="hljs-string"><span class="hljs-string">"content.text"</span></span> ] }</code> </pre> <br><p>  So, what we get in the end: when you add a document to the index, <code>_source</code> indexed without the "heavy" <code>content.text</code> field.  It is indexed separately.  In the search for any "light" field, <code>content.text</code> does not take any part, respectively, Lucene with this query works with cropped documents, not 100 MB in size, but a couple of hundred bytes and the search is very fast.  The search for the "heavy" field is possible and effective; now it is performed on an array of fields of the same type.  Search simultaneously for the "heavy" and "light" fields of one document is also possible and effective.  It is done in three stages: </p><br><ul><li>  easy search for cropped documents ( <code>_source</code> ) </li><li>  search in the array of "heavy fields" ( <code>content.text</code> ) </li><li>  quick merge of results without returning the entire <code>content.text</code> field </li></ul><br><p>  To assess the speed of work, we will look for the phrase "Ivan Ivanov" in the <code>content.text</code> field with filtering by the <code>content.size</code> field in the index from documents larger than 100 MB.  An example request is shown below: </p><br><pre> <code class="hljs swift">curl -<span class="hljs-type"><span class="hljs-type">X</span></span> <span class="hljs-type"><span class="hljs-type">POST</span></span> -<span class="hljs-type"><span class="hljs-type">H</span></span> <span class="hljs-string"><span class="hljs-string">"Content-Type: application/json"</span></span> -d '{ <span class="hljs-string"><span class="hljs-string">"from"</span></span>: <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-string"><span class="hljs-string">"size"</span></span>: <span class="hljs-number"><span class="hljs-number">10</span></span>, <span class="hljs-string"><span class="hljs-string">"query"</span></span>: { <span class="hljs-string"><span class="hljs-string">"bool"</span></span>: { <span class="hljs-string"><span class="hljs-string">"must"</span></span>: [ { <span class="hljs-string"><span class="hljs-string">"range"</span></span>: { <span class="hljs-string"><span class="hljs-string">"content.size"</span></span>: { <span class="hljs-string"><span class="hljs-string">"gte"</span></span>: <span class="hljs-number"><span class="hljs-number">100000000</span></span> } } }, { <span class="hljs-string"><span class="hljs-string">"match_phrase"</span></span>: { <span class="hljs-string"><span class="hljs-string">"content.text"</span></span>: <span class="hljs-string"><span class="hljs-string">" "</span></span>} } ] } } }' <span class="hljs-string"><span class="hljs-string">"http://ambar:9200/ambar_file_data/_search"</span></span></code> </pre> <br><p>  Our test index contains about 3.5 million documents.  All this works on a single small-capacity machine (16GB of RAM, normal storage for RAID 10 from SATA drives).  The results are as follows: </p><br><ul><li>  Basic mapping "in the forehead" - 6.8 seconds </li><li>  Our option - 6 ms </li></ul><br><p>  Total performance gain of about 1,100 times.  Agree, for the sake of such a result, it was worth spending a few evenings studying the work of Lucene and ElasticSearch, and a few more days to write this article.  But our approach has one pitfall. </p><br><h2 id="pobochnye-effekty">  Side effects </h2><br><p>  In case you store any field separately and exclude it from the <code>_source</code> you are waited by one rather unpleasant reef about which there is absolutely no information in open access or in ES manuals. </p><br><p>  The problem is the following: you cannot partially update the document field from <code>_source</code> using <code>update scipt</code> without losing a separate stored field!  If, for example, you add a new object to the <code>meta</code> array by the script, then ES will have to reindex the entire document (which is natural), however, the separately stored <code>content.text</code> field will be lost.  At the exit, you will receive an updated document, but in <code>stored_fields</code> it will have nothing but a <code>_source</code> .  Thus, if you need to update any of the <code>_source</code> fields, you will have to rewrite the stored field with it. </p><br><h2 id="itog">  Total </h2><br><p>  For us, this is the second use of ES in a large project, and again we were able to solve all our problems while maintaining the speed and efficiency of the search.  ES is really very good, you just need to be patient and be able to set it up correctly. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/321352/">https://habr.com/ru/post/321352/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../321340/index.html">Introduction to the design of entities, the problem of creating objects</a></li>
+<li><a href="../321344/index.html">Inversion of injection control</a></li>
+<li><a href="../321346/index.html">Switching from CruiseControl.NET to Jenkins in the PVS-Studio development team</a></li>
+<li><a href="../321348/index.html">We recycle. So what?</a></li>
+<li><a href="../321350/index.html">Kaggle and Linux. Digit Recognizer for analysts (for beginning analysts)</a></li>
+<li><a href="../321354/index.html">How-to: tools for competitive analysis of software products</a></li>
+<li><a href="../321356/index.html">One-day conference on the gaming industry at VSBI February 11</a></li>
+<li><a href="../321358/index.html">A / B tests are not needed *</a></li>
+<li><a href="../321360/index.html">Technosphere Mail.Ru - three years</a></li>
+<li><a href="../321362/index.html">Testing Ethereum smart contracts on the example of DAO</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Node.js Streams and Reactive Programming</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article, we will try to solve the real problem with Node.js Stream and a little Reactive Programming. I'm not sure about the latter - RP, to s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Node.js Streams and Reactive Programming</h1><div class="post__text post__text-html js-mediator-article"><p>  In this article, we will try to solve the real problem with Node.js <a href="https://nodejs.org/api/stream.html">Stream</a> and a little Reactive Programming.  I'm not sure about the latter - RP, to some extent, "bogey" (how to translate a buzzword?) That everyone is talking about, but no one "does." </p><br><p>  The article considers a practical example and is aimed at a reader familiar with the platform, so this purposely does not explain basic concepts - if something is not clear from the Stream API, then you should contact the platform documentation or some kind of retelling of it (for example, <a href="https://github.com/substack/stream-handbook">this one</a> ). </p><br><p>  Let's start with a description of the problem: we need to build a “spider” that will take all the data from the “alien” REST API, somehow process it and write it to “our” database.  For ease of modeling, we omit details about specific APIs and databases (in reality, this was the API of one well-known hotel-related startup and Postgres database). </p><a name="habracut"></a><br><p>  Imagine that we have two functions (the function code like the whole code from the article can be found <a href="https://gist.github.com/kharandziuk/dfe74a6887ce3ec14c0daeba1d0a0182/">here</a> ): </p><br><pre><code class="hljs pgsql">getAPI(n, count) //  -  API.   promise     count    n- insertDB(entries) //  -   .  promise         //,     : getAPI(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>).<span class="hljs-keyword"><span class="hljs-keyword">then</span></span>(console.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>) // [{ id: <span class="hljs-number"><span class="hljs-number">0</span></span>}, {id: <span class="hljs-number"><span class="hljs-number">1</span></span>}] getAPI(LAST_ITEM_ID, <span class="hljs-number"><span class="hljs-number">1000</span></span>).<span class="hljs-keyword"><span class="hljs-keyword">then</span></span>(console.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>) // [{id: LAST_ITEM_ID}] –             API. //    count  <span class="hljs-number"><span class="hljs-number">1000</span></span>:    <span class="hljs-number"><span class="hljs-number">1001</span></span>,       <span class="hljs-number"><span class="hljs-number">1000</span></span>  insertDB([{id: <span class="hljs-number"><span class="hljs-number">0</span></span>}]).<span class="hljs-keyword"><span class="hljs-keyword">then</span></span>(console.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>) // { count: <span class="hljs-number"><span class="hljs-number">1</span></span> }</code> </pre> <br><p>  We intentionally ignore error handling possible when working with the API and the database, for simplicity.  If there is interest, we will consider them in a separate article. </p><br><p>  Well, in order not to be bored, let's say that our customer is a pervert and he has set the following task: we don’t want to see in our database all the id entities that contain the number 3. And whose id entities contain the number 9, we want to add the current timestamp value: <code>{id: 9} -&gt; {id: 9, timestamp: 1490571732068}</code> .  A little far-fetched, but similar to the processing and filtering tasks that have to be solved in such “spiders”. </p><br><p>  Well, let's start.  Let's try to solve this problem "in the forehead."  Most likely we will end up with code with something similar to this: </p><br><pre> <code class="hljs coffeescript">function grab(offset = <span class="hljs-number"><span class="hljs-number">0</span></span>, rows = <span class="hljs-number"><span class="hljs-number">1000</span></span>) { offset = offset <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> getAPI(offset, <span class="hljs-number"><span class="hljs-number">1000</span></span>).<span class="hljs-keyword"><span class="hljs-keyword">then</span></span>(<span class="hljs-function"><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(items)</span></span></span><span class="hljs-function"> =&gt;</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(_.isEmpty(items)) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> insertDB(items).<span class="hljs-keyword"><span class="hljs-keyword">then</span></span>(<span class="hljs-function"><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> =&gt;</span></span> grab(offset + rows)) } }) } <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.time(<span class="hljs-string"><span class="hljs-string">'transition'</span></span>) grab().<span class="hljs-keyword"><span class="hljs-keyword">then</span></span>(<span class="hljs-function"><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> =&gt;</span></span> { <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.timeEnd(<span class="hljs-string"><span class="hljs-string">'transition'</span></span>) })</code> </pre> <br><p>  What is wrong with this code? </p><br><ol><li>  Glancing through the code is hard to understand what it does.  This can be corrected by adding comments, but still I would like at the code level to let the "reader" understand that we are reading from somewhere and writing somewhere. </li><li>  It is too specific - imagine that we add code to handle values.  Where do we add it? </li><li>  It is recursive - so, with a sufficiently large number of entities in the API, we get an error.  It is treated by rewriting do ... while, but this is unlikely to make the code more readable. </li><li>  He is unproductive.  Imagine that our data source is much faster than the consumer - in this situation, we would like to aggregate the data into a buffer and, if possible, write them at once </li></ol><br><p>  As you may have guessed, this problem is easy to solve with Streams.  To begin with, we divide this task into two subtasks: reading and writing. </p><br><p>  Let's start with reading, let's try our ReadableStream: </p><br><pre> <code class="hljs kotlin"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> {Writable, Readable} = require(<span class="hljs-string"><span class="hljs-string">'stream'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> {getAPI, insertDB} = require(<span class="hljs-string"><span class="hljs-string">'./io-simulators'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> ROWS = <span class="hljs-number"><span class="hljs-number">1000</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">APIReadable</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">extends</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Readable</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">constructor</span></span>(options) { <span class="hljs-keyword"><span class="hljs-keyword">super</span></span>({objectMode: <span class="hljs-literal"><span class="hljs-literal">true</span></span>}) <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.offset = <span class="hljs-number"><span class="hljs-number">0</span></span> } _read(size) { getAPI(<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.offset, ROWS).then(<span class="hljs-keyword"><span class="hljs-keyword">data</span></span> =&gt; { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(_.isEmpty(<span class="hljs-keyword"><span class="hljs-keyword">data</span></span>)) { <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.push(<span class="hljs-literal"><span class="hljs-literal">null</span></span>) } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.push(<span class="hljs-keyword"><span class="hljs-keyword">data</span></span>) } }) <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.offset = <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.offset + ROWS } }</code> </pre> <br><p>  Looks a little more bulky.  It is worth paying attention to <code>objectMode: true</code> - we want to operate with objects, which means it is worth passing this flag to the constructor. </p><br><p>  Okay, now for the record.  We implement our Writable stream.  Something like that: </p><br><pre> <code class="hljs scala"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">DBWritable</span></span></span><span class="hljs-class"> </span><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">extends</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Writable</span></span></span><span class="hljs-class"> </span></span>{ constructor(options) { <span class="hljs-keyword"><span class="hljs-keyword">super</span></span>({highWaterMark: <span class="hljs-number"><span class="hljs-number">5</span></span>, objectMode: <span class="hljs-literal"><span class="hljs-literal">true</span></span>}); } _write(chunk, encoding, callback) { insertDB(chunk).asCallback(callback) } _writev(chunks, callback) { const entries = _.map(chunks, <span class="hljs-symbol"><span class="hljs-symbol">'chun</span></span>k') insertDB(_.flatten(entries)).asCallback(callback) <span class="hljs-comment"><span class="hljs-comment">//   Bluebird-promises,    } }</span></span></code> </pre> <br><p>  What you should pay attention to: </p><br><ol><li>  objectMode - as with Readable stream, we want to operate on objects, not binary data </li><li>  highWaterMark - the size of our buffer.  Here it is worth being careful, we set the size of the buffer in the objects and this is in no way connected with the real dimensionality (bytes-bytes).  For example: in our case we operate with lists. </li><li>  _writev - a description of how to handle several "pieces" of data from the buffer at a time </li></ol><br><p>  Well, now use our code like this: </p><br><pre> <code class="hljs cs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> dbWritable = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> DBWritable() <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> apiReadable= <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> APIReadable() apiReadable.pipe(dbWritable)</code> </pre> <br><p>  It seems to me - this is very cool, now from the code it is extremely clear that we read from one place and write to another.  In addition, the reader can verify that our code is very efficient and uses a buffer.  Well, all sorts of small buns like the fact that it does not block the event-loop. </p><br><p>  Hmm -, an attentive reader will ask, - what about the processing of data?  To do this, we can write another Transform stream, but this is somehow "flat and boring", so we use the <a href="http://highlandjs.org/">Highland.js</a> library, which will allow us to apply our favorite filter and filter over the elements of our "stream" of entities.  In general, Highland is something more than this simple usecase, but this is a topic for a separate and not a small article.  Something like this: </p><br><pre> <code class="hljs javascript">H(apiReadable) .flatten() .reject(<span class="hljs-function"><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">x</span></span></span><span class="hljs-function"> =&gt;</span></span> _.includes(<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>(x.id), <span class="hljs-number"><span class="hljs-number">3</span></span>)) .map(<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">x</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(_.includes(<span class="hljs-built_in"><span class="hljs-built_in">String</span></span>(x.id), <span class="hljs-number"><span class="hljs-number">9</span></span>)) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> _.extend(x, {<span class="hljs-attr"><span class="hljs-attr">timestamp</span></span>: <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>.now()}) } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> x } }) .batchWithTimeOrCount(<span class="hljs-number"><span class="hljs-number">100</span></span>, <span class="hljs-number"><span class="hljs-number">1000</span></span>) .pipe(dbWritable)</code> </pre> <br><p>  As for me, it is very similar to list operations and readable.  And <code>.flatten()</code> and <code>.batchWithTimeOrCount(100, 1000)</code> we need only because our Streamy operates with arrays instead of separate objects. </p><br><p>  That's actually all.  I hope I reached my goal and interested the reader in studying Stream and Highland.js. <br>  <a href="https://news.ycombinator.com/item%3Fid%3D14004198">Translation of this article into English</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/325320/">https://habr.com/ru/post/325320/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../325308/index.html">Functional C #</a></li>
+<li><a href="../325310/index.html">Development → Kazakhstan: How I helped to submit 100 forms of tax reporting. Continuation 300 form</a></li>
+<li><a href="../325312/index.html">The right to oblivion does not apply to data in business registers: decision of the Court of Justice of the European Union of March 9, 2017</a></li>
+<li><a href="../325316/index.html">MySQL sample rotation</a></li>
+<li><a href="../325318/index.html">How I stopped being afraid and re-invented QML</a></li>
+<li><a href="../325322/index.html">Productive weekend: when all things can be put off until later</a></li>
+<li><a href="../325326/index.html">3.5 years, 500k Go lines. Part 1</a></li>
+<li><a href="../325328/index.html">Tuning SQL Server 2012 under SharePoint 2013/2016. Part 2</a></li>
+<li><a href="../325330/index.html">Security Watch: IBM QRadar SIEM</a></li>
+<li><a href="../325334/index.html">Stanislavsky data center: how DataLine corporate theater works</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

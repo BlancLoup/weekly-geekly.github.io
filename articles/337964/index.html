@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Docker, or There and back</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="With the advent of docker with us, as a monitoring service, life has become a little more complicated. As I wrote earlier , one of the chips of our se...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Docker, or There and back</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/web/9ad/550/be0/9ad550be0a234b59b4eeb1a7c5eb3048.png" align="left" width="300">  With the advent of docker with us, as a monitoring service, life has become a little more complicated.  As I <a href="https://habrahabr.ru/company/okmeter/blog/312560/">wrote earlier</a> , one of the chips of our service is the autodetection of services, that is, the agent himself finds the services running on the server, reads their configs and starts collecting metrics. </p><br><p>  But at some point in production our docker started to appear at our clients, and our autodetect stopped working.  The process, which is launched through the docker, contains various namespaces (mnt, net, user, pid), this rather complicates the work from the outside of the container with the files and the network inside the container. </p><br><p>  Under the cut, I'll tell you how we solved this problem, what options we tried, and what worked in the end. </p><a name="habracut"></a><br><p>  Our task can be divided into 2 parts: </p><br><ul><li>  learn to read files in containers </li><li>  learn how to connect to the network services running in containers </li></ul><br><h2 id="fayly-v-konteynerah">  Files in containers </h2><br><p>  The first hypothesis was very simple: we will simply determine where the fs container on the host disk looks, change paths and go there.  Unfortunately, this only works in the case of AUFS, but it is almost never encountered in production. </p><br><p>  Then we naively tried to do <a href="http://man7.org/linux/man-pages/man2/setns.2.html">setns</a> on the MNT namespace directly from the agent code, but this also did not work.  The fact is that setns on mnt (and user too) can only do a single-application application: </p><br><blockquote>  If it is multithreaded </blockquote><p>  Our agent is written in golang and by the time we want to call setns, the gush runtime has already created several threads for us.  In order for the agent to run some special processes like <a href="https://github.com/jpetazzo/nsenter">nsenter</a> , you must first drag them onto the machine to the client, which we strongly did not want. </p><br><p> There was an option to run something through <code>docker exec -ti</code> , but, firstly, this command is available only from version 1.3, secondly, there is not only a docker, but also other containerization services, and thirdly, inside the container not even be a cat. </p><br><p>  Then I found an interesting <a href="https://github.com/golang/go/issues/8676">hack for go</a> , which allows you to make setns in the constructor before running go runtime.  As a result, we came to the conclusion that the agent runs itself with certain arguments and can read the file in the required ns, open glob on the file system of the container, and the like.  But since setns should be executed in C code, I had to write in C and the processing of the launch arguments.  And at the time of the call </p><br><pre> <code class="hljs delphi">__attribute__((<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">constructor</span></span></span><span class="hljs-function">))</span></span></code> </pre> <br><p>  argv / argc has not yet been initialized, so I had to read the launch arguments myself from <code>/proc/self/cmdline</code> . </p><br><p>  When the agent starts up in this mode, it dumps the result of its work into stdout / stderr, and the parent agent reads this.  Separately, we had to make a limit on the size of the readable file: in order not to load the disk, we don’t even try to read files of more than 200KB (often weighty nginx configs with geoip mapping), since this can noticeably load the disk on the client server. </p><br><p>  Such an approach works well only when you need to read a file once, but it does not work if you need, for example, to tail the log.  On the other hand, logs are not usually written on puff fs containers.  They are usually either wrapped in a Docker stdout / stderr and run through dockerd, or they are written in mounted partitions on the host fs. </p><br><p>  We still do not process the variant with dockerd, but it is worth noting that it is rarely found among our customers.  Apparently due to the fact that on a large stream of logs, dockerd begins to load the processor. </p><br><p>  For the case with mounted logging directories, we are trying to find the necessary file on the fs host through information from the <code>docker inspect</code> , and the plugin that wants to parse such a log gets the path to the file already outside the container. </p><br><h2 id="set-v-konteynerah">  Container network </h2><br><p>  The first idea about how to work on the network with the service in the container was also naive: we will take the container's IP from <code>docker inspect</code> and work with it.  Then it turned out that access from the host to the container network might not be at all (macvlan).  In addition, there is lxc and so on. </p><br><p>  We decided to move toward setns.  The network namespace, unlike mnt and user, can be overridden for one particular application thread.  In golang, this is at first glance all quite simple: </p><br><ul><li>  run gorutina </li><li>  block the current thread for it <a href="https://golang.org/pkg/runtime/">runtime.LockOSThread</a> , so the other gorutiny in this thread will not be executed </li><li>  do setns </li><li>  if needed, you can setns on our previous namespace and remove the lock on the thread <a href="https://golang.org/pkg/runtime/">runtime.UnlockOSThread</a> </li></ul><br><p>  But everything turned out to be more difficult.  In fact, when blocking a thread, runtime does not guarantee that the execution of this gorutina will remain in this thread.  There is a good description of just such a case in the post " <a href="https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix">Linux Namespaces And Go Don't Mix</a> ." </p><br><p>  Initially, we were going to launch a plugin that monitors the service in a container just in a locked thread with setns, but it broke on the very first http client. </p><br><p>  Since we do not have an opportunity to influence the go <a href="https://morsmachine.dk/go-scheduler">planner</a> , we began to look for a way to leave only the code in the thread that does not result in the generation of new threads. </p><br><p>  We noticed that if you make tcp connection right after setns, it goes 100% of the time, and if you then exit the namespace and release the lock to the thread, the open connection continues to work (I find it difficult to explain why it works). </p><br><p>  Then the task was reduced to ensuring that all the libraries for working with various services that we monitor, slip our <code>Dialer</code> (the function responsible for TCP connect): </p><br><ul><li>  <a href="https://github.com/go-redis/redis">redis</a> : <br><pre> <code class="hljs go">client := redis.NewClient(&amp;redis.Options{ Dialer: <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(net.Conn, error)</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> utils.DialTimeoutNs(<span class="hljs-string"><span class="hljs-string">"tcp"</span></span>, params.Address, params.NetNs, redisTimeout) }, ReadTimeout: redisTimeout, WriteTimeout: redisTimeout, Password: params.Password, })</code> </pre> </li><li>  for memcached, we do not use any libraries, but we work with it on tcp with our hands, therefore there are no problems here either </li><li>  in rabbitmq we go over http, standard http client can accept custom dial </li><li>  <a href="https://github.com/go-sql-driver/mysql">mysql</a> : <br><pre> <code class="go hljs">mysql.RegisterDial(<span class="hljs-string"><span class="hljs-string">"netns"</span></span>, <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(addr </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(net.Conn, error)</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> utils.DialTimeoutNs(<span class="hljs-string"><span class="hljs-string">"tcp"</span></span>, addr, params.NetNs, connectTimeout) }) db, err = sql.Open(<span class="hljs-string"><span class="hljs-string">"mysql"</span></span>, fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"netns(%s)/?timeout=%s&amp;readTimeout=%s&amp;writeTimeout=%s"</span></span>, params.Address, connectTimeout, readTimeout, writeTimeout))</code> </pre> </li><li>  c <a href="https://github.com/lib/pq">postgresql</a> turned out to be quite a crutch, I had to make my own pseudo driver for <code>database/sql</code> : </li></ul><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">init</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { sql.Register(<span class="hljs-string"><span class="hljs-string">"postgres+netns"</span></span>, &amp;drv{}) } <span class="hljs-keyword"><span class="hljs-keyword">type</span></span> drv <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span>{} <span class="hljs-keyword"><span class="hljs-keyword">type</span></span> nsDialer <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> { netNs <span class="hljs-keyword"><span class="hljs-keyword">string</span></span> } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(d nsDialer)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Dial</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(ntw, addr </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(net.Conn, error)</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> utils.DialTimeoutNs(ntw, addr, d.netNs, connectTimeout) } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(d nsDialer)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">DialTimeout</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(ntw, addr </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">, timeout time.Duration)</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(net.Conn, error)</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> utils.DialTimeoutNs(ntw, addr, d.netNs, timeout) } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(d *drv)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Open</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(name </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(driver.Conn, error)</span></span></span></span> { parts := strings.SplitN(name, <span class="hljs-string"><span class="hljs-string">"|"</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>) netNs := <span class="hljs-string"><span class="hljs-string">""</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-built_in"><span class="hljs-built_in">len</span></span>(parts) == <span class="hljs-number"><span class="hljs-number">2</span></span> { netNs = parts[<span class="hljs-number"><span class="hljs-number">0</span></span>] name = parts[<span class="hljs-number"><span class="hljs-number">1</span></span>] } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> pq.DialOpen(nsDialer{netNs}, name) }</code> </pre> <br><p>  then we call our driver: </p><br><pre> <code class="go hljs">dsn := fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"%s|postgres://%s:%s@%s/%s"</span></span>, p.NetNs, p.User, p.Password, p.Address, dbName) db, err := sql.Open(<span class="hljs-string"><span class="hljs-string">"postgres+netns"</span></span>, dsn)</code> </pre> <br><h2 id="itogo">  Total </h2><br><p>  Looking back, we did not regret that we chose the option with setns, so the same code recently worked perfectly for the client with lxc. </p><br><p>  The only unclosed service at the moment is jvm in a container, but this is a completely different story. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/337964/">https://habr.com/ru/post/337964/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../337950/index.html">We enter the rating of the participant Dribbble and Behance on "My Circle"</a></li>
+<li><a href="../337952/index.html">Mathematics for the programmer</a></li>
+<li><a href="../337958/index.html">iOS + Kotlin. What can be done now</a></li>
+<li><a href="../337960/index.html">In unity - profit. ESET examines browser miner</a></li>
+<li><a href="../337962/index.html">Where to go vendor when Amazon is too tough: we come up with a marketplace for niche gadgets</a></li>
+<li><a href="../337968/index.html">What do large successful open source projects have in common?</a></li>
+<li><a href="../337970/index.html">People's Privacy Policy</a></li>
+<li><a href="../337972/index.html">On the factor of the case when playing "Monopoly"</a></li>
+<li><a href="../337974/index.html">Overview of one Russian RTOS, part 5. First application</a></li>
+<li><a href="../337976/index.html">RTP Bleed: Dangerous vulnerability to intercept VoIP traffic</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

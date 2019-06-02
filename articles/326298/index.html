@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Problems with the speed of the "gettimeofday" and "clock_gettime" system calls in AWS EC2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Frame from the film "The Matrix: Revolution" 
+
+
+ In this article, we will look at the details of one interesting find in detail: two frequently used s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Problems with the speed of the "gettimeofday" and "clock_gettime" system calls in AWS EC2</h1><div class="post__text post__text-html js-mediator-article"><div style="text-align:center;"><img src="https://habrastorage.org/files/189/18a/982/18918a982c764f32b9db0e318f32d116.jpg"></div><br><p>  <em>Frame from the film "The Matrix: Revolution"</em> </p><br><p> In this article, we will look at the details of one interesting find in detail: two frequently used system calls ( <code>gettimeofday</code> , <code>clock_gettime</code> ) in AWS EC2 are very slow. </p><br><p>  Linux has a mechanism for speeding up these two frequently used system calls, thanks to which their code is executed in user space, which avoids switching to the kernel context.  This is done using the <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">virtual shared library</a> provided by the kernel, which is mapped into the address space of all running programs. </p><br><p>  The above two system calls cannot use virtual dynamic Dynamic Shared Object vDSO in AWS EC2 because the virtualized clock source in xen (and some kvm configurations) does not support retrieving time information through vDSO. </p><br><p>  Bypass this problem will not work.  You can change the time information source to <code>tsc</code> , but this is not safe.  Next, we will look at the issue in more detail and conduct a comparative test using microbenchmark. </p><a name="habracut"></a><br><h2 id="proverka">  Check </h2><br><p>  To quickly check your system for this problem, compile the program below and run it with <code>strace</code> : </p><br><pre> <code class="hljs vbscript">#include &lt;stdio.h&gt; #include &lt;stdlib.h&gt; #include &lt;sys/<span class="hljs-built_in"><span class="hljs-built_in">time</span></span>.h&gt; <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> main(<span class="hljs-built_in"><span class="hljs-built_in">int</span></span> argc, char *argv[]) { struct timeval tv; <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (; i&lt;<span class="hljs-number"><span class="hljs-number">100</span></span>; i++) { gettimeofday(&amp;tv,<span class="hljs-literal"><span class="hljs-literal">NULL</span></span>); } return <span class="hljs-number"><span class="hljs-number">0</span></span>; }</code> </pre> <br><pre> <code class="bash hljs">gcc -o <span class="hljs-built_in"><span class="hljs-built_in">test</span></span> test.c strace -ce gettimeofday ./<span class="hljs-built_in"><span class="hljs-built_in">test</span></span> % time seconds usecs/call calls errors syscall ------ ----------- ----------- --------- --------- ---------------- 0.00 0.000000 0 100 gettimeofday ------ ----------- ----------- --------- --------- ---------------- 100.00 0.000000 100 total`</code> </pre> <br><p>  <code>Strace</code> counted 100 <code>gettimeofday</code> calls.  This means that vDSO was not used, and real system calls were made instead of it, which led to switching to the kernel context.  The vDSO mechanism in Linux was designed taking into account <code>gettimeofday</code> (this call is even mentioned in <a href="http://man7.org/linux/man-pages/man7/vdso.7.html">the vDSO man page</a> ).  Any system call made through vDSO is fully executed in user space, thereby avoiding context switching.  As a result, any system call that successfully passed through vDSO <strong>will not appear in the <code>strace</code> output</strong> . </p><br><p>  Next, we will examine in detail why and how this happens, and also look at the very interesting results of profiling. </p><br><h2 id="neobhodimaya-informaciya">  The necessary information </h2><br><p>  There are several important aspects that you should be familiar with in order to better understand the problem description and the corresponding code snippets. </p><br><h3 id="sistemnye-vyzovy-linux-i-vdso">  Linux and vDSO system calls </h3><br><p>  Before continuing to read this article, we strongly recommend that you carefully study our previous publication, which describes in detail the work of the Linux system calls: <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">The Definitive Guide to Linux System Calls (in English)</a> . </p><br><p>  A vDSO is essentially a shared library provided by the kernel that maps to the address space of each process.  When <code>gettimeofday</code> , <code>clock_gettime</code> , <code>getcpu</code> or <code>time</code> <code>getcpu</code> , glibc attempts to execute the code provided by vDSO.  This code gets the necessary data without switching to the kernel context and thus avoids the extra cost of making this system call. </p><br><p>  Since system calls made via vDSO do not lead to switching to the kernel context, <code>strace</code> does not receive the appropriate notifications.  As a result, in the output of <code>strace</code> there will be no mention of, for example, <code>gettimeofday</code> , if the program successfully made this system call via vDSO.  Instead of <code>strace</code> in this case you need to use <code>ltrace</code> .  More detailed information on how the <code>strace</code> utility is arranged can be found in our publication “ <a href="https://blog.packagecloud.io/eng/2016/02/29/how-does-strace-work/">How does strace work</a> ”. </p><br><p>  In AWS EC2, <code>gettimeofday</code> appears in the <code>strace</code> output.  This is because the vDSO performs normal system calls in some situations. </p><br><h3 id="vremya-v-linux">  Linux time </h3><br><p>  On Linux-based x86-based systems, several different mechanisms are used to obtain time information: </p><br><ul><li>  Programmable Interrupt Timer; </li><li>  real time clock (Real-Time Clock); </li><li>  High Precision Event Timer; </li><li>  local timer APIC (local APIC timer); </li><li>  timestamp counter (Time Stamp Counter). </li></ul><br><p>  Each of these mechanisms has its pros and cons.  Detailed information can be found in the source code <a href="https://github.com/torvalds/linux/blob/v3.13/Documentation/virtual/kvm/timekeeping.txt">Documentation / virtual / kvm / timekeeping.txt</a> . </p><br><p>  It is important to understand that virtualization creates additional difficulties when working with time information.  For example: </p><br><ol><li>  Virtual machines running on the same host use a single source of time information, while it is not possible to update this information on all guest machines at the same time.  Moreover, on some virtual machines, while the critical parts of the kernel are running, interrupts can be turned off altogether. </li><li>  Some of the mechanisms for working with time (for example, Time Stamp Counter) are initially virtualized.  Reading from the TSC register can affect performance, resulting in inaccurate data and hours lagging (backwards time drift). </li><li>  Migration of virtual machines between hypervisors with different CPUs can be problematic if the system of work with time is tied to the processor clock frequency. </li></ol><br><p>  The guys from VMWare have published a <a href="http://www.vmware.com/pdf/vmware_timekeeping.pdf">very interesting article</a> that describes these and other issues related to working with time.  The information in this article is presented as specific to VMWare, but for the most part, it refers to any virtualization system. </p><br><p>  To solve these and other problems, KVM and Xen have their own time <a href="http://www.linux-kvm.org/page/KVMClock">management</a> systems: <a href="http://www.linux-kvm.org/page/KVMClock">KVM PVclock</a> and Xen time.  In the Linux kernel, they are called clocksource (the source of time information). </p><br><p>  The current system clocksource can be found in the file <code>/sys/devices/system/clocksource/clocksource0/current_clocksource</code> . </p><br><p>  It is this source that the system will access when it calls <code>gettimeofday</code> or <code>clock_gettime</code> . </p><br><h2 id="rezervnyy-mehanizm-vdso">  VDSO backup mechanism </h2><br><p>  Let's see how the <code>gettimeofday</code> call <code>gettimeofday</code> implemented in the vDSO code.  Let me remind you that this code is included in the kernel, but is executed in user space. </p><br><p>  If we carefully examine the code located in <a href="">arch / x86 / vdso / vclock_gettime.c</a> and compare the implementations of <code>gettimeofday</code> ( <code>__vdso_gettimeofday</code> ) and <code>clock_gettime</code> ( <code>__vdso_clock_gettime</code> ) in vDSO, we find that in both cases there are similar if closer to the end of the function: </p><br><pre> <code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (ret == VCLOCK_NONE) <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> vdso_fallback_gtod(clock, ts);</code> </pre> <br><p>  In the <code>__Vdso_clock_gettime</code> code there is the same check, but another function is called: <code>vdso_fallback_gettime</code> . </p><br><p>  If <code>ret</code> is <code>VCLOCK_NONE</code> , this means that the current system time source <strong>does not</strong> support vDSO.  In this case <a href=""><code> vdso_fallback_gtod</code></a> routinely performs a system call (switching to the kernel context with all the attendant additional costs). </p><br><p>  But when does <code>ret</code> get <code>VCLOCK_NONE</code> ? </p><br><p>  If we start moving upward from this condition block, we will find that <code>ret</code> gets the value of the <code>vclock_mode</code> field of the current clocksource.  In the following sources: </p><br><ul><li>  <a href="">High Precision Event Timer</a> , </li><li>  <a href="">Time Stamp Counter</a> </li><li>  and in some cases <a href="">KVM PVClock</a> </li></ul><br><p>  <code>vclock_mode</code> not equal to <code>VCLOCK_NONE</code> . </p><br><p>  On the other hand, in the sources: </p><br><ul><li>  <a href="">Xen time</a> , </li><li>  systems where the <code>CONFIG_PARAVIRT_CLOCK</code> parameter is not included in the kernel configuration, or the processor does not provide the paravirtualized clock feature functionality </li></ul><br><p>  <code>vclock_mode</code> is equal to <code>VCLOCK_NONE (0)</code> . </p><br><p>  AWS EC2 uses Xen.  In the default Xen clocksource <code>(xen)</code> the <code>vclock_mode</code> field <code>vclock_mode</code> set to <code>VCLOCK_NONE</code> , so EC2 instances will always use slow system calls — the vDSO mechanism will not be involved. </p><br><p>  But how will this affect performance? </p><br><h2 id="raznica-v-proizvoditelnosti-mezhdu-obychnymi-i-vdso-sistemnymi-vyzovami">  Performance differences between regular and vDSO system calls </h2><br><p>  In this experiment, we will use microbenchmark to measure how much faster <code>gettimeofday</code> is through vDSO compared to a normal system call. </p><br><p>  To do this, we will launch a test program with three cycles in the EC2 instance.  We will first test with a clocksource equal to <code>xen</code> , and then <code>tsc</code> . </p><br><p>  <strong>Setting the clocksource to <code>tsc</code> in EC2 is not safe.</strong>  <strong>It is unlikely, but still possible, that this could lead to unexpected backlog of clock (backwards clock drift).</strong>  <strong>Do not do this in production systems.</strong> </p><br><h3 id="usloviya-eksperimenta">  Experimental Conditions </h3><br><p>  AWS instance parameters: </p><br><ul><li>  Amazon Linux AMI 2016.09.1 ​​(HVM), SSD Volume Type (AMI: ami-f173cc91), </li><li>  m4.xlarge instance size, </li><li>  us-west-2c zone </li></ul><br><p>  We will measure the execution time using the <code>time</code> program.  You may be surprised: “How can you use the <code>time</code> program, which is able to destabilize the source of time information (clocksource)?” </p><br><p>  Fortunately, kernel developer Ingo Molnar has written a program to detect time warps: <a href="">time-warp-test.c</a> .  Please note that to work on 64bit x86-systems, the program should be slightly modified. </p><br><p>  During our experiment, the <code>time-warp-test</code> utility did not record time distortions. </p><br><p>  To obtain a more reasonable result, you can do the following: </p><br><ul><li>  Lagging hours (backward clock drift) is unlikely, but possible.  Repeated experiment and probabilistic analysis of the collected data can help filter out incorrect values. </li><li>  The experiment can be repeated on non-virtualized systems that are not subject to the problem of clock drift or runaway.  First, you can test the work through vDSO.  The program can then be modified to <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">make system calls directly</a> . </li></ul><br><p>  For the purposes of our experiment, it was enough to run tests for time distortion. </p><br><h2 id="rezultaty">  results </h2><br><p>  From the results it can be seen that normal system calls in ec2 conditions are about 77% slower than vDSO calls: </p><br><p>  5 million <code>gettimeofday</code> calls: </p><br><ul><li>  vDSO enabled: <br><ul><li>  real: 0m0.123s </li><li>  user: 0m0.120s </li><li>  sys: 0m0.000s </li></ul></li><li>  common system calls: <br><ul><li>  real: 0m0.547s </li><li>  user: 0m0.120s </li><li>  sys: 0m0.424s </li></ul></li></ul><br><p>  50 million <code>gettimeofday</code> calls: </p><br><ul><li>  vDSO enabled: <br><ul><li>  real: 0m1.225s </li><li>  user: 0m1.224s </li><li>  sys: 0m0.000s </li></ul></li><li>  common system calls: <br><ul><li>  real: 0m5.459s </li><li>  user: 0m1.316s </li><li>  sys: 0m4.140s </li></ul></li></ul><br><p>  500 million <code>gettimeofday</code> calls: </p><br><ul><li>  vDSO enabled: <br><ul><li>  real: 0m12.247s </li><li>  user: 0m12.244s </li><li>  sys: 0m0.000s </li></ul></li><li>  common system calls: <br><ul><li>  real: 0m54.606s </li><li>  user: 0m13.192s </li><li>  sys: 0m41.412s </li></ul></li></ul><br><h3 id="patchi-dlya-xen-na-podhode">  Patches for Xen on the way </h3><br><p>  To fix this problem, you need to add vDSO support to Xen.  Fortunately, <a href="https://lkml.org/lkml/2017/1/25/474">several corresponding patches are already in the works</a> . </p><br><p>  Until this (or similar) change gets into the kernel, and then into EC2, the <code>gettimeofday</code> and <code>clock_gettime</code> system calls will run 77% slower than on similar systems with vDSO support. </p><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  As expected, vDSO system calls are significantly faster than normal system calls.  This is achieved due to the fact that vDSO does not switch to the kernel context.  It is important to remember that successfully executed vDSO system calls do not fall into the <code>strace</code> output.  If vDSO could not be used, a normal system call will be made, which will appear in the <code>strace</code> output. </p><br><p>  There are several patches in the work that <a href="https://lkml.org/lkml/2017/1/25/474">are designed to add vDSO support to Xen</a> , but it is not known when these changes will appear in AWS EC2. </p><br><p>  Until this happens, <code>gettimeofday</code> and <code>clock_gettime</code> will run about 77% slower than they should. </p><br><p>  Using <code>strace</code> slows down the execution of the application, but gives invaluable information about exactly what it does.  All programmers should run their applications through <code>strace</code> and analyze the output of this utility. </p><br><h2 id="stati-po-teme">  Related articles </h2><br><p>  If you liked this article, I recommend reading our other publications, which also contain a lot of low-level technical information: </p><br><ul><li>  <a href="https://blog.packagecloud.io/eng/2017/03/06/micro-optimizations-matter/">Micro-optimizations matter: preventing 20 million system calls</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2017/02/21/set-environment-variable-save-thousands-of-system-calls/">How to set the TZ environment variable</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2017/02/06/monitoring-tuning-linux-networking-stack-sending-data/">Monitoring and Tuning the Linux Networking Stack: Sending Data</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/">Monitoring and Tuning the Linux Networking Stack: Receiving Data</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2016/10/11/monitoring-tuning-linux-networking-stack-receiving-data-illustrated/">Networking Stack: Receiving Data</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2016/04/05/the-definitive-guide-to-linux-system-calls/">The Definitive Guide to Linux System Calls</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2016/02/29/how-does-strace-work/"><code>How does strace</code> work?</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2016/03/14/how-does-ltrace-work/"><code>How does ltrace</code> work?</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2016/03/21/apt-hash-sum-mismatch/">APT Hash sum mismatch</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2014/10/28/howto-gpg-sign-verify-deb-packages-apt-repositories/">HOWTO: GPG sign and verify packages and APT repositories</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2014/11/24/howto-gpg-sign-verify-rpm-packages-yum-repositories/">HOWTO: GPG sign and verify RPM packages and yum repositories</a> </li></ul><br><p>  References: </p><br><ol><li>  Original: <a href="https://blog.packagecloud.io/eng/2017/03/08/system-calls-are-much-slower-on-ec2/">Two frequently used system calls are ~ 77% slower on AWS EC2</a> . </li></ol></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/326298/">https://habr.com/ru/post/326298/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../326284/index.html">$ Php is not needed *</a></li>
+<li><a href="../326288/index.html">Sandbox technology. Check Point SandBlast. Part 3</a></li>
+<li><a href="../326292/index.html">“How it works”: introduction to SSL / TLS</a></li>
+<li><a href="../326294/index.html">The book "User stories. The Art of Agile Software Development</a></li>
+<li><a href="../326296/index.html">Oscillating link model in resonant oscillation mode in Python</a></li>
+<li><a href="../326302/index.html">Writing a 2-d game in Java # 2</a></li>
+<li><a href="../326304/index.html">Why use static types in javascript? (Example of static typing on Flow)</a></li>
+<li><a href="../326308/index.html">Google released technical data and TPU appointment</a></li>
+<li><a href="../326312/index.html">How to write a chat bot for vk.com in 3 minutes</a></li>
+<li><a href="../326314/index.html">Delta has lost $ 150 million due to the desire of the manufacturer of emergency generators for the data center</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

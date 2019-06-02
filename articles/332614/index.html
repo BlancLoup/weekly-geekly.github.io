@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Backup LVM2 volumes with IO overload protection using SIGSTOP, SIGCONT signals</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Configuring backup confidently occupies one of the most important places in the administrator's activities. Depending on backup tasks, application typ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Backup LVM2 volumes with IO overload protection using SIGSTOP, SIGCONT signals</h1><div class="post__text post__text-html js-mediator-article"><p>  Configuring backup confidently occupies one of the most important places in the administrator's activities.  Depending on backup tasks, application types and data type, backup can be performed using various tools, such as rsync, duplicity, rdiff-backup, bacula and others, of which there is a huge variety. </p><br><p>  In addition to the implementation of the backup process itself, which would meet the needs of the organization, there are a number of problems that inevitably arise when backing up, one of which is an increase in the load on the disk subsystem, which can lead to degradation of application performance. <a name="habracut"></a></p><br><p>  The solution to this problem is not simple - often the administrator is forced to make compromises, which lead to the fact that the duration of the procedure increases or the frequency of backup decreases from daily to weekly.  These tradeoffs are inevitable and are a forced response to existing technical limitations. </p><br><p>  And, nevertheless, the main question remains open.  How do you back up in such a way that core applications receive acceptable quality of service?  UNIX family operating systems provide a staff mechanism for managing I / O priorities for applications, called <strong>ionice</strong> , and moreover, specific UNIX implementations provide their own mechanisms that allow you to impose additional restrictions.  For example, in the case of GNU / Linux, there is a <strong>cgroups</strong> mechanism that allows you to limit the bandwidth (for physically connected devices) and set the relative priority for a group of processes. </p><br><p>  However, in some cases, such solutions are not enough and it is necessary to focus on the actual "well-being" of system processes, which reflect such system parameters as <a href="https://ru.wikipedia.org/wiki/Load_Average">Load Average</a> or% IOWait.  In this case, an approach that I have been successfully applying for quite a long time when backing up data from LVM2 using dd can help. </p><br><h2 id="opisanie-zadachi">  Task Description </h2><br><p>  There is a GNU / Linux server that has storage configured using LVM2 and for this server a volume backup process is performed every night, which is done by creating a snapshot of the partition and running dd + gzip: </p><br><pre><code class="bash hljs">ionice -c3 dd <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>=/dev/vg/volume-snap bs=1M | gzip --fast | ncftpput ...</code> </pre> <br><p>  When backing up, I want to execute it as quickly as possible, but empirically noted that increasing% IOWait to 30%, the quality of service provided by the disk system of applications becomes unacceptable, so you need to keep it below this level.  It is required to implement a restrictive mechanism that would provide processing in the maximum permissible values ​​of% IOWait. </p><br><h2 id="poisk-resheniya">  Finding a solution </h2><br><p>  Initially, the solution was applied to the approach with <code>ionice -3</code> , but it did not give a stable result.  Mechanisms based on cpipe and cgroups (throttling) were discarded as making it impossible to copy data quickly if% IOWait is normal.  As a result, a solution was chosen based on monitoring% IOWait and suspending / resuming the dd process using SIGSTOP, SIGCONT signals together with the sar statistics service. </p><br><h2 id="reshenie">  Decision </h2><br><p>  Schematically, the solution is as follows: </p><br><ol><li>  We request statistics for N seconds and get the average value of% IOWait; </li><li>  Determine the action: <br>  a.  If the value of% IOWait is &lt;30, then the process is resumed (SIGCONT); <br>  b.  If the% IOWait value is&gt; 30, stop the process (SIGSTOP), increment the counter; </li><li>  If the process is stopped longer than N x K, restart the process and stop it again after 2 seconds. </li></ol><br><blockquote>  Most likely item 3 raises questions.  Why such a strange action?  The fact is that within the framework of the backup, data is transferred via FTP to a remote server and if the copying process is stopped for a long enough time, then we can lose the connection by timeout.  In order to prevent this from happening, we perform a forced resumption and stop of the copying process, even if we are in the red zone. </blockquote><p>  The solution code is shown below. </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash INTERVAL=10 CNTR=0 while : do CUR_LA=`LANG=C sar 1 $INTERVAL | grep Average | awk '{print $6}' | perl -pe 'if ($_ &gt; 30) { print "HIGH "} else {print "LOW "}'` echo $CUR_LA MARKER=`echo $CUR_LA | awk '{print $1}'` if [ "$MARKER" = "LOW" ] then CNTR=0 pkill dd -x --signal CONT continue else let "CNTR=$CNTR+1" pkill dd -x --signal STOP fi if [ "$CNTR" = "5" ] then echo "CNTR = $CNTR - CONT / 2 sec / STOP to avoid socket timeouts" CNTR=0 pkill dd -x --signal CONT sleep 2 pkill dd -x --signal STOP fi done</span></span></code> </pre> <br><p>  This solution successfully solved the problem of overloading IO on the server, while not restricting the speed severely, and has been faithfully serving for several months, while solutions based on the mechanisms designed for this have not yielded a positive result.  It should be noted that the parameter value obtained by sar can be easily replaced with Load Average and other parameters that correlate with the degradation of the service.  This script is also suitable for tasks that do not use LVM2 + dd, but, for example, Rsync or other backup tools. </p><br><p>  With the help of cgroups, it is possible in the same way to implement not a stop, but a band limitation, if we are talking about copying data from a physical block device. </p><br><p>  PS: The script is shown without editing in its original form. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/332614/">https://habr.com/ru/post/332614/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../332600/index.html">Tuning typical roles of Windows. Part One: Files and Printing</a></li>
+<li><a href="../332602/index.html">Why mobile apps take up more space</a></li>
+<li><a href="../332604/index.html">How to build a database for mailings and do not turn into a spammer?</a></li>
+<li><a href="../332608/index.html">How to create a vegetation billboard texture in Unreal Engine 4</a></li>
+<li><a href="../332612/index.html">Seminar "Clouds and reality: cases, rakes, good news", July 13, St. Petersburg</a></li>
+<li><a href="../332616/index.html">Node.js platform will bypass Java for a year</a></li>
+<li><a href="../332618/index.html">The method of recovering data from a disk encrypted with NotPetya using the Salsa20 algorithm</a></li>
+<li><a href="../332620/index.html">Will Python save from execution?</a></li>
+<li><a href="../332622/index.html">DPM: Why is he like that?</a></li>
+<li><a href="../332624/index.html">How to win in Vkontakte contests? Another approach</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

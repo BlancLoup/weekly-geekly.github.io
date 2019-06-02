@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PG Metricus - collecting metrics from plpgsql code or as three lines of code simplified life</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="To begin with, all your ads live in the PostgreSQL database. Until now, the lion's share of business logic is hidden in stored procedures, and it is n...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PG Metricus - collecting metrics from plpgsql code or as three lines of code simplified life</h1><div class="post__text post__text-html js-mediator-article">  To begin with, all <a href="https://habrahabr.ru/company/avito/blog/321796/">your ads live</a> in the PostgreSQL database.  Until now, the lion's share of business logic is hidden in stored procedures, and it is not always convenient to control their work. <br><br> <a href="https://habrahabr.ru/company/avito/blog/323900/"><img src="https://habrastorage.org/getpro/habr/post_images/fa3/6f1/564/fa36f15649d82cbbc13c5d394ea0adac.png"></a> <br><br>  For us, stored procedures are convenient, primarily because you don’t need to transfer gigabytes of data between the database and the application.  It is convenient to do several actions with different tables in the database, and in the application only to report that everything was completed successfully.  This is really convenient, but at the same time it introduces a number of problems.  Business logic is partially hidden in the database, the mechanisms that are used for debugging and monitoring on PHP / Go / Python / etc are not applicable on the DBMS side.  Of course, we have our own wonderful tools, for example, pg_stat_statements, but sometimes they cannot fully answer the question of exactly which piece of code in our large and complex storage does not work that way.  The solution we propose does not claim to be a “silver bullet”, but it can help to quickly determine the average execution time of pieces of code inside a stored procedure that runs thousands of times per second, and do this without creating an extra load.  Interesting?  Welcome! <br><a name="habracut"></a><br>  At some point, we sharply and suddenly needed to track the execution time of certain code fragments in a large stored procedure.  The procedure was complex, branched and very often used.  I wanted a quick and elegant solution without long refactoring and unnecessary work.  I wanted to see the result as clearly as possible, it would be ideal to get graphs of the frequency of calls in time, the volume of data being processed, the average and percentile of the execution time.  And this is all in real time.  We in the company decided to use the Brubeck / Graphite / Grafana stack to display such data, and we, first of all, began to think how to throw our metrics there. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The solution "in the forehead" - to write the stored procedure in plpython - disappeared immediately, to run the python interpreter in order to "spit" the string via UDP - an explicit search.  The next option was to throw RAISE NOTICE, and then for a long time and painful to grind logs.  Besides the fact that it looks like some kind of perversion, all the "realtime" is also lost.  There was also an option to simply save the data in the unlogged table and dump the data in some Brubeck script.  But adding entries to the loaded system, especially if the request is only for data sampling, is also not an option. <br><br>  The decision came suddenly and unexpectedly.  Accidentally remembered the mechanism LISTEN / NOTIFY and realized that this is it!  For half an hour we wrote a demon on Python, which connects to PostgreSQL, listens to the channel and sends it to Brubeck, and inside the stored procedure we simply write to this channel. <br><br>  And now, actually, an example of use: <br><br><pre><code class="sql hljs">x1 = clock_timestamp(); ...your long running query... x2 = clock_timestamp(); GET DIAGNOSTICS c = ROW_COUNT; perform pg_notify('channel_test', format(E'%s.%s:%s|%s\n', 'db.sql.metric', 'long_query.duration', extract(millisecond from (x2 - x1))::bigint::text, 'ms')); perform pg_notify('channel_test', format(E'%s.%s:%s|%s\n', 'db.sql.metric', 'long_query.count', c::text, 'c'));</code> </pre> <br>  Save the time before the request, save the time after the request, subtract one from the other, translate in milliseconds and send to the channel.  Our demon on Python catches this message and sends further to Brubeck. <br><br>  This solution has several advantages: <br><br><ul><li>  The decision was invented, implemented and rolled into battle in 2 hours. <br></li><li>  There were no server restarts. <br></li><li>  Of external dependencies, only one daemon in python. <br></li><li>  Minimum overhead, on our N thousands of transactions per second, we never saw it. <br></li></ul><br>  Also, this solution has a number of features that are important to know about.  All these features derive from the PostgreSQL LISTEN / NOTIFY mechanism device: <br><br><ul><li>  The data you send to the channel depends on the transaction.  If you sent something to the channel, and the transaction was rolled back, then nothing will come to the channel. <br></li><li>  LISTEN / NOTIFY does not work on standby. <br></li><li>  There are other features of NOTIFY in PostgreSQL, for example, that the same data will be delivered only once.  All features are best seen in the LISTEN / NOTIFY documentation. <br></li></ul><br>  All this, of course, the little things that we personally get along well with. <br><br>  But that is not all! <br><br>  A week before this article was written, a PostgreSQL C extension for pg_metricus was invented and written. <br><br>  This extension does not use LISTEN / NOTIFY and sends metrics to the aggregator socket immediately at the time of the call.  Due to which the data became independent of the state of the transaction.  Even if the transaction was rolled back, all your data successfully reached the aggregator. <br><br>  How to use it?  Yes, everything is simple! <br><br>  We specify the host and port of our aggregator in the postgresql.conf settings: <br><br><pre> <code class="sql hljs">pg_metricus.host = '10.4.5.177' pg_metricus.port = 8224</code> </pre> <br>  Do <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> pg_reload_conf()</code> </pre> <br>  We collected source codes: <br><br><pre> <code class="sql hljs">make <span class="hljs-keyword"><span class="hljs-keyword">install</span></span></code> </pre> <br>  Install the extension: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">schema</span></span> metricus; <span class="hljs-keyword"><span class="hljs-keyword">create</span></span> extension pg_metricus <span class="hljs-keyword"><span class="hljs-keyword">schema</span></span> metricus;</code> </pre> <br>  And that's it!  You can send data! <br><br><pre> <code class="sql hljs">x1 = clock_timestamp(); ...your long running query... x2 = clock_timestamp(); GET DIAGNOSTICS c = ROW_COUNT; perform metricus.send_metric(format(E'%s.%s:%s|%s\n', 'db.sql.metric', 'long_query.duration', extract(millisecond from (x2 - x1))::bigint::text, 'ms')); perform metricus.send_metric(format(E'%s.%s:%s|%s\n', 'db.sql.metric', 'long_query.count', c::text, 'c'));</code> </pre> <br>  In conclusion, I would like to note that this approach allowed us to solve all the problems we voiced.  We tested, rolled out into battle, and after 5 minutes we already had beautiful graphics in Grafana and the first idea of ​​how and how often and how long it runs in our studied logic. <br><br> <a href=""><img src="https://habrastorage.org/getpro/habr/post_images/2cf/466/6ce/2cf4666ce3f9432194b2731fa6e2df8c.png"></a> <br>  <i><font color="#999999">The picture is clickable</font></i> <br><br>  Thanks for attention!  We are waiting for your questions and feedback. <br><br>  Projects are available at the links below: <br><br>  Github <br>  → <a href="https://github.com/avito-tech/pg_metricus_python">https://github.com/avito-tech/pg_metricus_python</a> <br>  → <a href="https://github.com/avito-tech/pg_metricus_c">https://github.com/avito-tech/pg_metricus_c</a> <br><br>  PGXN <br>  → <a href="https://pgxn.org/dist/pg_metricus">https://pgxn.org/dist/pg_metricus</a> </div><p>Source: <a href="https://habr.com/ru/post/323900/">https://habr.com/ru/post/323900/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../323888/index.html">MBLT17: first speakers, latest early bird tickets</a></li>
+<li><a href="../323890/index.html">Open machine learning course. Topic 4. Linear classification and regression models</a></li>
+<li><a href="../323892/index.html">Screening on the WebRTC website from Mozilla Firefox browser</a></li>
+<li><a href="../323896/index.html">Online tools for the simplest Pentest</a></li>
+<li><a href="../323898/index.html">Blast-off. From idea to release</a></li>
+<li><a href="../323902/index.html">New law on online cash registers: how the service of commercial equipment changes</a></li>
+<li><a href="../323904/index.html">Position-independent code (PIC) in shared libraries</a></li>
+<li><a href="../323906/index.html">Monitoring windows service using Zidium</a></li>
+<li><a href="../323908/index.html">Spotify: Google Cloud event subsystem migration (part 3)</a></li>
+<li><a href="../323910/index.html">IBM Watson will work as a tax specialist</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

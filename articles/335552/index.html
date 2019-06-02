@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How does the Kubernetes scheduler actually work?</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Note trans. : This article is written by Julia Evans, an engineer at Stripe, an international online payment company. Understanding the insides of the...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How does the Kubernetes scheduler actually work?</h1><div class="post__text post__text-html js-mediator-article">  <i><b>Note</b></i>  <i><b>trans.</b></i>  <i>: This article is written by Julia Evans, an engineer at Stripe, an international online payment company.</i>  <i>Understanding the insides of the work of the Kubernetes scheduler was prompted by a recurring bug with a “hang” pod, which experts from Rancher Labs also reported about a month ago ( <a href="https://github.com/kubernetes/kubernetes/issues/49314">issue 49314</a> ).</i>  <i>The problem was solved and allowed to share details about the technical structure of one of the basic mechanisms of Kubernetes, which are presented in this article with the necessary extracts from the corresponding project code.</i> <br><br><img src="https://habrastorage.org/web/38e/151/72f/38e15172f88348718c88b4fcc87585b6.png"><br><br>  This week, I learned the details of how the Kubernetes planner works, and I want to share them with those who are ready to plunge into the wilds of organizing how it actually works. <a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Additionally, I note that this case became a clear illustration of how to go from the state of “I have no idea how this system is even designed” to “Okay, I think that I understand the basic architectural solutions and why they are necessary” . <br><br>  I hope this small stream of consciousness will be useful for someone.  During the study of this topic, the <a href="">Writing Controllers</a> <a href="https://github.com/kubernetes/community/tree/8decfe42b8cc1e027da290c4e98fa75b3e98e2cc/contributors/devel">document from Kubernetes</a> wonderful-wonderful-wonderful <a href="https://github.com/kubernetes/community/tree/8decfe42b8cc1e027da290c4e98fa75b3e98e2cc/contributors/devel">documentation for developers</a> was most useful to me. <br><br><h2>  What is the planner for? </h2><br>  The Kubernetes scheduler is responsible for assigning nodes to <i>pods</i> .  The essence of his work is as follows: <br><br><ul><li>  You create under. </li><li>  The scheduler notices that the new pod has no node assigned to it. </li><li>  Scheduler appoints a hearth node. </li></ul><br>  He is not responsible for the real <i>launch of the</i> pod - this is the work of the kubelet.  All that is required of him in principle is to ensure that each node is assigned to a hearth.  Simple, isn't it? <br><br>  Kubernetes applies the idea of ​​a controller.  The operation of the controller is as follows: <br><br><ul><li>  look at the state of the system; </li><li>  notice where the current state does not match the desired state (for example, “a node must be assigned to this hearth”); </li><li>  repeat. </li></ul><br>  Scheduler - one type of controller.  In general, there are many different controllers, all have different tasks and they are performed independently. <br><br>  In general, the work scheduler can be represented as such a cycle: <br><br><pre><code class="go hljs">while True: pods = get_all_pods() <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> pod in pods: <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> pod.node == <span class="hljs-literal"><span class="hljs-literal">nil</span></span>: assignNode(pod)</code> </pre> <br>  If you are not interested in the details of how the scheduler in Kubernetes works, it is probably enough to read this article because  This cycle contains a completely correct model. <br><br>  So it seemed to me that the scheduler <b>actually</b> works in a similar way, because this is how the <code>cronjob</code> controller works, the only component of Kubernetes, the code of which I read.  The <code>cronjob</code> controller scans all cron jobs, checks that none of them have to do anything, waits 10 seconds and repeats this cycle indefinitely.  Very simple! <br><br><h2>  However, it doesn’t work at all </h2><br>  But this week we increased the load on the Kubernetes cluster and ran into a problem. <br><br>  Sometimes under the "stuck" forever in the <code>Pending</code> state (when the node is not assigned to under).  When the scheduler rebooted, it exited from this state ( <a href="https://github.com/kubernetes/kubernetes/issues/49314">here is the ticket</a> ). <br><br>  This behavior did not agree with my internal model of how the Kubernetes scheduler works: if under the pending node it expects, then the scheduler is obliged to detect this and assign the node.  Scheduler should not be restarted for this! <br><br>  It's time to refer to the code.  And that's what I managed to find out - as always, it is possible that there are mistakes here, because  everything is quite difficult, and only a week went to study. <br><br><h2>  How the scheduler works: a quick inspection of the code </h2><br>  Let's start with <a href="">scheduler.go</a> .  (Combining all the necessary files is available <a href="https://gist.github.com/jvns/5d492d66130a2f47b47820fd6b52eab5">here</a> - for easy navigation through the content.) <br><br>  The main cycle of the scheduler (at the time of the <a href="">commit e4551d50e5</a> ) looks like this: <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">go</span></span> wait.Until(sched.scheduleOne, <span class="hljs-number"><span class="hljs-number">0</span></span>, sched.config.StopEverything)</code> </pre> <br>  ... which means: " <code>sched.scheduleOne</code> ."  What happens there? <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(sched *Scheduler)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">scheduleOne</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { pod := sched.config.NextPod() <span class="hljs-comment"><span class="hljs-comment">// do all the scheduler stuff for `pod` }</span></span></code> </pre> <br>  Okay, what does <code>NextPod()</code> do?  Where do legs grow from? <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(f *ConfigFactory)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">getNextPod</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> *</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">v1</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Pod</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> { pod := cache.Pop(f.podQueue).(*v1.Pod) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> f.ResponsibleForPod(pod) { glog.V(<span class="hljs-number"><span class="hljs-number">4</span></span>).Infof(<span class="hljs-string"><span class="hljs-string">"About to try and schedule pod %v"</span></span>, pod.Name) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> pod } } }</code> </pre> <br>  Okay, it's simple enough!  There is a queue of pods ( <code>podQueue</code> ), and the following pods come from it. <br><br>  But how do pods get into this lineup?  Here is the corresponding code: <br><br><pre> <code class="go hljs">podInformer.Informer().AddEventHandler( cache.FilteringResourceEventHandler{ Handler: cache.ResourceEventHandlerFuncs{ AddFunc: <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(obj </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{})</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err := c.podQueue.Add(obj); err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { runtime.HandleError(fmt.Errorf(<span class="hljs-string"><span class="hljs-string">"unable to queue %T: %v"</span></span>, obj, err)) } },</code> </pre> <br>  That is, there is an event handler that, when adding a new pod, adds it to the queue. <br><br><h2>  How the scheduler works: simple language </h2><br>  Now, when we walked through the code, we can summarize: <br><br><ol><li>  At the very beginning, each one that needs a scheduler is placed in a queue. </li><li>  When new scams are created, they are also added to the queue. </li><li>  The scheduler constantly picks up money from the queue and schedules for them. </li><li>  That's all! </li></ol><br>  There is an interesting detail here: if for any reason it does not fall under the scheduler, the scheduler will not make another attempt for it.  Under will be removed from the queue, his planning will not be executed, and all on it.  The only chance will be missed!  (Until you restart the scheduler, in which case all the drops will be added to the queue again.) <br><br>  Of course, in fact, the scheduler is smarter: if you don’t fall under the scheduler, in general, an error handler like this is called: <br><br><pre> <code class="go hljs">host, err := sched.config.Algorithm.Schedule(pod, sched.config.NodeLister) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { glog.V(<span class="hljs-number"><span class="hljs-number">1</span></span>).Infof(<span class="hljs-string"><span class="hljs-string">"Failed to schedule pod: %v/%v"</span></span>, pod.Namespace, pod.Name) sched.config.Error(pod, err)</code> </pre> <br>  The call to the <code>sched.config.Error</code> function <code>sched.config.Error</code> again to the queue, so a <code>sched.config.Error</code> will be made for it all the same. <br><br><h2>  Wait.  Why, then, "stuck" our under? </h2><br>  Everything is very simple: it turned out that this <code>Error</code> function was not always called when an error actually occurred.  We made a patch <i>(the <a href="https://github.com/kubernetes/kubernetes/pull/49661">patch</a> was published in <a href="https://github.com/kubernetes/kubernetes/issues/49314">the same issue</a> - <b>approx. Transl.</b> )</i> To cause it correctly, after which the recovery began to happen correctly.  Great! <br><br><h2>  Why is the scheduler so designed? </h2><br>  I think that a more reliable architecture is as follows: <br><br><pre> <code class="go hljs">while True: pods = get_all_pods() <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> pod in pods: <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> pod.node == <span class="hljs-literal"><span class="hljs-literal">nil</span></span>: assignNode(pod)</code> </pre> <br>  So why, instead of this approach, we see all these difficulties with caches, queries, callbacks?  Looking at the story, you come to the conclusion that the main reason is performance.  Examples are <a href="http://blog.kubernetes.io/2017/03/scalability-updates-in-kubernetes-1.6.html">the update</a> on scalability in Kubernetes 1.6 and <a href="https://coreos.com/blog/improving-kubernetes-scheduler-performance.html">this publication by CoreOS</a> on improving the performance of the scheduler Kubernetes.  The latter talks about reducing the planning time for 30 thousand pods <i>(from 1 thousand nodes - approx. Transl.)</i> From 2+ hours to less than 10 minutes.  2 hours is quite long, and performance is important! <br><br>  It became clear that it was too long to poll all 30 thousand pods of your system each time you plan for a new pod, so you really have to come up with a more complex mechanism. <br><br><h2>  What the scheduler actually uses: informers in Kubernetes </h2><br>  I want to say one more thing that seems very important for the architecture of all Kubernetes controllers.  This is the idea of ​​"informers".  Fortunately, there is documentation that is under the google “kubernetes informer”. <br><br>  This extremely useful document is called <a href="">Writing Controllers</a> and talks about design for those who write their controller (such as the scheduler or the <code>cronjob</code> controller mentioned).  Very good! <br><br>  If this document were found in the first place, I think that an understanding of what is happening would have come a little faster. <br><br>  So, informers!  Here is what the documentation says: <br><blockquote>  Use <code>SharedInformers</code> .  <code>SharedInformers</code> offer hooks for receiving notifications about adding, changing, or deleting a specific resource.  They also offer convenient functions for accessing shared caches and for determining where the cache is applicable. </blockquote><br>  When the controller starts, it creates an <code>informer</code> (for example, <code>pod informer</code> ), which is responsible for: <br><br><ol><li>  output all podov (first); </li><li>  notifications of changes. </li></ol><br>  The <code>cronjob</code> controller does not use informants (working with them complicates everything, but in this case, I think, there is still no question of performance), but many others (most?) Use it.  In particular, the scheduler does this.  The setting of his informants can be found in <a href="">this code</a> . <br><br><h2>  Re-queuing </h2><br>  In the same documentation (Writing Controllers) there are instructions on how to handle re-placing items in a queue: <br><blockquote>  For reliable re-queuing, bring errors to the upper level.  For a simple implementation with a reasonable rollback, there is a <code>workqueue.RateLimitingInterface</code> . <br><br>  The main controller function should return an error when re-queuing is necessary.  When not, use <code>utilruntime.HandleError</code> and return <code>nil</code> .  This greatly simplifies the study of error handling cases and ensures that the controller loses nothing when necessary. </blockquote><br>  It looks like good advice: it can be hard to handle all errors correctly, so it’s important to have a simple way of ensuring that code reviewers see if errors are being processed correctly.  Cool <br><br><h2>  You need to “synchronize” your informants (right?) </h2><br>  And the last interesting detail during my investigation. <br><br>  The informers use the concept of "synchronization" ( <i>sync</i> ).  It is a bit similar to the restart of the program: you get a list of all the resources you are monitoring, so you can check that everything is really in order.  Here is what the same manual says about synchronization: <br><blockquote>  Watches and Informers will "sync."  Periodically, they deliver to your <code>Update</code> method every suitable object in the cluster.  It is good for cases when it may be necessary to perform an additional action with the object, although this may not be necessary and always. <br><br>  In cases when you are sure that the repeated re-queuing of elements is not required and there are no new changes, you can compare the resource version of the new and old objects.  If they are identical, you can skip re-queuing.  Be careful.  If the repeated placement of the item will be missed with any errors, it may be lost (never get into the queue again). </blockquote><br>  Simply put, “you need to do synchronization;  if you don’t synchronize, you may encounter a situation where an item is lost and a new attempt to place in a queue will not be made. ”  That is exactly what happened in our case! <br><br><h2>  Kubernetes scheduler does not sync again </h2><br>  So, after getting acquainted with the concept of synchronization ... you come to the conclusion that the scheduler Kubernetes, it seems, never performs it?  In <a href="">this code,</a> it looks like this: <br><br><pre> <code class="go hljs">informerFactory := informers.NewSharedInformerFactory(kubecli, <span class="hljs-number"><span class="hljs-number">0</span></span>) <span class="hljs-comment"><span class="hljs-comment">// cache only non-terminal pods podInformer := factory.NewPodInformer(kubecli, 0)</span></span></code> </pre> <br>  These numbers "0" mean "resynchronization period" ( <i>resync period</i> ), which is logical to interpret as "resynchronization does not occur."  Interesting!  Why is this done?  Having no confidence in this matter and googling “kubernetes scheduler resync”, we managed to find a <a href="https://github.com/kubernetes/kubernetes/pull/16840">pull request # 16840</a> (adding resync for the scheduler) with the following two comments: <br><blockquote>  @brendandburns - what are you planning to fix here?  I am really against such small resynchronization periods, because they will significantly affect performance. </blockquote><br><blockquote>  Agree with @ wojtek-t.  If resync is ever and can solve a problem, it means that somewhere in the code there is a bug that we are trying to hide.  I don't think resync is the right solution. </blockquote><br>  It turns out that the project maintainers decided not to re-synchronize, because it is better that bugs embedded in the code pop up and fix, rather than hide themselves by running resync. <br><br><h2>  Code reading tips </h2><br>  As far as I know, the real work of the Kubernetes scheduler from within is not described anywhere (like many other things!). <br><br>  Here are a couple of tricks that helped me in reading the right code: <br><br><ol><li>  Combine everything you need into a large file.  This has already been written above, but it’s really: switching between function calls has become much easier compared to switching between files, especially when you don’t know how everything is completely organized. <br><br></li><li>  Have a few specific questions.  In my case - “How should error handling work?  What happens if you don’t get to the scheduler? ”  Because there is a lot of code about a close one ... how a particular node is selected, which will be assigned to the hearth, but I didn’t care much (and I still don’t know how it works). </li></ol><br><h2>  Working with Kubernetes is pretty cool! </h2><br>  Kubernetes is truly sophisticated software.  Even in order to get a working cluster, you need to configure at least 6 different components: api server, scheduler, controller manager, container networking like flannel, kube-proxy, kubelet.  Therefore (if you want to understand software that you run, like me) you need to understand what all these components do, how they interact with each other and how to configure each of their 50 trillion possibilities to get what is required. <br><br>  However, the documentation is good enough, and when something is not well documented, the code is very simple to read, and pull requests seem to be peer reviewed. <br><br>  I had to really and more commonly practice the principle of “read the documentation and, if not, read the code”.  But in any case, this is a great skill to become better! <br><br>  <b>PS from the translator</b> .  Read also in our blog: <br><br><ul><li>  " <a href="https://habrahabr.ru/company/flant/blog/331188/">Our experience with Kubernetes in small projects</a> " <i>(video of the report, which includes an introduction to the technical device Kubernetes);</i> </li><li>  “ <a href="https://habrahabr.ru/company/flant/blog/327338/">Why do you need Kubernetes and why is it more than PaaS?</a>  "; </li><li>  “ <a href="https://habrahabr.ru/company/flant/blog/333470/">Getting started in Kubernetes using Minikube</a> ” <i>(translation)</i> . </li></ul></div><p>Source: <a href="https://habr.com/ru/post/335552/">https://habr.com/ru/post/335552/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../335540/index.html">The calculation of the priority of combinations in Texas Hold'em (poker) for PHP</a></li>
+<li><a href="../335544/index.html">A little about “ashipki” in software and the help of the theory of the finite state machine</a></li>
+<li><a href="../335546/index.html">PHP Digest number 114 - the latest news, materials and tools (August 1 - 14, 2017)</a></li>
+<li><a href="../335548/index.html">How to recognize scam ico? Part II. Vision</a></li>
+<li><a href="../335550/index.html">As a freelancer to open a company in Latvia and what advantages it gives</a></li>
+<li><a href="../335556/index.html">15.5 SP1 and 3CX Firewall Checker release released with SIP ALG verification</a></li>
+<li><a href="../335558/index.html">The market for uninterruptible power supplies has grown for the first time in four years.</a></li>
+<li><a href="../335560/index.html">Dive into F #. Handbook for C # Developers</a></li>
+<li><a href="../335562/index.html">The digest of fresh materials from the world of the frontend for the last week №275 (August 7 - 13, 2017)</a></li>
+<li><a href="../335564/index.html">Continuous integration / deployment of a symfony application using docker-compose and GitLab CI</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

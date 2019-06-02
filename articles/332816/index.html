@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>24-core CPU, and I can not move the cursor</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="It all started, as often happens when my car began to slow down. On a working Windows 10 computer with a 24-core processor (48 threads), which was 50%...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>24-core CPU, and I can not move the cursor</h1><div class="post__text post__text-html js-mediator-article">  It all started, <a href="https://randomascii.wordpress.com/category/investigative-reporting/">as often happens</a> when my car began to slow down.  On a working Windows 10 computer with a 24-core processor (48 threads), which was 50% idle.  Of the 64 GB of memory used less than half.  Fast SSD is also not particularly used.  And yet, when I moved the mouse, the cursor did not immediately react - sometimes with a delay of several seconds. <br><br>  So I did what I always did - I recorded and analyzed the event tracing using ETW.  As a result, I discovered a Windows 10 bug that seriously affects the performance of process completion. <br><br>  ETW tracing has shown that the UI hangs in many programs.  I decided to explore the 1.125-second hang in the Task Manager: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/getpro/habr/post_images/7ed/f32/72b/7edf3272b0f13132566a477835388778.png"><br><a name="habracut"></a><br>  In the screenshot below, you can see the CPU usage of the system during a hang, grouped by process names - note that CPU utilization rarely rises above 50%. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/d74/d8f/5ec/d74d8f5ec543e27f25f09baddec57e12.png"><br><br>  The <a href="https://randomascii.wordpress.com/2012/05/11/the-lost-xperf-documentationcpu-scheduling/">CPU Usage (Precise)</a> table shows that the Task Manager's UI thread was constantly blocked by calls to functions like <i>SendMessageW</i> , apparently waiting in a critical region of the kernel (this is the version of critical sections in kernel mode), deep in the call stack in win32kbase.sys! EnterCrit ( here): <br><br><img src="https://habrastorage.org/getpro/habr/post_images/f35/0df/b14/f350dfb14ba8d4afdb28d270afb2b6b8.png"><br><br>  I <a href="https://randomascii.wordpress.com/2012/05/05/xperf-wait-analysisfinding-idle-time/">manually went through the wait chain</a> through half a dozen processes to find who grabbed the resources of my UI.  As a result of the analysis, my notes look like this: <br><br><blockquote>  Taskmgr.exe (72392) hung at 1,125 with (MsgCheckDelay) on thread 69,196.  The greatest delay was 115.6 ms on win32kbase.sys! EnterCrit, which was prepared for execution by the process conhost.exe (16264), thread 2560 on 3.273101862.  conhost.exe (16264), 2560 was prepared on 3.273077782 after waiting 115,640.966 ms, using the mstsc.exe process (79392), 71272. mstsc.exe was prepared (at the same time, the same delay) by the TabTip.exe (8284), 8348 process which was prepared for execution by the process UIforETW.exe (78120), 79584, which was prepared by the process conhost.exe (16264), 58696, which was prepared by the process gomacc.exe (93668), 59948, which was prepared by the process gomacc.exe ( 95164), 76844. </blockquote><br>  I had to continue because most of the processes released the lock in just a few microseconds.  But in the end I found several processes (processes gomacc.exe) that seemed to hold the lock for several <i>hundred</i> microseconds.  Or at least they were prepared by someone who held the lock, and then after a few microseconds they prepared someone else to remove it.  All these processes removed the lock within <i>NtGdiCloseProcess</i> . <br><br>  I was tired of manually walking through these wait chains, so I decided to see how often the same call stack is encountered.  I did this by dragging the <i>Ready Thread Stack</i> column to the left and <i>searching</i> for <i>NtGdiCloseProcess</i> there.  Then I used the <i>View Callers -&gt; By Function</i> option in WPA to display all of the <i>Ready Thread Stacks</i> that met this function — in this window, the parent stacks below. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e45/727/e48/e45727e48912c22e91f7c900a79296c4.png"><br><br>  There were 5768 context switches when the <i>NtGdiCloseProcess</i> process was on the <i>Ready Thread Stack stack</i> , and each of them signifies the moment when the critical section is released.  The flows on these call stacks spent waiting for a total of 63.3 seconds — not bad for a delay of 1.125 s!  And if each of these events happened after the thread held the lock for only <i>200</i> microseconds, then 5768 events would be enough to add up to a hang time of 1.125 s. <br><br>  I am not familiar with this part of Windows, but the combination of <i>PspExitThread</i> and <i>NtGdiCloseProcess</i> clearly shows that this behavior is observed at the end of the process. <br><br>  This happened during the assembly of Chrome, and the assembly of Chrome spawns <i>many</i> processes.  I used our distributed build system, that is, the processes were created — and completed — very quickly. <br><br>  The next step was to find out how much time was spent inside <i>NtGdiCloseProcess</i> .  So I transferred the <i><a href="https://randomascii.wordpress.com/2012/05/08/the-lost-xperf-documentationcpu-sampling/">CPU Usage (Sampled)</a></i> table to WPA and received a butterfly graph, this time the <i>NtGdiCloseProcess</i> call.  The screenshot below shows that out of the total time, 1.125 seconds and about 1085 ms were spent inside the <i>NtGdiCloseProcess</i> process, that is, 96% of the total time: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/a58/4e8/76a/a584e876a891ab6519dc70b70da3a45c.png"><br><br>  Too bad if one function holds the lock for 95% of the time, especially if you need to get the same lock for <i>GetMessage</i> calls or for updating the cursor position.  For the sake of experiment, I wrote a test program that creates 1000 processes with maximum speed, waits 0.5 seconds, and then commands all processes to finish at the same time.  The screenshot shows the use of this CPU program on my quad-core (eight threads) home laptop: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/f98/847/a4b/f98847a4be43569374bb558fb56585f1.png"><br><br>  So what we see.  Creating processes is CPU limited, as it should be.  But the closure of processes is limited by the CPU only at the beginning and at the end, and in the middle there is a long period (about a second) where it goes sequentially - using only one of the eight available threads in the system, since 1000 processes fight for a single lock inside <i>NtGdiCloseProcess</i> .  This is a serious problem.  This gap represents the time when the programs freeze, and the cursor moves will be delayed - and sometimes this gap will stretch for a few seconds. <br><br>  I noticed that the problem seemed to get worse when the computer was running for a while, so I restarted the laptop and ran the test again after loading.  The sequence of the completion of the processes was not so difficult, but the problem was clearly present even on the newly loaded machine: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/610/d7a/09d/610d7a09d581a9fe86afb5baf1392c91.png"><br><br>  If you run the same test on an old Windows 7 computer (Intel Core 2 Q8200, sample 2008), here are the results: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b8d/ff2/0e7/b8dff20e74ee5cd4afdc40765bb93037.png"><br><br>  Creating processes is slower here, as might be expected on a much weaker CPU, but the completion of processes is as fast as on my new laptop, and fully parallelized. <br><br>  This indicates that the serialization of process termination is a new problem that appeared somewhere between Windows 7 and Windows 10. <br><br><h2>  48 streams, 47 of them stand idle </h2><br>  <a href="https://en.wikipedia.org/wiki/Amdahl%2527s_law">Amdal's law</a> says that if you distribute your task among a sufficient number of cores, then the total time for its execution will be equal to the execution time of the longest fragment that cannot be parallelized.  If I intensively used my work computer for several days, then this serialization problem manifested itself quite clearly when the completion of the processes was a significant part of the distributed build time - and more cores did not help here.  In order to speed up the assembly as much as possible (and so that the cursor began to move while it was in progress), it was necessary to <a href="https://www.youtube.com/watch%3Fv%3DQx07z3XezWA">restart the computer</a> every few days.  And even then the build speed was not as high as it should be, so Windows 7 looked all the more attractive. <br><br>  In fact, adding cores to my system <i>slowed</i> the reaction rate of the UI.  This is because Chrome’s build system is pretty clever and spawns more processes if you have more cores, so even more terminating processes fight for global locking.  Therefore, here is not just a “24-core CPU, but I cannot move the cursor,” and here “a 24-core CPU, and <i>therefore</i> I cannot move the cursor.” <br><br>  The problem was reported to Microsoft, they are investigating. <br><br><h2>  And something else... </h2><br>  Here is what my test program for creating and terminating processes on a 24-nuclear machine looks like: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b85/bb9/884/b85bb98842163b89a7f156e40d0f7a80.png"><br><br>  See this little horizontal red line in the lower right?  This is a graphic illustration of Amdal's law, when 98% of my car’s resources are idle for almost two seconds, while the process completion procedure has grabbed the lock I need to move the cursor. <br><br><h2>  Materials </h2><br>  The ProcessCreateTests code <a href="https://github.com/randomascii/blogstuff/tree/master/ProcessCreateTests">is available here</a> . <br><br>  If you liked this article, you may like other investigations: <br><br>  “ <a href="https://randomascii.wordpress.com/2014/03/31/you-got-your-web-browser-in-my-compiler/">Your browser got into my compiler!</a>  " <br>  <a href="https://randomascii.wordpress.com/2012/09/04/windows-slowdown-investigated-and-identified/">Windows Shutdown: Investigation and Identification</a> (and <a href="https://randomascii.wordpress.com/2012/12/05/windows-slowdown-investigated-identified-and-now-fixed/">continued</a> ) <br>  " <a href="https://randomascii.wordpress.com/2011/08/29/powerpoint-poor-performance-problem/">The problem of poor performance PowerPoint</a> " <br>  " <a href="https://randomascii.wordpress.com/2014/04/15/self-inflicted-denial-of-service-in-visual-studio-search/">Visual Studio DoS Attack on itself through the search function</a> " </div><p>Source: <a href="https://habr.com/ru/post/332816/">https://habr.com/ru/post/332816/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../332804/index.html">Simple form validation without JS</a></li>
+<li><a href="../332806/index.html">Oculus Rift integration into desktop Direct3D application on the example of Renga</a></li>
+<li><a href="../332808/index.html">How I revived VCSA 6.0</a></li>
+<li><a href="../332812/index.html">Stupidly Simple DDoS Protocol (SSDP) generates 100 Gbps DDoS</a></li>
+<li><a href="../332814/index.html">Translation of the Appium Essentials book. Chapter 5</a></li>
+<li><a href="../332818/index.html">Translation of excerpts from Robert Heinlein’s book, Take Your Government Back - part 26</a></li>
+<li><a href="../332820/index.html">How to grow better support in 15 years</a></li>
+<li><a href="../332822/index.html">How to confuse analytics - 5. Conceptual apparatus</a></li>
+<li><a href="../332824/index.html">What is your career after ITMO University? Graduates tell</a></li>
+<li><a href="../332828/index.html">Record from 1 million neurons: new plans DARPA</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

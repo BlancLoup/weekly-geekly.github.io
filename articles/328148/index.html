@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>BK-0010 emulator on FPGA - part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="First part 
+ If you have already managed to work with the block design in Vivado, then you could see that the appearance of many standard IP changes d...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>BK-0010 emulator on FPGA - part 2</h1><div class="post__text post__text-html js-mediator-article"><hr>  <a href="https://habrahabr.ru/post/327996/">First part</a> <hr><br>  If you have already managed to work with the block design in Vivado, then you could see that the appearance of many standard IP changes depending on the settings that are configured.  For example, the AXI-GPIO module can be single-channel or two-channel, depending on the “Enable dual channel” parameter: <br><table><tbody><tr><td> <a href=""><img src="https://habrastorage.org/web/5c1/0dc/59c/5c10dc59c4b64e419497ff0a270c21b4.png"></a> </td><td> <a href=""><img src="https://habrastorage.org/web/e2e/fb3/da7/e2efb3da74cd48519889f88b50b867bc.png"></a> </td></tr></tbody></table><br>  For the BK-0010 project, it will also be convenient for us to use this technology and today we will learn how to do it. <br><br>  Also in this part we: <br><br><ul><li>  Consider a general information about the architecture of the BK-0010 </li><li>  Let's talk about interfaces, how to create them and how to work with them. </li><li>  Create a few auxiliary IP, the appearance and characteristics of which vary depending on the parameters. </li></ul><a name="habracut"></a><br><h3>  Architecture Overview </h3><br>  All elements of the -0010 (CPU, RAM, ROM, ports) are interconnected via the MPD bus.  MPI is a simplified version of the Q-bus from DEC, it is a 16-bit combined (the address and data are transmitted over the same conductors) bidirectional bus. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The original MPI bus was asynchronous, some signals were exposed on it with some delays normalized to nanoseconds. <br><br>  In the event that the Slave device did not respond for too long in the bus exchange process over the DIM, a bus error interrupt occurred (unlike, for example, the Z80, where there was nothing like this).  This architectural feature is used in BK-0010, so it needs to be emulated. <br><br>  In the project BK-0010, a similar internal bus will be used.  Of course, there is no point in doing a combined bidirectional address bus and data inside the FPGA, so there will be three buses - ADDR, DATAIN, DATAOUT (all 16 bits each).  The tire will be completely synchronous, no delays in nanoseconds. <br><br>  In BK-0010, there was only one Master device on the MPI bus — the CPU; therefore, I did not implement bus capture procedures, direct memory access, and the like. <br><br>  I left the rest of the signals as original as possible: <br><br>  <b>SYNC</b> - A signal indicating that Master has set the address on the ADDR bus.  Memory is addressed by bytes, but the data bus bytes with an even address is always transmitted in the lower 8 bits, bytes with an odd in the high. <br><br>  <b>DIN</b> - A signal indicating that the Master has requested a read at a previously set address.  Reading is always done in two-byte words, if the Master only needs one byte, the second is ignored. <br><br>  <b>DOUT</b> - A signal indicating that the Master has set data to the DATAOUT bus and requires that the data be recorded at a previously set address. <br><br>  <b>WTBT</b> - A signal indicating that a byte operation is in progress.  Exhibited only in the recording cycle.  The master is obliged to set the recordable byte either to the lower 8 bits of the DATAOUT bus (in the case of an even address) or to the older ones (in the case of an odd one).  The remaining byte is ignored by the Slave device. <br><br>  <b>RPLY</b> - A signal by which Slave informs the Master that it has completed a bus cycle (set data in a read cycle or received it in a write cycle).  If the signal does not arrive within 64 cycles, a bus interrupt occurs. <br><br>  <b>VIRQ</b> - Interrupt request signal. <br><br>  <b>IAKO</b> - Signal acknowledgment / request address interrupt.  This signal passed sequentially through all devices that could require an interrupt.  If the device is currently not required to interrupt, then it transmitted a signal further down the chain.  If the device is currently demanding an interrupt, then it did not transmit a signal further and began the cycle of transmitting the address of the interruption.  The position of the device in the IAKO signal transmission chain determined its relative priority. <br><br>  Interrupts from external devices in BK-0010 are used, so these signals are needed. <br><br><img src="https://habrastorage.org/web/ee2/600/50e/ee260050edb74c20bf23ab1151aa4032.jpg"><br><br><img src="https://habrastorage.org/web/e27/cf1/557/e27cf1557f6a412597333727029094b1.jpg"><br><br><h3>  Tires and interfaces </h3><br>  With tires and interfaces, there is some terminological confusion that needs attention.  In Verilog / VHDL, a bus (bus) is an associated set of digital signals of the same type designed to transmit multi-digit numbers.  For example, a data bus consisting of eight bits. <br><br>  In addition, the bus is also called the set of heterogeneous signals (signals for data, address, control).  For example, a PCI bus, an AXI4 bus, in our case an MPI bus.  Such a construction in the terminology of Xilinx Vivado is called an interface. <br><br>  We will have to work with the MPI bus in several places.  This interface will have at least CPU, RAM, ROM, ports of external devices.  For convenience, we will make its description as a single entity, so that you do not have to manually connect each signal each time. <br><br>  To do this, in Vivado, call the Tools-&gt; Create interface tool: <br><br> <a href=""><img src="https://habrastorage.org/web/9b7/03b/da2/9b703bda27d14f45a3de9f6c7a4a29b7.png"></a> <br><br>  We add here all the necessary signals, indicate their direction (for the Slave, the direction will be automatically inverted compared to the Master), denote which signals must be present and which may be missing.  Separately note the sync and reset signals. <br><br>  Interface description is saved in xml format.  In order for us in the project to work with him, it is necessary to add the path to the folder with this file in the project properties. <br><br><img src="https://habrastorage.org/web/411/8a9/506/4118a95069d648d6af0c0424c7a33c97.png"><br><br><h3>  IP module with customizable features </h3><br>  Consider how to create such modules on the example of interconnect.  Interconnect is a module that interconnects Master and Slave ports.  Since the number of ports is not known in advance, this parameter should be configurable.  The interconnect module itself is very simple in our case, since we do not need any bus width conversion or buffering.  It can be implemented on combinational logic. <br><br>  In our case, we will have only one processor, according to the interconnect, it is enough to have only one Slave port.  The number of master ports will be set by the parameter MASTER_INTERFACES: <br><br><img src="https://habrastorage.org/web/33c/429/ecd/33c429ecd76e45fa8d44837c28825e93.png"><br><br>  The current revision of the module supports up to 11 Master ports, of course this number can be made by any. <br><br>  So, create our module <br><br><ol><li>  We create the head file of the module in which we describe all the signals that can come to this module.  There will be a lot of them - we need to describe all the signals for all possible MPI ports (1 Slave + 11 Master) + clk and rst signals.  So far, the clk and rst signals in the module are not used, since it is entirely based on combinational logic, but I left them for consistency, all of a sudden, in the future, buffering or something similar will be needed. <br><br><pre><code class="hljs haskell"><span class="hljs-keyword"><span class="hljs-keyword">module</span></span> MPI_Interconnect ( <span class="hljs-title"><span class="hljs-title">input</span></span> [15:0] <span class="hljs-type"><span class="hljs-type">S00_ADDR</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> [15:0] <span class="hljs-type"><span class="hljs-type">S00_DATA_W</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> [15:0] <span class="hljs-type"><span class="hljs-type">S00_DATA_R</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-type"><span class="hljs-type">S00_SYNC</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-type"><span class="hljs-type">S00_RPLY</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-type"><span class="hljs-type">S00_DIN</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-type"><span class="hljs-type">S00_DOUT</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-type"><span class="hljs-type">S00_WTBT</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-type"><span class="hljs-type">S00_IAKO</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-title"><span class="hljs-title">reg</span></span> <span class="hljs-type"><span class="hljs-type">S00_VIRQ</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> [15:0] <span class="hljs-type"><span class="hljs-type">M00_ADDR</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> [15:0] <span class="hljs-type"><span class="hljs-type">M00_DATA_W</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> [15:0] <span class="hljs-type"><span class="hljs-type">M00_DATA_R</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-type"><span class="hljs-type">M00_SYNC</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-type"><span class="hljs-type">M00_RPLY</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-type"><span class="hljs-type">M00_DIN</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-type"><span class="hljs-type">M00_DOUT</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-type"><span class="hljs-type">M00_WTBT</span></span>, <span class="hljs-title"><span class="hljs-title">output</span></span> <span class="hljs-type"><span class="hljs-type">M00_IAKO</span></span>, <span class="hljs-title"><span class="hljs-title">input</span></span> <span class="hljs-title"><span class="hljs-title">reg</span></span> <span class="hljs-type"><span class="hljs-type">M00_VIRQ</span></span>, ...</code> </pre> <br></li><li>  Let's transform our module to IP (Tools-&gt; Create and Package new IP).  After that, we have a new item IP in the Project Manager, where you can customize the project settings. <br><br></li><li>  On the Interfaces tab, we create 12 MPI interfaces using the interface description created in the previous step. <br><br></li><li>  We configure mapping between the created MPI interfaces and the module signals.  If the module signals are named the same as the ports in the interface, then Vivado will make this mapping itself, but in this case it cannot guess that the M00_ADDR and M00_DIN signals belong to the zero Master port, and M02_DOUT to the second one, so something happens touch up. <br><br><img src="https://habrastorage.org/web/944/6c3/5c3/9446c35c377848d3bcd8f04db51516fd.png"><br><br></li><li>  Set the list of possible values ​​for the parameter MASTER_INTERFACES.  In addition to the list, you can also use the values ​​in hexadecimal or decimal, checkbox, radio button. <br><br><img src="https://habrastorage.org/web/a7e/6c2/d0b/a7e6c2d0b7414894a067c73a62a61f82.png"><br><br></li><li>  We configure the conditions of visibility of ports.  The S00_MPI and M00_MPI ports are always visible here, we mark the port M01_MPI as optional and that it should be visible only under the condition $ MASTER_INTERFACES&gt; 1. We proceed in the same way with the other Master ports. <br><br><img src="https://habrastorage.org/web/d8a/acb/e38/d8aacbe388db48afad5af34bd4c77c70.png"><br><br></li><li>  Using the conditional compilation options in Verilog, we create the necessary logic for the operation of our module, depending on the value of the MASTER_INTERFACES parameter: <br><br><pre> <code class="hljs objectivec"> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (MASTER_INTERFACES &gt; <span class="hljs-number"><span class="hljs-number">1</span></span>) begin <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_ADDR = S00_ADDR; <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_DATA_W = S00_DATA_W; <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_SYNC = S00_SYNC; <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_DIN = S00_DIN; <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_DOUT = S00_DOUT; <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_WTBT = S00_WTBT; <span class="hljs-keyword"><span class="hljs-keyword">assign</span></span> M01_IAKO = (M00_VIRQ == <span class="hljs-number"><span class="hljs-number">1</span></span>) ? S00_IAKO : <span class="hljs-number"><span class="hljs-number">1</span></span>; end ...</code> </pre></li></ol><br>  Now, instead of a hundred and fifty signals, we have a neat list of 12 interfaces that we can use in block design: <br><br> <a href=""><img src="https://habrastorage.org/web/f3c/f39/a20/f3cf39a20d7d4317b5e31de94a4a8b21.png"></a> <br><br>  At this stage, we also create several modules with an MPI interface, these are RAM and ROM modules.  Their implementation is rather trivial, based on a finite state machine that implements the logic of the MPI bus, specifically reading cycles (ROM) or reading and writing (RAM).  We have three ROM modules — one for the system monitor, the other for the Focal interpreter, and the third for the test module.  The size of each module is 8 KB, they are all created on the basis of FPGA block memory.  The size of the RAM module is 32KB. <br><br>  The important point is that namespaces are not supported, so the arrays for initializing different ROM must be called differently.  The same name (even in different IP) leads to a difficult-to-diagnose situation when one ROM is initialized with the contents of another, and no warning is given about this. <br><br>  We start to collect our project.  While we have a little - interconnect module and RAM and ROM modules: <br><br> <a href=""><img src="https://habrastorage.org/web/e0e/fe2/d0c/e0efe2d0cd6f4cb5b253757a604adc49.png"></a> <br><br>  The clk and rst signals are not connected yet, we will connect them as soon as we deal with the clock domains.  The RAM module has a lot of unconnected signals left - the display controller will be connected there.  On the left, the interconnect has an MPI Slave interface.  A CPU module will be connected here. <br><br>  To be continued. <br><br><hr><br><h3>  Links </h3><br>  → <a href="https://github.com/skyroger2/MPI_bus">Interface</a> description <a href="https://github.com/skyroger2/MPI_bus">MPI</a> <br>  → <a href="https://github.com/skyroger2/MPI_Interconnect">Interconnect</a> module <a href="https://github.com/skyroger2/MPI_Interconnect">MPI</a> <br>  → <a href="https://github.com/skyroger2/RAM">RAM</a> Module <br>  → <a href="https://github.com/skyroger2/ROM_monitor">System Monitor ROM</a> Module <br>  → <a href="https://github.com/skyroger2/ROM_focal">ROM</a> module <a href="https://github.com/skyroger2/ROM_focal">interpreter language Focal</a> <br>  → <a href="https://github.com/skyroger2/ROM_test">ROM</a> module of the <a href="https://github.com/skyroger2/ROM_test">test subsystem</a> </div><p>Source: <a href="https://habr.com/ru/post/328148/">https://habr.com/ru/post/328148/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../328130/index.html">Pygest # 8. Releases, articles, interesting projects from the world of Python [April 11, 2017 - May 7, 2017]</a></li>
+<li><a href="../328134/index.html">Recovering data from damaged RAID 5 to Linux NAS</a></li>
+<li><a href="../328138/index.html">Neuroculture Part 0. Or neuro-free chicken coop</a></li>
+<li><a href="../328144/index.html">Docker containers slightly increase server power consumption</a></li>
+<li><a href="../328146/index.html">A simple model of the adaptive Kalman filter by means of Python</a></li>
+<li><a href="../328152/index.html">As I wrote my Redux</a></li>
+<li><a href="../328156/index.html">How Studying Smalltalk Can Improve Your Programming Skills</a></li>
+<li><a href="../328158/index.html">As we did a short-term forecast of precipitation. Lecture in Yandex</a></li>
+<li><a href="../328160/index.html">Change in perception of complexity</a></li>
+<li><a href="../328162/index.html">Count to three: three</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Optimization history of one IoC container</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this post, I would like to share information about a small, but, in my opinion, very, very useful project , in which Stefán Jökull Sigurðarson adds...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Optimization history of one IoC container</h1><div class="post__text post__text-html js-mediator-article"><p>  In this post, I would like to share information about a small, but, in my opinion, very, very useful <a href="https://github.com/stebet/DependencyInjectorBenchmarks">project</a> , in which <a href="https://github.com/stebet">Stefán Jökull Sigurðarson</a> adds all the IoC containers known to him that have migrated to .NET Core, and using <a href="https://github.com/dotnet/BenchmarkDotNet">BenchmarkDotNet</a> , measures the instance resolving performance.  I did not miss the opportunity to participate in this competition and I am with my small project <a href="https://github.com/FSou1/FsContainer">FsContainer</a> . </p><br><p><img src="https://habrastorage.org/web/789/422/6db/7894226db2db4dce8cec9a5cfe678254.jpeg" alt="image"></p><a name="habracut"></a><br><h2 id="120">  1.2.0 </h2><br><p>  After the project was migrated to .NET Core (I want to note that it turned out to be absolutely not difficult), to say that I was not discouraged, so to say nothing, and this was due to the fact that one of the three measurements my container did not pass.  In the literal meaning of this word, the measurement simply lasted over 20 minutes and did not end. </p><br><p>  The reason was in this section of the code: </p><br><pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">object</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Resolve</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">Type type</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> instance = _bindingResolver.Resolve(<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>, GetBindings(), type); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!_disposeManager.Contains(instance)) { _disposeManager.Add(instance); } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> instance; }</code> </pre> <br><p>  If you think about it, the basic principle of the work of benchmarks is the measurement of the number of operations performed per unit of time (optional memory consumption), which means that the <code>Resolve</code> method is run as many times as possible.  You may notice that after the resolve, the resulting instance is added to the <code>_disposeManager</code> for further destruction in the case of <code>container.Dispose()</code> .  Since  inside the implementation is a <code>List&lt;object&gt;</code> , instances in which are added by checking on <code>Contains</code> , then you can guess that there are 2 side-effects at once: </p><br><ol><li>  Each new instance created using the <code>Contains</code> check will compute <code>GetHashCode</code> and search for a duplicate among previously added ones; </li><li>  Since  each new instance created will always be unique (resolve tested with <code>TransientLifetimeManager</code> tested), then the size of the <code>List&lt;object&gt;</code> will constantly increase by allocating a new, twice larger memory area and <a href="http://referencesource.microsoft.com/">copying previously added elements into it</a> (to add a million copies of the memory allocation operation) and copies will be called at least 20 times); </li></ol><br><p>  Frankly, I'm not sure which solution is the most correct in this case, because in real life it’s hard for me to imagine when one container will hold millions of references to previously created instances, so I solved only half of the problem, adding a (quite logical) restriction to Adding to the <code>_disposeManager</code> only those objects that implement <code>IDisposable</code> . </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (instance <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> IDisposable &amp;&amp; !_disposeManager.Contains(instance)) { _disposeManager.Add(instance); }</code> </pre> <br><p>  As a result, the measurement was completed in a fairly reasonable time and gave the following results: </p><br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Scaled </th><th>  ScaledSD </th><th>  Gen 0 </th><th>  Gen 1 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  Direct </td><td>  13.77 ns </td><td>  0.3559 ns </td><td>  0.3655 ns </td><td>  1.00 </td><td>  0.00 </td><td>  0.0178 </td><td>  - </td><td>  56 B </td></tr><tr><td>  Lightinject </td><td>  36.95 ns </td><td>  0.1081 ns </td><td>  0.0902 ns </td><td>  2.69 </td><td>  0.07 </td><td>  0.0178 </td><td>  - </td><td>  56 B </td></tr><tr><td>  Simpleinjector </td><td>  46.17 ns </td><td>  0.2746 ns </td><td>  0.2434 ns </td><td>  3.35 </td><td>  0.09 </td><td>  0.0178 </td><td>  - </td><td>  56 B </td></tr><tr><td>  AspNetCore </td><td>  71.09 ns </td><td>  0.4592 ns </td><td>  0.4296 ns </td><td>  5.17 </td><td>  0.14 </td><td>  0.0178 </td><td>  - </td><td>  56 B </td></tr><tr><td>  Autofac </td><td>  1,600.67 ns </td><td>  14.4742 ns </td><td>  12.8310 ns </td><td>  116.32 </td><td>  3.10 </td><td>  0.5741 </td><td>  - </td><td>  1803 B </td></tr><tr><td>  Structuremap </td><td>  1,815.87 ns </td><td>  18.2271 ns </td><td>  16.1578 ns </td><td>  131.95 </td><td>  3.55 </td><td>  0.6294 </td><td>  - </td><td>  1978 B </td></tr><tr><td>  Fscontainer </td><td>  2,819.01 ns </td><td>  6.0161 ns </td><td>  5.3331 ns </td><td>  204.85 </td><td>  5.24 </td><td>  0.4845 </td><td>  - </td><td>  1524 B </td></tr><tr><td>  Ninject </td><td>  12,812.70 ns </td><td>  255.5191 ns </td><td>  447.5211 ns </td><td>  931.06 </td><td>  39.95 </td><td>  1.7853 </td><td>  0.4425 </td><td>  5767 B </td></tr></tbody></table><br><p>  I, of course, did not become pleased with them and began to search for further ways of optimization. </p><br><h2 id="121">  1.2.1 </h2><br><p>  In the current version of the container, the definition of the required constructor and the arguments required for it is unchanged, therefore, this information can be cached and henceforth do not waste processor time.  The result of this optimization is the addition of <code>ConcurrentDictionary</code> , the key of which is the requested type ( <code>Resolve&lt;T&gt;</code> ), and the values ​​are the constructor and the arguments that will be used to create the instance directly. </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">readonly</span></span> IDictionary&lt;Type, Tuple&lt;ConstructorInfo, ParameterInfo[]&gt;&gt; _ctorCache = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ConcurrentDictionary&lt;Type, Tuple&lt;ConstructorInfo, ParameterInfo[]&gt;&gt;();</code> </pre> <br><p>  Judging by the measurements, such a simple operation increased productivity by more than 30%: </p><br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Scaled </th><th>  ScaledSD </th><th>  Gen 0 </th><th>  Gen 1 </th><th>  Gen 2 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  Direct </td><td>  13.50 ns </td><td>  0.2240 ns </td><td>  0.1986 ns </td><td>  1.00 </td><td>  0.00 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Lightinject </td><td>  36.94 ns </td><td>  0.0999 ns </td><td>  0.0886 ns </td><td>  2.74 </td><td>  0.04 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Simpleinjector </td><td>  46.40 ns </td><td>  0.3409 ns </td><td>  0.3189 ns </td><td>  3.44 </td><td>  0.05 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  AspNetCore </td><td>  70.26 ns </td><td>  0.4897 ns </td><td>  0.4581 ns </td><td>  5.21 </td><td>  0.08 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Autofac </td><td>  1,634.89 ns </td><td>  15.3160 ​​ns </td><td>  14.3266 ns </td><td>  121.14 </td><td>  2.01 </td><td>  0.5741 </td><td>  - </td><td>  - </td><td>  1803 B </td></tr><tr><td>  Fscontainer </td><td>  1,779.12 ns </td><td>  18.9507 ns </td><td>  17.7265 ns </td><td>  131.83 </td><td>  2.27 </td><td>  0.2441 </td><td>  - </td><td>  - </td><td>  774 B </td></tr><tr><td>  Structuremap </td><td>  1,830.01 ns </td><td>  5.4174 ns </td><td>  4.8024 ns </td><td>  135.60 </td><td>  1.97 </td><td>  0.6294 </td><td>  - </td><td>  - </td><td>  1978 B </td></tr><tr><td>  Ninject </td><td>  12,558.59 ns </td><td>  268.1920 ns </td><td>  490.4042 ns </td><td>  930.58 </td><td>  38.29 </td><td>  1.7858 </td><td>  0.4423 </td><td>  0.0005 </td><td>  5662 B </td></tr></tbody></table><br><h2 id="122">  1.2.2 </h2><br><p>  By taking measurements, BenchmarkDotNet notifies the user that this or that assembly may not be optimized (compiled in a Debug configuration).  I couldn’t understand for a long time why this message was highlighted in the project, where the container was connected via nuget package and what my surprise was when I saw a possible list of parameters for nuget pack: </p><br><pre> <code class="hljs pgsql">nuget pack MyProject.csproj -properties <span class="hljs-keyword"><span class="hljs-keyword">Configuration</span></span>=<span class="hljs-keyword"><span class="hljs-keyword">Release</span></span></code> </pre> <br><p>  It turns out that all this time I was building a package in the Debug configuration, which judging by the updated measurement results, slowed down the performance by as much as 25%. </p><br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Scaled </th><th>  ScaledSD </th><th>  Gen 0 </th><th>  Gen 1 </th><th>  Gen 2 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  Direct </td><td>  13.38 ns </td><td>  0.2216 ns </td><td>  0.2073 ns </td><td>  1.00 </td><td>  0.00 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Lightinject </td><td>  36.85 ns </td><td>  0.0577 ns </td><td>  0.0511 ns </td><td>  2.75 </td><td>  0.04 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Simpleinjector </td><td>  46.56 ns </td><td>  0.5329 ns </td><td>  0.4724 ns </td><td>  3.48 </td><td>  0.06 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  AspNetCore </td><td>  70.17 ns </td><td>  0.1403 ns </td><td>  0.1312 ns </td><td>  5.25 </td><td>  0.08 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Fscontainer </td><td>  1,271.81 ns </td><td>  4.0828 ns </td><td>  3.8190 ns </td><td>  95.09 </td><td>  1.44 </td><td>  0.2460 </td><td>  - </td><td>  - </td><td>  774 B </td></tr><tr><td>  Autofac </td><td>  1,648.52 ns </td><td>  2.3197 ns </td><td>  2.0563 ns </td><td>  123.26 </td><td>  1.84 </td><td>  0.5741 </td><td>  - </td><td>  - </td><td>  1803 B </td></tr><tr><td>  Structuremap </td><td>  1,829.05 ns </td><td>  17.8238 ns </td><td>  16.6724 ns </td><td>  136.75 </td><td>  2.37 </td><td>  0.6294 </td><td>  - </td><td>  - </td><td>  1978 B </td></tr><tr><td>  Ninject </td><td>  12,520.08 ns </td><td>  248.2530 ns </td><td>  534.3907 ns </td><td>  936.10 </td><td>  41.98 </td><td>  1.7860 </td><td>  0.4423 </td><td>  0.0008 </td><td>  5662 B </td></tr></tbody></table><br><h2 id="123">  1.2.3 </h2><br><p>  Another optimization was the caching of the activator function, which is compiled using Expression: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">readonly</span></span> IDictionary&lt;Type, Func&lt;<span class="hljs-keyword"><span class="hljs-keyword">object</span></span>[], <span class="hljs-keyword"><span class="hljs-keyword">object</span></span>&gt;&gt; _activatorCache = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ConcurrentDictionary&lt;Type, Func&lt;<span class="hljs-keyword"><span class="hljs-keyword">object</span></span>[], <span class="hljs-keyword"><span class="hljs-keyword">object</span></span>&gt;&gt;();</code> </pre> <br><p>  The universal function takes as arguments the <code>ConstructorInfo</code> and the argument array <code>ParameterInfo[]</code> , and returns a strongly typed lambda as the result: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Func&lt;<span class="hljs-keyword"><span class="hljs-keyword">object</span></span>[], <span class="hljs-keyword"><span class="hljs-keyword">object</span></span>&gt; GetActivator(ConstructorInfo ctor, ParameterInfo[] parameters) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> p = Expression.Parameter(<span class="hljs-keyword"><span class="hljs-keyword">typeof</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">object</span></span>[]), <span class="hljs-string"><span class="hljs-string">"args"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> args = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Expression[parameters.Length]; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; parameters.Length; i++) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> a = Expression.ArrayAccess(p, Expression.Constant(i)); args[i] = Expression.Convert(a, parameters[i].ParameterType); } <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> b = Expression.New(ctor, args); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> l = Expression.Lambda&lt;Func&lt;<span class="hljs-keyword"><span class="hljs-keyword">object</span></span>[], <span class="hljs-keyword"><span class="hljs-keyword">object</span></span>&gt;&gt;(b, p); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> l.Compile(); }</code> </pre> <br><p>  I agree that a logical continuation of this solution should be to compile the entire Resolve function, not just the Activator, but even in the current implementation this introduced a 10% acceleration, thus allowing to take a confident 5th place: </p><br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Scaled </th><th>  ScaledSD </th><th>  Gen 0 </th><th>  Gen 1 </th><th>  Gen 2 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  Direct </td><td>  13.24 ns </td><td>  0.0836 ns </td><td>  0.0698 ns </td><td>  1.00 </td><td>  0.00 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Lightinject </td><td>  37.39 ns </td><td>  0.0570 ns </td><td>  0.0533 ns </td><td>  2.82 </td><td>  0.01 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Simpleinjector </td><td>  46.22 ns </td><td>  0.2327 ns </td><td>  0.2063 ns </td><td>  3.49 </td><td>  0.02 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  AspNetCore </td><td>  70.53 ns </td><td>  0.2885 ns </td><td>  0.2698 ns </td><td>  5.33 </td><td>  0.03 </td><td>  0.0178 </td><td>  - </td><td>  - </td><td>  56 B </td></tr><tr><td>  Fscontainer </td><td>  1,038.13 ns </td><td>  17.1037 ns </td><td>  15.9988 ns </td><td>  78.41 </td><td>  1.23 </td><td>  0.2327 </td><td>  - </td><td>  - </td><td>  734 B </td></tr><tr><td>  Autofac </td><td>  1,551.33 ns </td><td>  3.6293 ns </td><td>  3.2173 ns </td><td>  117.17 </td><td>  0.64 </td><td>  0.5741 </td><td>  - </td><td>  - </td><td>  1803 B </td></tr><tr><td>  Structuremap </td><td>  1,944.35 ns </td><td>  1.8665 ns </td><td>  1.7459 ns </td><td>  146.85 </td><td>  0.76 </td><td>  0.6294 </td><td>  - </td><td>  - </td><td>  1978 B </td></tr><tr><td>  Ninject </td><td>  13,139.70 ns </td><td>  260.8754 ns </td><td>  508.8174 ns </td><td>  992.43 </td><td>  38.35 </td><td>  1.7857 </td><td>  0.4425 </td><td>  0.0004 </td><td>  5682 B </td></tr></tbody></table><br><h1 id="124">  1.2.4 </h1><br><p>  Already after the publication of the article, <a href="https://github.com/turbanoff">@turbanoff</a> noticed that in the case of <code>ConcurrentDictionary</code> performance of the <code>GetOrAdd</code> method <code>GetOrAdd</code> higher than that of ContainsKey / Add, for which he thanks a <code>GetOrAdd</code> .  The results of the measurements are presented below: </p><br><p>  Before: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!_activatorCache.ContainsKey(concrete)) { _activatorCache[concrete] = GetActivator(ctor, parameters); }</code> </pre> <br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Median </th><th>  Gen 0 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  ResolveSingleton </td><td>  299.0 ns </td><td>  7.239 ns </td><td>  19.45 ns </td><td>  295.7 ns </td><td>  0.1268 </td><td>  199 B </td></tr><tr><td>  ResolveTransient </td><td>  686.3 ns </td><td>  32.333 ns </td><td>  86.30 ns </td><td>  668.7 ns </td><td>  0.2079 </td><td>  327 B </td></tr><tr><td>  ResolveCombined </td><td>  1,487.4 ns </td><td>  101.057 ns </td><td>  273.21 ns </td><td>  1,388.7 ns </td><td>  0.4673 </td><td>  734 B </td></tr></tbody></table><br><p>  After: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> activator = _activatorCache.GetOrAdd(concrete, x =&gt; GetActivator(ctor, parameters));</code> </pre> <br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Gen 0 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  ResolveSingleton </td><td>  266.6 ns </td><td>  4.955 ns </td><td>  4.393 ns </td><td>  0.1268 </td><td>  199 B </td></tr><tr><td>  ResolveTransient </td><td>  512.0 ns </td><td>  16.974 ns </td><td>  16.671 ns </td><td>  0.3252 </td><td>  511 B </td></tr><tr><td>  ResolveCombined </td><td>  1,119.2 ns </td><td>  18.218 ns </td><td>  15.213 ns </td><td>  0.6943 </td><td>  1101 B </td></tr></tbody></table><br><h2 id="ps">  PS </h2><br><p>  As an experiment, I decided to measure the time of creation of objects using different designs.  The project itself is available on <a href="https://github.com/FSou1/NetBenchmarking">Github</a> , and you can see the results below.  For the sake of completeness, only the activation method is missing through the generation of IL instructions as close as possible to the Direct method. It is this method that uses containers from the top 4, which allows them to achieve such impressive results. </p><br><table><thead><tr><th>  Method </th><th>  Mean </th><th>  Error </th><th>  Stddev </th><th>  Gen 0 </th><th>  Allocated </th></tr></thead><tbody><tr><td>  Direct </td><td>  4.031 ns </td><td>  0.1588 ns </td><td>  0.1890 ns </td><td>  0.0076 </td><td>  24 B </td></tr><tr><td>  Compiledinvoke </td><td>  85.541 ns </td><td>  0.5319 ns </td><td>  0.4715 ns </td><td>  0.0178 </td><td>  56 B </td></tr><tr><td>  Constructorinfoinvoke </td><td>  316.088 ns </td><td>  1.8337 ns </td><td>  1.6256 ns </td><td>  0.0277 </td><td>  88 B </td></tr><tr><td>  ActivatorCreateInstance </td><td>  727.547 ns </td><td>  2.9228 ns </td><td>  2.5910 ns </td><td>  0.1316 </td><td>  416 B </td></tr><tr><td>  Dynamic invoke </td><td>  974.699 ns </td><td>  5.5867 ns </td><td>  5.2258 ns </td><td>  0.0515 </td><td>  168 B </td></tr></tbody></table></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/331584/">https://habr.com/ru/post/331584/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../331566/index.html">Optimize AWS Costs in SaaS Business</a></li>
+<li><a href="../331568/index.html">Technical support 3CX responds: conditions for switching to the backup route (trunk) in outgoing rules</a></li>
+<li><a href="../331570/index.html">How to organize a Performance Review in IT companies: Badoo experience</a></li>
+<li><a href="../331576/index.html">Creating a 3D printer shader effect</a></li>
+<li><a href="../331582/index.html">Teach the bot! - marking of emotions and semantics of the Russian language</a></li>
+<li><a href="../331586/index.html">Design of the city based on data. Lecture in Yandex</a></li>
+<li><a href="../331588/index.html">Compressing photos without apparent loss of quality: the Yelp experience</a></li>
+<li><a href="../331590/index.html">Using MapXtreme .Net</a></li>
+<li><a href="../331594/index.html">GUI on Grafana for mgstat - system monitoring utilities on InterSystems Caché, Ensemble or HealthShare</a></li>
+<li><a href="../331596/index.html">Level editor for three in a row</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

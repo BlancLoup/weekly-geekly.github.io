@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Optimize ES2015 Proxy in V8</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This is a translation of a post from the official blog of the V8 JS engine. The article is short, the text is small, more like a fascinating story abo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Optimize ES2015 Proxy in V8</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/59/dc/7e/59dc7e71ee5b5071189636.png"><br><br>  This is a translation of a post from the official blog of the V8 JS engine.  The article is short, the text is small, more like a fascinating story about the problems that await the unsuspecting employees of Google in the V8 code.  It will <a href="https://habrahabr.ru/company/plarium/blog/267165/">focus</a> on speeding up <a href="https://habrahabr.ru/company/plarium/blog/267165/">ES6 Proxy</a> processing in V8, which will be available in <strong>Chrome 62</strong> and <strong>Node v9.x</strong> , and quite a bit about how best to use a proxy to get the maximum speed. <br><br><h3 id="vvedenie">  Introduction </h3><br><p>  Proxies appeared in JavaScript with the adoption of the ES2015 standard.  They allow you to intercept the fundamental operations of objects and redefine their behavior.  Proxies are the basis of libraries such as <a href="https://github.com/tmpvar/jsdom">jsdom</a> or <a href="https://github.com/GoogleChromeLabs/comlink">Complink RPC library</a> .  Recently, we have put a lot of effort into improving proxy performance in V8.  This article sheds some light on general approaches to improving performance in V8 and for proxies in particular. </p><a name="habracut"></a><br><p>  A proxy is "objects used to override fundamental operations (for example, access to properties, assignment, enumeration, function call)" (from MDN).  More information can be found in the <a href="https://tc39.github.io/ecma262/">full specification</a> .  For example, the following code example adds logging of a call to any property of an object: </p><br><pre><code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> target = {}; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> callTracer = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Proxy</span></span>(target, { <span class="hljs-attr"><span class="hljs-attr">get</span></span>: <span class="hljs-function"><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">target, name, receiver</span></span></span><span class="hljs-function">) =&gt;</span></span> { <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.log(<span class="hljs-string"><span class="hljs-string">`get was called for: </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">${name}</span></span></span><span class="hljs-string">`</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> target[name]; } }); callTracer.property = <span class="hljs-string"><span class="hljs-string">'value'</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.log(callTracer.property); <span class="hljs-comment"><span class="hljs-comment">// get was called for: property // value</span></span></code> </pre> <br><h3 id="sozdanie-proksi">  Proxy creation </h3><br><p>  The first thing we notice is the creation of a proxy.  The initial implementation in C ++ repeated the steps from the EcmaScript specification, which resulted in at least 4 jumps between C ++ and JS runtimes, this is evident in the underlying diagram.  We wanted to translate this implementation to a platform- <a href="https://github.com/v8/v8/wiki/CodeStubAssembler-Builtins">independent CodeStubAssembler</a> (CSA), running in a JS runtime environment.  This porting would minimize the number of hops between language execution environments.  <code>CEntryStub</code> and <code>JSEntryStub</code> on the diagram - this is the execution environment.  The dotted line shows the boundaries between execution environments.  Fortunately, the majority of <a href="">helper predicates</a> were already in the CSA, so the <a href="https://github.com/v8/v8/commit/f2af839b1938b55b4d32a2a1eb6704c49c8d877d">initial version</a> was concise and readable. </p><br><p>  The diagram below shows the flow of control when a proxy works with any interceptor (in this example, the interception is <code>apply</code> , which is called when the proxy is used as a function), it is drawn using the following code: </p><br><pre> <code class="javascript hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">foo</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">...</span></span></span><span class="hljs-function">) </span></span>{...} g = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Proxy</span></span>({...}, { <span class="hljs-attr"><span class="hljs-attr">apply</span></span>: foo }); g(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>);</code> </pre> <br><img src="https://habrastorage.org/webt/59/db/c7/59dbc764bc804360828914.png"><br><p>  After porting the interceptor call to CSA, all calls occur in the JS environment, reducing the number of "jumps" between languages ​​from 4 to zero. </p><br><p>  This change resulted in the following performance improvements: </p><br><img src="https://habrastorage.org/webt/59/db/ed/59dbed49d6948999017221.png"><br><p>  Our JS performance measurements show accelerations from 49% to 74%.  Roughly speaking, we measured how many times a specific microbenchmark can be launched in 1000 ms.  For some tests, the code is run several times to clarify the result (due to the limited accuracy of the timer).  The code for all benchmarks below can be found in our js-perf-test directory. </p><br><h3 id="call-i-construct-perehvatchiki">  <code>Call</code> and <code>construct</code> interceptors </h3><br><p>  The next part shows the results of optimizing call interceptors and creation (they <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/handler/apply"><code>apply</code></a> and <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/handler/construct"><code>construct</code></a> ). </p><br><img src="https://habrastorage.org/webt/59/db/f4/59dbf4062face485370327.png"><br><p>  Significant performance increase when calling a proxy - up to 500% faster!  And the acceleration of creating a proxy is not so remarkable, especially if no interceptors are defined - in this case, the acceleration is only 25%.  We got these results by running the following command in the <a href="https://github.com/v8/v8/wiki/Building%2520from%2520Source"><code>d8 shell</code></a> : </p><br><img src="https://habrastorage.org/webt/59/dc/65/59dc659387533543931728.png"><br><p>  Where <code>test.js</code> is a file with the following contents: </p><br><pre> <code class="javascript hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">MyClass</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>) </span></span>{} MyClass.prototype = {}; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> P = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-built_in"><span class="hljs-built_in">Proxy</span></span>(MyClass, {}); <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">run</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> P(); } <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> N = <span class="hljs-number"><span class="hljs-number">1e5</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.time(<span class="hljs-string"><span class="hljs-string">'run'</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">let</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; N; ++i) { run(); } <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.timeEnd(<span class="hljs-string"><span class="hljs-string">'run'</span></span>);</code> </pre> <br><p>  It <code>NewObject</code> out that most of the time is spent in the <code>NewObject</code> function and in the functions it <code>NewObject</code> , so now we are thinking how to speed it up in future releases. </p><br><h3 id="get-perehvatchik">  Get-interceptor </h3><br><p>  The next section is about how we optimized the most used operations - reading and writing properties through a proxy.  It turned out that the <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/handler/get"><code>get</code> interceptor is</a> more confused than the previous examples, due to the behavior of the inline cache.  You can see more about inline caches in <a href="https://www.youtube.com/watch%3Fv%3Du7zRSm8jzvA">this video</a> . </p><br><p>  Finally, we got a working port on the CSA with the following results: </p><br><img src="https://habrastorage.org/webt/59/dc/02/59dc0283e405c685307345.png"><br><p>  After applying the changes, we noticed that the size of the Chrome apk-file for Android grew by ~ 160Kb, which is more than expected for a small function in 20 lines, but, fortunately, we keep similar statistics.  It turned out that the function is called twice from another function, which is called 3 times from the third, which is called 4 times.  The cause of the problem was aggressive inline functions.  In the end, we solved the problem by putting the function into a separate stub ( <em>here, apparently,</em> <a href=""><em>the same stubs</em></a> <em>are meant</em> , <em>which were called "predicates" above</em> ), which saved precious kilobytes - the final version increased the size of the apk-file only <strong>~ 19Kb</strong> . </p><br><h3 id="has-perehvatchik">  Has-interceptor </h3><br><p>  The next section shows the results of optimizing the <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/handler/has"><code>has</code> interceptor</a> .  We thought it would be easy (expecting to reuse most of the get-interceptor code), but it <code>has</code> its own atmosphere.  Partly because of the difficult to debug problem bypassing the prototype chain when called by the operator.  Improvement results range from 71% to 428%.  And again, the gain is more noticeable if the interceptors are defined at creation. </p><br><img src="https://habrastorage.org/webt/59/dc/72/59dc7247adff7877271455.png"><br><h3 id="set-perehvatchik">  Set interceptor </h3><br><p>  Now we go to the <a href="https://developer.mozilla.org/ru/docs/Web/JavaScript/Reference/Global_Objects/Proxy/handler/set"><code>set</code> interceptor</a> .  And this time we need to work differently with <a href="https://v8project.blogspot.my/2017/08/fast-properties.html">named</a> and <a href="https://v8project.blogspot.my/2017/09/elements-kinds-in-v8.html">indexed</a> properties (elements).  These two types are not part of the JS language, but the result of internal optimizations of object property processing.  The initial implementation of the proxy still leaves the execution environment (for elements), which again leads to the intersection of execution environments.  Nevertheless, we achieved an improvement of 27% to 438% for cases where the interceptor is determined, but at the cost of a slowdown of 23% if not determined.  The performance drop here is due to additional checks to distinguish between indexed and named object properties.  There are no improvements for indexed properties yet.  Here is a graph with full results: </p><br><img src="https://habrastorage.org/webt/59/dc/6a/59dc6a2f2d1da841472080.png"><br><h3 id="rezultaty-pri-realnom-ispolzovanii">  Results with real use </h3><br><p>  <strong>Obtained in</strong> <a href="https://github.com/domenic/jsdom-proxy-benchmark"><strong>jsdom-proxy-benchmark</strong></a> : </p><br><p>  The jsdom-proxy-benchmark project is (in the literal sense of the word is: collects into one html-file) <a href="https://github.com/tc39/ecma262">ECMAScript specification</a> using the <a href="https://github.com/bterlson/ecmarkup">Ecmarkup</a> tool.  In <a href="">jsdom@11.2.0</a> version (which is the basis of Ecmarkup), it uses a proxy to implement structures such as <code>NodeList</code> and <code>HTMLCollection</code> .  We used this as a benchmark to measure production in a more realistic scenario than our synthetic micro-benchmarks.  Over 100 passes, the average results are: </p><br><ul><li>  Node v8.4.0 (without proxy optimizations): <strong>14277 ± 159 ms</strong> </li><li>  Node <a href="">v9.0.0-v8-canary-20170924</a> (with only half optimized interceptors): <strong>11789 ± 308 ms</strong> </li><li>  The difference in results is about 2.4 seconds, which means an improvement of ~ 17% <br><img src="https://habrastorage.org/webt/59/dc/6e/59dc6e8a9ea49740488690.png"></li><li>  Translation NamedNodeMap to proxy improved processing time by: <br><ul><li>  1.9 seconds in V8 6.0 (Node v8.4.0) </li><li>  0.5 seconds in V8 6.3 (Node v9.0.0-v8-canary-20170910) </li></ul></li></ul><br><img src="https://habrastorage.org/webt/59/dc/71/59dc7164724d1940585285.png"><br><p>  Thanks for the results provided by <a href="https://github.com/TimothyGu">TimothyGu</a> . </p><br><p>  <strong>Obtained in</strong> <a href=""><strong>Chai.js</strong></a> <strong>:</strong> </p><br><p>  Chai.js is a popular assertion library that uses proxy fairly tightly.  We did something like a benchmark using real scripts;  and running tests for different versions of the V8 revealed a gain of more than one second out of four.  On average, for 100 launches: </p><br><ul><li>  Node v8.4.0 (without proxy optimizations): <strong>4.2863 ± 0.14 s</strong> </li><li>  Node v9.0.0-v8-canary-20170924 (with only half optimized interceptors): <strong>3.1809 ± 0.17 s</strong> <br><img src="https://habrastorage.org/webt/59/dc/74/59dc749b18999959306432.png"></li></ul><br><h3 id="ispolzuemye-dlya-optimizacii-podhody">  Approaches used for optimization: </h3><br><p>  We have an established standard approach, how to overcome performance bottlenecks, and the cornerstone is the next few steps (which we followed in the work revealed in this article): </p><br><ul><li>  do performance tests for a single little feature </li><li>  add more tests that check compliance with specifications (or write them from scratch) </li><li>  study the original C ++ implementation </li><li>  transfer feature to platform-independent CodeStubAssembler </li><li>  optimize the code further through creating <a href="https://github.com/v8/v8/wiki/TurboFan">TurboFan</a> implementation </li><li>  check performance changes by benchmarks </li></ul><br><p>  These steps are suitable for any optimization you may need to do. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/339718/">https://habr.com/ru/post/339718/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../339708/index.html">FrontFest.Vyorstka: let's talk about accessibility, saving traffic and future CSS</a></li>
+<li><a href="../339710/index.html">Announcement: Veeam Backup & Replication 9.5 (and beyond) new features</a></li>
+<li><a href="../339712/index.html">44 lesson control technicians</a></li>
+<li><a href="../339714/index.html">Two pictures with the customer</a></li>
+<li><a href="../339716/index.html">Java XML API: we select correctly. StAX: we work with pleasure</a></li>
+<li><a href="../339720/index.html">How to interview software engineers</a></li>
+<li><a href="../339722/index.html">Battle of applications: am.ru, auto.ru, drom.ru</a></li>
+<li><a href="../339724/index.html">Kubernetes success stories in production. Part 4: SoundCloud (by Prometheus)</a></li>
+<li><a href="../339730/index.html">Indie's main headache: how to make sales before you go bust</a></li>
+<li><a href="../339734/index.html">From where Hamster Marketplace will attract manufacturers of DIY and indie electronics</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

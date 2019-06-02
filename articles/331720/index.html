@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Tuning a Linux network stack for the lazy</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The Linux network stack works fine on desktops by default. On servers with a load slightly above average, you already have to figure out how to proper...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Tuning a Linux network stack for the lazy</h1><div class="post__text post__text-html js-mediator-article"><p>  The Linux network stack works fine on desktops by default.  On servers with a load slightly above average, you already have to figure out how to properly configure everything.  At my current job, this has to be done almost on an industrial scale, so without automation there is no need to explain to each colleague what was arranged for a long time and force people to read ≈300 pages of English text mixed with C code ... You can and should, but the results will not be in an hour or a day.  Therefore, I tried to distribute a set of utilities for tuning the network stack and a guide to using them, which does not go into specific details of certain tasks, which remains compact enough so that it can be read in less than an hour and take at least some favor </p><a name="habracut"></a><br><h2 id="chego-nuzhno-dobitsya">  What needs to be achieved? </h2><br><p>  The main task in tuning the network stack (no matter what role the server performs - a router, a traffic analyzer, a web server that accepts large amounts of traffic) is to evenly distribute the processing load between the processor cores.  Preferably, taking into account that the CPU and the network card belong to the same NUMA node, and without creating unnecessary packet swapping between the cores. </p><br><p>  Before the main task, the primary task is performed - selection of the hardware, of course, taking into account what tasks lie on the server, where and how much traffic comes from and how, etc. </p><br><h3 id="rekomendacii-po-podboru-zheleza">  Recommendations for the selection of iron </h3><br><ul><li>  A dual-processor server will not be useful if traffic arrives on only one network card. </li><li>  Separate NUMA nodes will not be useful if traffic arrives at the ports of a single network card. </li><li>  It makes no sense to buy a server with a number of cores greater than the total number of queues of network cards. </li><li>  In the case of network cards with a single queue to distribute the load between the cores, you can use the RPS, but the loss when copying packets into memory does not eliminate it. </li><li>  Hyper-Threading is useless and turns off in the BIOS (especially in Skylake and Kaby Lake with problems) </li><li>  Choose a processor with a core frequency of at least 2.5GHz and a large amount of L3 and other caches. </li><li>  Use DDR4 memory. </li><li>  Choose network cards that support RX-buffers up to 2048 or more. </li></ul><br><p>  Thus, if a 2+ source of traffic volume is given more than 2 Gbit / s, then you should think about the server with the number of processors and NUMA nodes, as well as the number of network cards (not ports) equal to the number of these sources. </p><br><h2 id="gospodi-ya-ne-hochu-v-etom-razbiratsya">  "Lord, I do not want to understand this!" </h2><br><p>  And do not.  I already figured out and, in order not to waste time trying to explain this to my colleagues, I wrote a <a href="https://github.com/strizhechenko/netutils-linux">set of utilities - netutils-linux</a> .  Written in Python, tested on versions 2.6, 2.7, 3.4, 3.6. </p><br><h3 id="network-top">  network top </h3><br><p><img src="https://habrastorage.org/web/2ae/dda/a7f/2aeddaa7fffb494dbfb0a2ecb40018ba.gif" alt="network top"></p><br><p>  This utility is needed to assess the applied settings and displays the uniform distribution of the load (interrupts, softirqs, the number of packets per second per processor core) on server resources, all sorts of packet processing errors.  Values ​​above threshold are highlighted. </p><br><h3 id="rss-ladder">  rss-ladder </h3><br><pre><code class="hljs pgsql"># rss-ladder eth1 <span class="hljs-number"><span class="hljs-number">0</span></span> - distributing interrupts <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> eth1 (-TxRx) <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> socket <span class="hljs-number"><span class="hljs-number">0</span></span>:" - eth1: irq 67 eth1-TxRx-0 -&gt; 0 - eth1: irq 68 eth1-TxRx-1 -&gt; 1 - eth1: irq 69 eth1-TxRx-2 -&gt; 2 - eth1: irq 70 eth1-TxRx-3 -&gt; 3 - eth1: irq 71 eth1-TxRx-4 -&gt; 8 - eth1: irq 72 eth1-TxRx-5 -&gt; 9 - eth1: irq 73 eth1-TxRx-6 -&gt; 10 - eth1: irq 74 eth1-TxRx-7 -&gt; 11</code> </pre> <br><p>  This utility distributes the network card interrupts to the cores of the selected physical processor (zero by default). </p><br><h3 id="autorps">  autorps </h3><br><pre> <code class="hljs pgsql"># autorps eth0 <span class="hljs-keyword"><span class="hljs-keyword">Using</span></span> mask <span class="hljs-string"><span class="hljs-string">'fc0'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> eth0-rx<span class="hljs-number"><span class="hljs-number">-0.</span></span></code> </pre> <br><p>  This utility allows you to configure the distribution of packet processing between the cores of the selected physical processor (the default is zero).  If you use RSS, most likely you will not need this utility.  A typical use case is a multi-core processor and network cards with a single queue. </p><br><h3 id="server-info">  server-info </h3><br><pre> <code class="hljs pgsql"># <span class="hljs-keyword"><span class="hljs-keyword">server</span></span>-<span class="hljs-keyword"><span class="hljs-keyword">info</span></span> rate cpu: BogoMIPS: <span class="hljs-number"><span class="hljs-number">7</span></span> CPU MHz: <span class="hljs-number"><span class="hljs-number">7</span></span> CPU(s): <span class="hljs-number"><span class="hljs-number">1</span></span> Core(s) per socket: <span class="hljs-number"><span class="hljs-number">1</span></span> L3 <span class="hljs-keyword"><span class="hljs-keyword">cache</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> Socket(s): <span class="hljs-number"><span class="hljs-number">10</span></span> Thread(s) per core: <span class="hljs-number"><span class="hljs-number">10</span></span> Vendor ID: <span class="hljs-number"><span class="hljs-number">10</span></span> disk: vda: size: <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">type</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> memory: MemTotal: <span class="hljs-number"><span class="hljs-number">1</span></span> SwapTotal: <span class="hljs-number"><span class="hljs-number">10</span></span> net: eth1: <span class="hljs-keyword"><span class="hljs-keyword">buffers</span></span>: cur: <span class="hljs-number"><span class="hljs-number">5</span></span> max: <span class="hljs-number"><span class="hljs-number">10</span></span> driver: <span class="hljs-number"><span class="hljs-number">1</span></span> queues: <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">system</span></span>: Hypervisor vendor: <span class="hljs-number"><span class="hljs-number">1</span></span> Virtualization <span class="hljs-keyword"><span class="hljs-keyword">type</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span></code> </pre> <br><p>  This utility allows you to do two things: </p><br><ol><li>  <code>server-info show</code> : see what kind of hardware is installed on the server.  In general, it looks like a bicycle that repeats <code>lshw</code> , but with an emphasis on the parameters of interest. </li><li>  <code>server-info rate</code> : find bottlenecks in server hardware.  In general, it is similar to the Windows performance index, but again with an emphasis on the parameters we are interested in.  Evaluation is made on a scale from 1 to 10. </li></ol><br><h3 id="prochie-utility">  Other utilities </h3><br><ul><li>  <code>rx-buffers-increase</code> automatically increases the buffer of the selected network card to the optimal value. </li><li>  <code>maximize-cpu-freq</code> disables the floating frequency of the processor.  Power consumption will be increased, but this is not a laptop without a charger, but a server that handles gigabit traffic. </li></ul><br><h2 id="gospodi-ya-hochu-v-etom-razbiratsya">  Lord, I want to understand this! </h2><br><p>  Read articles about: </p><br><ul><li>  <a href="https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/">receiving packages</a> </li><li>  <a href="https://blog.packagecloud.io/eng/2017/02/06/monitoring-tuning-linux-networking-stack-sending-data/">sending packages</a> </li></ul><br><p>  These articles inspired me to write these tools. </p><br><p>  Also a good <a href="https://habrahabr.ru/company/odnoklassniki/blog/266005/">article was</a> written on the classmates blog 2 years ago. </p><br><h2 id="obychnye-keysy">  Ordinary cases </h2><br><p>  But the manual for launching utilities in itself says little about how exactly they should be applied depending on the situation.  We give some examples. </p><br><h3 id="primer-1-maksimalno-prostoy">  Example 1. As simple as possible. </h3><br><p>  Given: </p><br><ul><li>  one processor with 4 cores </li><li>  one 1 Gbit / s network card (eth0) with 4 combined queues </li><li>  incoming traffic volume 600 Mbit / s, outgoing no. </li><li>  all queues hang on CPU0, a total of ≈55000 interrupts and 350000 packets per second on it, of which about 200 packets / sec are lost by the network card.  The remaining 3 cores are idle </li></ul><br><p>  Decision: </p><br><ul><li>  we distribute queues between kernels the <code>rss-ladder eth0</code> command </li><li>  increase her buffer command <code>rx-buffers-increase eth0</code> </li></ul><br><h3 id="primer-2-chut-slozhnee">  Example 2. A little harder. </h3><br><p>  Given: </p><br><ul><li>  two processors with 8 cores </li><li>  two NUMA nodes </li><li>  Two dual-port 10 Gbit / s network cards (eth0, eth1, eth2, eth3), each port has 16 queues, all tied to node0, incoming traffic volume: 3 Gbit / s per each </li><li>  1 x 1 Gbit / s network card, 4 queues, tied to node0, outgoing traffic volume: 100 Mbit / s. </li></ul><br><p>  Decision: </p><br><p>  1 Drag one of the 10 Gbit / s network cards into another PCI slot tied to NUMA node1. </p><br><p>  2 Reduce the number of combined queues for 10 Gb ports to the number of cores of one physical processor: </p><br><pre> <code class="hljs bash"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> dev <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> eth0 eth1 eth2 eth3; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> ethtool -L <span class="hljs-variable"><span class="hljs-variable">$dev</span></span> combined 8 <span class="hljs-keyword"><span class="hljs-keyword">done</span></span></code> </pre> <br><p>  3 Distribute the interrupts of the ports eth0, eth1 to the processor cores that fall into NUMA node0, and the ports eth2, eth3 to the processor cores that fall into the NUMA node1: </p><br><pre> <code class="hljs">rss-ladder eth0 0 rss-ladder eth1 0 rss-ladder eth2 1 rss-ladder eth3 1</code> </pre> <br><p>  4 Increase eth0, eth1, eth2, eth3 RX-buffers: </p><br><pre> <code class="hljs bash"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> dev <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> eth0 eth1 eth2 eth3; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> rx-buffers-increase <span class="hljs-variable"><span class="hljs-variable">$dev</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span></code> </pre> <br><h2 id="neobychnye-keysy">  Unusual cases </h2><br><p>  Not always everything goes perfectly: </p><br><ul><li>  There are network cards that lose packets (missed) when using RSS to several cores in one NUMA node.  The solution is strange, but working - 6 RX queues are tied to CPU0, the mask of 111110 processors is recorded in rps_cpus of each queue, the losses are gone. </li><li>  There were mellanox and intel (X710) network cards that continue to work when the interrupt counters stop growing.  The traffic in tcpdump was there, the load created by the network cards hung on CPU0.  Normal operation has been restored after turning the RPS on and off.  Why - is unknown. </li><li>  Some SFP-modules for Intel 82599ES when updating the driver (build ixgbe from source with sourceforge) "disappear" from the list of network cards.  In this case, this port is displayed in lspci, the second similar port works, and in dmesg, both ports have the same warning messages.  The <code>unsupported_sfp=1,1</code> flag helps when loading the ixgbe module.  For good, however, it is worth buying supported sfp. </li><li>  Some network card drivers adjust the number of queues only to equal powers of two (which is insulting on 6-core processors). </li></ul><br><hr><br><p>  Update: after publication, the author realized that people use not only RHEL-based distributions for network tasks, but tests in debian on data sets collected in RHEL-based systems do not catch a lot of bugs.  Many thanks to all who reported that something is not working in Ubuntu / Debian / Altlinux!  All bugs fixed in <a href="">release 2.0.10</a> </p><br><p>  Update2.  in the comments they mentioned that RPS is still often useful to people and I underestimate it.  In principle, this is the case; therefore, a significantly improved version of the autorps utility appeared in <a href="">release 2.2.0</a> . </p><br><p>  Update3: <a href="https://habrahabr.ru/post/340296">Release 2.5.0</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/331720/">https://habr.com/ru/post/331720/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../331708/index.html">Results of the Stepik Contest and new adaptive online courses</a></li>
+<li><a href="../331710/index.html">Efficient DI library on Swift in 200 lines of code</a></li>
+<li><a href="../331712/index.html">Evolution after evolution</a></li>
+<li><a href="../331714/index.html">Translation of the Appium Essentials book. Chapter 3</a></li>
+<li><a href="../331718/index.html">How to earn $ 80,000 on the App Store</a></li>
+<li><a href="../331722/index.html">Training at PG Day'17 Russia</a></li>
+<li><a href="../331724/index.html">Static analysis as part of the Unreal Engine development process</a></li>
+<li><a href="../331726/index.html">Security issues and major achievements of AI</a></li>
+<li><a href="../331728/index.html">Apache Spark: from open source to industry</a></li>
+<li><a href="../331730/index.html">Intel Vpro or IP-KVM for desktops</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

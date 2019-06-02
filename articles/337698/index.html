@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Writing operator for Kubernetes at Golang</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Note trans. : Operators (operators) is an auxiliary software for Kubernetes, designed to automate the execution of routine actions on cluster objects ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Writing operator for Kubernetes at Golang</h1><div class="post__text post__text-html js-mediator-article"> <i><b>Note</b></i>  <i><b>trans.</b></i>  <i>: Operators (operators) is an auxiliary software for Kubernetes, designed to automate the execution of routine actions on cluster objects at certain events.</i>  <i>We have already written about the operators in <a href="https://habrahabr.ru/company/flant/blog/326414/">this article</a> , where they talked about the fundamental ideas and principles of their work.</i>  <i>But if that material was more like a view from the exploitation of ready-made components for Kubernetes, then the translation of the new article now proposed is the vision of the developer / DevOps engineer, perplexed by the implementation of the new operator.</i> <br><br><img src="https://habrastorage.org/web/bd8/170/127/bd817012717e4aeebf1a3ccddda39dcd.png"><br><br>  This post with a real-life example, I decided to write after my attempts to find documentation on the creation of an operator for Kubernetes that went through the study of code. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      An example that will be described is as follows: in our Kubernetes cluster, each <code>Namespace</code> represents the sandbox environment of a team, and we wanted to restrict access to them so that teams could only play in their sandboxes. <a name="habracut"></a><br><br>  You can achieve the desired by assigning the user a group that has a <code>RoleBinding</code> to specific <code>Namespace</code> and <code>ClusterRole</code> with the right to edit.  The YAML view will look like this: <br><br><pre> <code class="plaintext hljs">--- kind: RoleBinding apiVersion: rbac.authorization.k8s.io/v1beta1 metadata: name: kubernetes-team-1 namespace: team-1 subjects: - kind: Group name: kubernetes-team-1 apiGroup: rbac.authorization.k8s.io roleRef: kind: ClusterRole name: edit apiGroup: rbac.authorization.k8s.io</code> </pre> <br>  <i>( <a href="https://gist.github.com/treacher/db476d33562363718743182e81ed87c1">rolebinding.yaml</a> , in <a href="">raw</a> )</i> <br><br>  You can create such a <code>RoleBinding</code> manually, but after overcoming the mark in a hundred namespaces, this becomes a tedious task.  This is where the Kubernetes operators help - they automate the creation of Kubernetes resources based on changes in resources.  In our case, we want to create a <code>RoleBinding</code> when creating a <code>Namespace</code> . <br><br>  First, we define the <code>main</code> function, which performs the required setup to start the operator and then invokes the operator’s action: <br><br>  <i>( <b>Note</b> : hereinafter, the comments in the code are translated into Russian. In addition, indents are corrected for spaces instead of the [recommended in Go] tabs solely for the purpose of better readability in the Habr layout. After each listing, links to the original are on GitHub where English-language comments and tabs are saved.)</i> <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { <span class="hljs-comment"><span class="hljs-comment">//      STDOUT log.SetOutput(os.Stdout) sigs := make(chan os.Signal, 1) //       stop := make(chan struct{}) //     - //   SIGTERM   sigs signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGINT) // Goroutines      WaitGroup, //      wg := &amp;sync.WaitGroup{} runOutsideCluster := flag.Bool("run-outside-cluster", false, "Set this flag when running outside of the cluster.") flag.Parse() //  clientset     Kubernetes clientset, err := newClientSet(*runOutsideCluster) if err != nil { panic(err.Error()) } controller.NewNamespaceController(clientset).Run(stop, wg) &lt;-sigs //   (      ) log.Printf("Shutting down...") close(stop) //  goroutines  wg.Wait() // ,    }</span></span></code> </pre> <br>  <i>( <a href="https://gist.github.com/treacher/f43489316983015423b2d15ddb1cf4d0">main.go</a> , <a href="">raw</a> )</i> <br><br>  We do the following: <br><br><ol><li>  We configure the handler of specific operating system signals to cause a correct (graceful) shutdown of the operator. </li><li>  Use <code>WaitGroup</code> to correctly stop all goroutines before terminating the application. </li><li>  We provide access to the cluster by creating a <code>clientset</code> . </li><li>  We start <code>NamespaceController</code> in which all our logic will be located. </li></ol><br>  Now we need a basis for logic, and in our case it is the <code>NamespaceController</code> mentioned: <br><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">// NamespaceController   Kubernetes API   //      RoleBinding   namespace. type NamespaceController struct { namespaceInformer cache.SharedIndexInformer kclient *kubernetes.Clientset } // NewNamespaceController   NewNamespaceController func NewNamespaceController(kclient *kubernetes.Clientset) *NamespaceController { namespaceWatcher := &amp;NamespaceController{} //      Namespaces namespaceInformer := cache.NewSharedIndexInformer( &amp;cache.ListWatch{ ListFunc: func(options metav1.ListOptions) (runtime.Object, error) { return kclient.Core().Namespaces().List(options) }, WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) { return kclient.Core().Namespaces().Watch(options) }, }, &amp;v1.Namespace{}, 3*time.Minute, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, ) namespaceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{ AddFunc: namespaceWatcher.createRoleBinding, }) namespaceWatcher.kclient = kclient namespaceWatcher.namespaceInformer = namespaceInformer return namespaceWatcher }</span></span></code> </pre> <br>  <i>( <a href="https://gist.github.com/treacher/b38c7383cebe01f57730f1f8956784fb">controller.go</a> , <a href="">raw</a> )</i> <br><br>  Here we set up <code>SharedIndexInformer</code> , which will effectively (using the cache) wait for changes in namespaces <i>(for more information about informers, see the article “ <a href="https://habrahabr.ru/company/flant/blog/335552/">How does the Kubernetes scheduler actually work?</a> ” - <b>approx. Transl.</b> )</i> .  After that, we connect the <code>EventHandler</code> to the informer, so that when the namespace is added, the <code>createRoleBinding</code> function is <code>createRoleBinding</code> . <br><br>  The next step is to define this <code>createRoleBinding</code> function: <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(c *NamespaceController)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">createRoleBinding</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(obj </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{})</span></span></span></span> { namespaceObj := obj.(*v1.Namespace) namespaceName := namespaceObj.Name roleBinding := &amp;v1beta1.RoleBinding{ TypeMeta: metav1.TypeMeta{ Kind: <span class="hljs-string"><span class="hljs-string">"RoleBinding"</span></span>, APIVersion: <span class="hljs-string"><span class="hljs-string">"rbac.authorization.k8s.io/v1beta1"</span></span>, }, ObjectMeta: metav1.ObjectMeta{ Name: fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"ad-kubernetes-%s"</span></span>, namespaceName), Namespace: namespaceName, }, Subjects: []v1beta1.Subject{ v1beta1.Subject{ Kind: <span class="hljs-string"><span class="hljs-string">"Group"</span></span>, Name: fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"ad-kubernetes-%s"</span></span>, namespaceName), }, }, RoleRef: v1beta1.RoleRef{ APIGroup: <span class="hljs-string"><span class="hljs-string">"rbac.authorization.k8s.io"</span></span>, Kind: <span class="hljs-string"><span class="hljs-string">"ClusterRole"</span></span>, Name: <span class="hljs-string"><span class="hljs-string">"edit"</span></span>, }, } _, err := c.kclient.Rbac().RoleBindings(namespaceName).Create(roleBinding) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { log.Println(fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"Failed to create Role Binding: %s"</span></span>, err.Error())) } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { log.Println(fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"Created AD RoleBinding for Namespace: %s"</span></span>, roleBinding.Name)) } }</code> </pre> <br>  <i>( <a href="https://gist.github.com/treacher/fe1a1f8cece6e9dd1c5ce63aa8e2cc67">controller.go</a> , <a href="">raw</a> )</i> <br><br>  We get the namespace as <code>obj</code> and convert it to a <code>Namespace</code> object.  Then we define the <code>RoleBinding</code> based on the YAML file mentioned at the beginning, using the provided <code>Namespace</code> object and creating the <code>RoleBinding</code> .  Finally, we log whether the creation was successful. <br><br>  The last function you need to define is <code>Run</code> : <br><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">// Run        //       . func (c *NamespaceController) Run(stopCh &lt;-chan struct{}, wg *sync.WaitGroup) { //    ,    defer wg.Done() //  wait group, ..   goroutine wg.Add(1) //  goroutine go c.namespaceInformer.Run(stopCh) //   - &lt;-stopCh }</span></span></code> </pre> <br>  <i>( <a href="https://gist.github.com/treacher/193752d47f7f70150e28bfec4bcd00aa">controller.go</a> , <a href="">raw</a> )</i> <br><br>  Here we tell <code>WaitGroup</code> to run goroutine and then call the <code>namespaceInformer</code> that was previously defined.  When the stop signal arrives, it will terminate the function, tell <code>WaitGroup</code> that it is no longer running, and this function will complete its work. <br><br>  Information on building and running this operator in the Kubernetes cluster can be found in the <a href="https://github.com/treacher/namespace-rolebinding-operator">repository on GitHub</a> . <br><br>  On this, the operator that creates the <code>RoleBinding</code> when <code>Namespace</code> appears in the Kubernetes cluster is ready. </div><p>Source: <a href="https://habr.com/ru/post/337698/">https://habr.com/ru/post/337698/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../337682/index.html">Oracle actually eliminates Sun</a></li>
+<li><a href="../337688/index.html">Docker Compose advanced configuration (translation)</a></li>
+<li><a href="../337690/index.html">Yandex. Blitz. Why and what algorithmic problems need to be able to solve, working in the search</a></li>
+<li><a href="../337692/index.html">Experience in implementing PSR standards in a single project</a></li>
+<li><a href="../337694/index.html">VMware Announces “End” vCenter Server for Windows</a></li>
+<li><a href="../337700/index.html">10 interesting innovations in JUnit 5</a></li>
+<li><a href="../337702/index.html">From Toronto to Tomsk: summing up and planning future seminars on microelectronics in Russia</a></li>
+<li><a href="../337704/index.html">Moving Java forward faster</a></li>
+<li><a href="../337708/index.html">DevOps with Kubernetes and VSTS. Part 2: Cloud History</a></li>
+<li><a href="../337710/index.html">History 13 places on Highload Cup 2017</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

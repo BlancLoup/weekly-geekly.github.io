@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Inside Docker Networks: Linking Docker Swarm Containers and Overlay Networks</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In a previous article, I explained how Docker uses Linux virtual interfaces and bridge interfaces to establish connectivity between containers across ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Inside Docker Networks: Linking Docker Swarm Containers and Overlay Networks</h1><div class="post__text post__text-html js-mediator-article"><p>  In a <a href="https://habrahabr.ru/post/333874/">previous article,</a> I explained how Docker uses Linux virtual interfaces and bridge interfaces to establish connectivity between containers across bridge networks.  This time, I’ll explain how Docker uses vxlan technology to create overlay networks that are used in swarm clusters, as well as where to view and inspect this configuration.  I will also explain how different types of networks solve different communication tasks for containers running in swarm clusters. </p><br><p>  I assume that readers already know how to deploy swarm clusters and start services in Docker Swarm.  Also at the end of the article I will provide several links to useful resources with which you can explore the subject in detail and delve into the context of the topics discussed here.  Again, I will wait for your opinions in the comments. </p><a name="habracut"></a><br><h2 id="oglavlenie">  Table of contents </h2><br><ul><li>  <a href="https://habr.com/ru/post/334004/">Docker Swarm and Overlay networks</a> <br><ul><li>  <a href="https://habr.com/ru/post/334004/">Overlay</a> <br><ul><li>  <a href="https://habr.com/ru/post/334004/">vxlan</a> </li><li>  <a href="https://habr.com/ru/post/334004/">Encryption</a> </li><li>  <a href="https://habr.com/ru/post/334004/">Inspecting Vxlan Tunnel Interfaces</a> </li></ul></li><li>  <a href="https://habr.com/ru/post/334004/">ingress</a> </li><li>  <a href="https://habr.com/ru/post/334004/">Docker_gwbridge</a> </li></ul></li><li>  <a href="https://habr.com/ru/post/334004/">Conclusion</a> </li><li>  <a href="https://habr.com/ru/post/334004/">Links / Resources</a> </li></ul><br><h2 id="docker-swarm-i-overlay-seti">  Docker Swarm and Overlay networks </h2><br><p>  Overlay networks are used in the context of clusters (Docker Swarm), where the virtual network that containers use connects several physical hosts on which Docker is running.  When you run a container on a swarm cluster (as part of a service), many networks join by default, and each of them meets different communication requirements. </p><br><p>  For example, I have 3 docker swarm cluster nodes: </p><br><p><img src="https://habrastorage.org/web/c09/223/fab/c09223fab43b4cdc98c3f3755f70c95e.jpg" alt="docker node ls"></p><br><p>  First, I will create an overlay network called my-overlay-network: </p><br><p><img src="https://habrastorage.org/web/441/c51/81d/441c5181d5e44e9b8f77a57cce556233.jpg" alt="docker network create"></p><br><p>  Then I will start the service with a container on which a simple web server is running, which looks at port 8080 to the outside world.  This service will have 3 replicas, and I note that it is connected to only one network (my-overlay-network): </p><br><p><img src="https://habrastorage.org/web/a9e/e9a/f52/a9ee9af52a8947128fff5ee30a081ff9.jpg" alt="docker service create"></p><br><p>  If you then list all the interfaces available to any running container, there will be 3 of them. At the same time, if you run the container on one host, you can only expect 1 interface: </p><br><p><img src="https://habrastorage.org/web/088/582/f74/088582f742dd4c229e5e76d2a355df40.jpg" alt="docker ps"></p><br><p> The container is connected to <code>my-overlay-network</code> via eth2, which can be understood by IP address.  eth0 and eth1 are connected to other networks.  If you run <code>docker network ls</code> , then you can see 2 additional networks that have been added: <code>docker_gwbridge</code> and <code>ingress</code> , and by the addresses of the subnets you can understand that they are tied to eth0 and eth1: </p><br><p><img src="https://habrastorage.org/web/32c/daf/cce/32cdafcceb6a48e2b954d026172d96ab.jpg" alt="docker network ls"></p><br><h3 id="overlay">  Overlay </h3><br><p>  Overlay network creates a subnet that containers can use in different hosts of the swarm cluster.  Containers on different physical hosts can exchange data over the overlay network (if they are all attached to the same network). </p><br><p>  For example, for the web application that we launched, you can see one container on each host in the swarm cluster: </p><br><p><img src="https://habrastorage.org/web/733/296/fe6/733296fe6d2f42c5800143d7e83a1b61.jpg" alt="docker service ps webapp"></p><br><p>  I can get an overlay IP address for each container using the <code>ifconfig eth2</code> (eth2 is the interface attached to the overlay network). </p><br><p>  On swarm01: </p><br><p><img src="https://habrastorage.org/web/11f/3de/0b3/11f3de0b370e4d95a497446028f5cc36.jpg" alt="docker ps"></p><br><p>  Then from the container to swarm02 I should be able to ping 10.10.10.5 (the container's IP to swarm01): </p><br><p><img src="https://habrastorage.org/web/5dc/c07/3a8/5dcc073a83a94dcc8645aa94d3836553.jpg" alt="docker ps"></p><br><h4 id="vxlan">  vxlan </h4><br><p>  Overlay network uses vxlan technology, which encapsulates layer 2 frames in layer 4 packets (UDP / IP).  With this action, Docker creates virtual networks on top of existing connections between hosts that may end up within the same subnet.  Any points that are part of this virtual network look to each other as if they are connected over a switch and do not care about the device of the main physical network. </p><br><p>  To see this process in action, you can capture traffic on hosts that are part of an overlay network.  In the last example, capturing traffic to swarm01 or swarm02 will reveal icmp traffic between containers running on them (vxlan uses udp port 4789): </p><br><p><img src="https://habrastorage.org/web/5c0/1c3/bcc/5c01c3bcc8b745338ddadf2a377b221c.jpg" alt="sudo tcpdump"></p><br><p>  In this example, two layers can be seen in the packets.  The first is the udp vxlan tunnel traffic between hosts on port 4789, and inside you can see the second - icmp traffic with the container's IP addresses. </p><br><h4 id="shifrovanie">  Encryption </h4><br><p>  Traffic capture in this example showed that if you see traffic between hosts, you will also see traffic inside the containers passing through the overlay network.  That is why Docker has an encryption option.  You can start automatic IPSec encryption of vxlan tunnels by simply adding <code>--opt encrypted</code> when creating a network. </p><br><p>  If you run the same test, but using an encrypted overlay network, then you can see only encrypted packets between the hosts: </p><br><p><img src="https://habrastorage.org/web/dd2/26d/4f6/dd226d4f6523447581ee713603d1cafe.jpg" alt="docker network create"></p><br><h4 id="inspektirovanie-interfeysov-vxlan-tunneley">  Inspecting Vxlan Tunnel Interfaces </h4><br><p>  Like bridge networks, Docker creates a bridge interface for each overlay network that connects virtual tunnel interfaces that perform vxlan tunnel communication between hosts.  However, these tunnel interfaces (bridge and vxlan) are not created directly on the tunnel host.  They are in different containers that Docker launches for each overlay network created. </p><br><p>  To really inspect these interfaces, you must use <code>nsenter</code> to run commands inside the container network that manages the tunnels and virtual interfaces.  This command should be run on hosts with containers that participate in the overlay network. </p><br><p>  You also need to edit <code>/etc/systemd/system/multi-user.target.wants/docker.service</code> on the host and comment out <code>MountFlags=slave</code> according to the instructions in <a href="https://forums.docker.com/t/unable-to-check-docker-overlay-network-namespace/17267/3">this discussion</a> . </p><br><p><img src="https://habrastorage.org/web/091/9f9/82c/0919f982c9c0472d84ed2b571bd9b22d.jpg" alt="sudo ls -l"></p><br><p>  Finally, if we start capturing traffic on the veth interface, we will see traffic that leaves the container, but before it is sent to the vxlan tunnel (the ping mentioned above still works): </p><br><p><img src="https://habrastorage.org/web/449/bb0/f68/449bb0f6883b4e599a6c431bd68a77ff.jpg" alt="sudo nsenter"></p><br><h3 id="ingress">  ingress </h3><br><p>  The second network to which the containers were attached is the ingress network.  This is an overlay network, but it is installed by default immediately after starting the swarm cluster.  This network is responsible for connections that are established with containers from the outside world.  It is also in it that the load balancing provided by the swarm cluster takes place. </p><br><p>  Load balancing is performed by IPVS in a container that Docker swarm runs by default.  You can see that this container is attached to the ingress network (I used the same web service as before: it opens port 8080, which is attached to port 80 in containers): </p><br><p><img src="https://habrastorage.org/web/883/b5a/6cc/883b5a6cc13147258d39f7797d8325c8.jpg" alt="docker service create"></p><br><p>  To begin with, take a look at the host — at any host that participates in the swarm cluster: </p><br><p><img src="https://habrastorage.org/web/1bd/e4f/006/1bde4f00623747a6a13bf32f540690be.jpg" alt="sudo iptables"></p><br><p>  Here we see the rule that traffic destined for port 8080 is redirected to 172.19.0.2.  This address belongs to the ingress-sbox container, if we inspect its interfaces, we will get the following: </p><br><p><img src="https://habrastorage.org/web/36d/3fb/119/36d3fb1198a04b54bf4b85816d005934.jpg" alt="sudo ls -l"></p><br><p>  Docker uses iptables mangle rules to assign specific number to packets for port 8080. IPVS will use this number to balance the load in suitable containers: </p><br><p><img src="https://habrastorage.org/web/4d7/d2a/b27/4d7d2ab272b74c09b573eac06d2d2a31.jpg" alt="sudo nsenter"></p><br><p>  How Docker swarm uses iptables and IPVS for load balancing containers can be further explored in the <a href="https://www.youtube.com/watch%3Fv%3DnXaF2d97JnE">Deep Dive into Docker 1.12 Networking</a> video. </p><br><h3 id="docker_gwbridge">  Docker_gwbridge </h3><br><p>  Finally, let's talk about the docker_gwbridge network.  This is a bridge network with a corresponding interface called docker_gwbridge, which is created on each host of the swarm cluster.  The docker_gwbridge network connects traffic from the containers of a swarm cluster to the outside world.  For example, such traffic will turn out if we send a request to Google. </p><br><p>  I will not go into details, since I considered the bridge-network in detail in the <a href="https://habrahabr.ru/post/333874/">previous article</a> . </p><br><h2 id="zaklyuchenie">  Conclusion </h2><br><p>  A container running on a swarm cluster can by default be connected to three or more networks.  The first network, docker_gwbridge, allows containers to communicate with the outside world.  The ingress network is only needed to establish incoming connections from the outside world.  And, finally, overlay networks: they are created by the user himself and can be attached to containers.  These networks serve as a common subnet for containers of a single network in which they can exchange data directly (even if they are running on different physical hosts). </p><br><p>  There are also spaces of different networks that are created by default on the swarm cluster.  These spaces help manage vxlan tunnels for overlay networks and load balancing rules for incoming connections. </p><br><h2 id="ssylkiresursy">  Links / Resources </h2><br><ul><li>  <a href="https://www.youtube.com/watch%3Fv%3DnXaF2d97JnE">Deep dive into Docker Networking</a> (video) </li><li>  <a href="https://docs.docker.com/engine/userguide/networking/get-started-overlay/">Overlay networking and swarm mode</a> </li><li>  <a href="https://docs.docker.com/engine/userguide/networking/overlay-security-model/">Docker swarm overlay security</a> </li></ul></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/334004/">https://habr.com/ru/post/334004/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../333988/index.html">A team of web enthusiasts introduced the P2P browser Beaker</a></li>
+<li><a href="../333992/index.html">Optical alignment and user interfaces</a></li>
+<li><a href="../333996/index.html">Take out the local server to the network using another external server</a></li>
+<li><a href="../333998/index.html">Bluetooth Mesh - the development of data transfer standard for IoT</a></li>
+<li><a href="../334000/index.html">Printing on any paper size in Linux</a></li>
+<li><a href="../334006/index.html">How the advertising network Vungle tries to make life difficult for its customers</a></li>
+<li><a href="../334008/index.html">FIAS is dead, long live ... long live ... yes it is not clear that for now</a></li>
+<li><a href="../334010/index.html">Runtime repainting application</a></li>
+<li><a href="../334012/index.html">Release CLion 2017.2: integration with Clang-Tidy, C ++ 17 in the wizard to create a new project, improving the performance of the IDE</a></li>
+<li><a href="../334016/index.html">Resolving PTRACE_ATTACH Restriction Issues in Docker Containers</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

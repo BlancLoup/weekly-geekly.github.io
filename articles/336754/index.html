@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Backup is not "for show". Part One: Monitoring, Database Backups and Replicas</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Creating backup scripts is always a simple, tedious and very common task. Write a script, put it in kroner, check that it worked - it would seem that ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Backup is not "for show". Part One: Monitoring, Database Backups and Replicas</h1><div class="post__text post__text-html js-mediator-article">  Creating backup scripts is always a simple, tedious and very common task.  Write a script, put it in kroner, check that it worked - it would seem that everything, right?  But this is only the tip of the iceberg, and under the water hides a huge number of problems.  Everyone remembers a recent problem on gitlab, when it turned out that the data deletion operation was performed not on the backup, but on the main database server, backups were 0 bytes in size, backups in S3 are unavailable, but fortunately, the backup was on one of other servers. <br><br><img src="https://habrastorage.org/web/b97/15d/40d/b9715d40d21b492192acf92a87cf8065.jpg" alt="image"><br><br>  How to make sure that the backup really works?  And what even if the scripts work, is there data in the archives?  What is exactly what you need?  According to our statistics, problems with backup occur every 21 days.  If you have not checked your backups for longer than this time, you may have problems.  In the post we will talk about our experience in creating a backup system in a heterogeneous infrastructure of 2,000 machines, 20 terabytes of daily backups of various systems, problems we encountered on our way, and how we solve them. <br><a name="habracut"></a><br>  For a long time, we have not been engaged in the methodical organization of backup customers.  Someone said that he was doing it himself, someone asked us to set up a "couple of scripts" in their repository, someone left the scripts from the old administrator - we checked that they really exist and then lived quietly with this knowledge.  That was until the number of customers exceeded one hundred.  Almost all projects live an active life, and, as in any engineering project, the main cause of customer problems is the human factor.  Accidental deletion of data is a rare but most unpleasant example of it. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      While there were few customers, this happened very rarely, and the situation was quietly handled individually, but the theory of large numbers started to work.  Someone, like gitlab, confused production and failover systems, someone had incorrect statistics calculation scripts, online stores didn’t load goods correctly (incorrect prices were loaded, products that were available were deleted, incorrect information about the quantity goods).  Each time the routine became more complicated: someone had backups on the ftp storage of the hoster, someone was in S3 or on the same server where someone accidentally ran rm -rf. <br><br>  In some cases, after removing pictures of goods (who needs an online store without photos of goods?), It turned out that it took hours to download and unpack 300 gigabytes of data.  In the worst cases, it turned out that the data folder was moved to another location without notifying us.  It became clear that it was impossible to continue living like this, and sooner or later the theory of large numbers will win us.  We have created a special department that deals with backups, standardized methods for backing up, storing data, monitoring backups and checking them.  Let's try to share with you what we found out during the work of this department. <br><br>  We started writing our scripts.  Like everyone, we love reinventing the wheel.  Why we did not use the existing services?  Existing projects are rather overloaded with unnecessary functions, they often like to be wise, they require the installation of some external packages, which, with our diversity of types and forms of server configurations, was a considerable drawback. <br><br>  Writing your backup scripts was much easier than sorting out the existing ones.  It was decided to write on bash, primarily because bash is one for all, unlike, for example, python, does not require any dependencies, and does not bind to us - bash is understandable to any system administrator. <br><br>  Initially, there was only one script, in which the database dumps were made first, and then the backup of the site files.  Over time, we have divided it into three: if one of them falls with an error, the other, regardless of the first, will still start. <br><br>  We started by creating three simplest scripts: <br><br><ul><li>  the one that does the backup of server configs, that is, / etc with the exception of logs, crones, non-standard software (over time, a list of active processes and a list of installed packages were added); </li><li>  backup database, mysql dump or postgres / mongo / redis; </li><li>  backup of site files (conditionally / var / www). </li></ul><br><h3>  About monitoring </h3><br>  Since we have our own monitoring system, it would be nice to combine it with scripts to get alerts about failures when creating a backup.  First of all, exit decorators were added. <br><br>  For tar (file archiving): <br><br><pre><code class="bash hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">die_if_tar_failed</span></span></span></span>() { exitcode=$? <span class="hljs-comment"><span class="hljs-comment">#1 is ok [ $exitcode -eq 0 -o $exitcode -eq 1 ] &amp;&amp; return 0 echo `date +"%Y-%m-%d-%H%M%S"` $1 exitcode $exitcode &gt;&gt;${ERROR_LOG} exit 1 }</span></span></code> </pre> <br>  For everything else: <br><br><pre> <code class="bash hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">die</span></span></span></span>() { exitcode=$? <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> `date +<span class="hljs-string"><span class="hljs-string">"%Y-%m-%d-%H%M%S"</span></span>` <span class="hljs-variable"><span class="hljs-variable">$1</span></span> exitcode <span class="hljs-variable"><span class="hljs-variable">$exitcode</span></span> &gt;&gt;<span class="hljs-variable"><span class="hljs-variable">${ERROR_LOG}</span></span> <span class="hljs-built_in"><span class="hljs-built_in">exit</span></span> 1 }</code> </pre> <br>  In case of failure, the exitcode error is written to the log.  The presence of records in the log is checked by the monitoring agent, who pushes their number to the alert.  The same logic can be used without monitoring by setting the alert letters - for example, a small script that can be added to the end of the script or to cron: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash if [ $(wc -l /backup/logs/error.log | awk '{print $1}') -gt 0 ] ; then mail -s "Backup alert" mail@example.ru &lt; /backup/logs/error.log fi</span></span></code> </pre> <br>  Do not forget to reset the errlog after the problem is fixed: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n &gt; /backup/logs/error.log</code> </pre> <br>  Over time, simple alerts turned out to be not enough for us, and we began to additionally check backups in the repository, we will write more about this in the following posts. <br><br><h3>  About backup DBMS and replicas </h3><br>  We talked about this in detail in our blog ( <a href="https://www.itsumma.ru/blog/organizatsiya-rezervnogo-kopirovaniya-web-proekta-problemy-grabli-strategiya/">here</a> and <a href="https://www.itsumma.ru/blog/organizatsiya-rezervnogo-kopirovaniya-slozhnykh-internet-magazinov/">here</a> ). <br><br>  Backup streams immediately to the repository: <br><br><pre> <code class="bash hljs">/usr/bin/innobackupex --defaults-extra-file=/root/.my.cnf --no-timestamp <span class="hljs-variable"><span class="hljs-variable">$DIR</span></span>/<span class="hljs-variable"><span class="hljs-variable">$DT</span></span> --slave-info --parallel=1 --stream=tar 2&gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> | gzip -c | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"cat -&gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">"</span></span> || check_in innobackupex</code> </pre> <br>  Backup is stored locally: <br><br><pre> <code class="bash hljs">/usr/bin/innobackupex --defaults-extra-file=/root/.my.cnf --slave-info --no-timestamp --stream=tar ./ 2&gt;&gt;<span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> | gzip - &gt; <span class="hljs-variable"><span class="hljs-variable">${BACKUP_NAME}</span></span>; check_in innobackupex</code> </pre> <br>  Or in case the client has a crunch when the gzip is running, you can compress it in the storage: <br><br><pre> <code class="bash hljs">/usr/bin/innobackupex --defaults-extra-file=/root/.my.cnf --no-timestamp <span class="hljs-variable"><span class="hljs-variable">$DIR</span></span>/<span class="hljs-variable"><span class="hljs-variable">$DT</span></span> --slave-info --parallel=1 --stream=tar 2&gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"gzip - &gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">"</span></span> || check_in innobackupex</code> </pre> <br>  If the client wants to store backups in his own storage or cloud, then it might look something like this: <br><br><pre> <code class="bash hljs">/usr/bin/innobackupex --defaults-extra-file=/root/.my.cnf --no-timestamp <span class="hljs-variable"><span class="hljs-variable">$DIR</span></span>/<span class="hljs-variable"><span class="hljs-variable">$DT</span></span> --slave-info --parallel=1 --stream=tar 2&gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> | gzip -9 | s3cmd put - s3://<span class="hljs-variable"><span class="hljs-variable">${BACKET}</span></span>/<span class="hljs-variable"><span class="hljs-variable">${BACKUP_NAME}</span></span> || check_in innobackupex</code> </pre> <br>  Similarly, it works for file backups, using the example of Bitrix: <br><br><pre> <code class="bash hljs">tar czhf - /home/bitrix/www/ --exclude=bitrix/{managed,<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>,stack}_cache --exclude=bitrix/backup --exclude=upload/resize_cache | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"cat -&gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">"</span></span> \; &gt;&gt;<span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> 2&gt;&amp;1 || die_if_tar_failed files_tar</code> </pre> <br>  Xtrabackup writes a convenient and detailed log when creating a dump, in case of success there is always an entry in the last line: <br><br><pre> <code class="bash hljs">innobackupex: completed OK!</code> </pre> <br>  Therefore, a type decorator was also written for him: <br><br><pre> <code class="bash hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">check_in</span></span></span></span>() { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> [ -z <span class="hljs-string"><span class="hljs-string">"`tail -1 </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${LOG}</span></span></span><span class="hljs-string"> | grep 'completed OK!'`"</span></span> ] <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> `date +<span class="hljs-string"><span class="hljs-string">"%Y-%m-%d-%H%M%S"</span></span>` <span class="hljs-variable"><span class="hljs-variable">$1</span></span> &gt;&gt; <span class="hljs-variable"><span class="hljs-variable">${ERROR_LOG}</span></span> <span class="hljs-built_in"><span class="hljs-built_in">exit</span></span> 1 <span class="hljs-keyword"><span class="hljs-keyword">fi</span></span> }</code> </pre> <br>  Surprisingly, but the most common mistake when creating a xtrabackup backup is the inability to log in to mysql.  You can use the options: <br><br><pre> <code class="bash hljs">innobackupex --user=DBUSER --password=SECRET</code> </pre> <br>  But it is more convenient to use the config: <br><br><pre> <code class="bash hljs">/root/.my.cnf</code> </pre> <br>  There is a feature: if you do not use password authentication, then xtrabackup will swear that it cannot connect.  In this case, in the config you can write: <br><br><pre> <code class="bash hljs">[client] user = root password =</code> </pre> <br>  Other DBMS backup standard means.  Examples: <br><br>  With <b>MongoDB,</b> everything is simple if its version is ≥ 3.2: <br><br><pre> <code class="bash hljs">/usr/bin/mongodump --authenticationDatabase admin --username DBUSER --password=SECRET --archive --gzip | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"cat -&gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">.tgz"</span></span> \;</code> </pre> <br>  For <b>PostgreSQL</b> , we most often dump the entire database: <br><br><pre> <code class="bash hljs">su postgres -c pg_dumpall -U postgres | 2&gt;&gt;<span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"gzip - &gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">"</span></span> || die_if_tar_failed</code> </pre> <br>  There are cases when you need a <b>PostgreSQL</b> binary backup: <br><br><pre> <code class="bash hljs">su postgres -c pg_basebackup -D - -Ft 2&gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"gzip - &gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">"</span></span> || die_if_tar_failed</code> </pre> <br>  For <b>Redis</b> backup, we use the following structure: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"[`date`] backup redis 6383 started"</span></span> &gt;&gt;<span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> CLI=<span class="hljs-string"><span class="hljs-string">"redis-cli -p 6383 -h 127.0.0.1"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> [ -f ~/.redispass ]; <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> CLI=<span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${CLI}</span></span></span><span class="hljs-string"> -a </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$(cat ~/.redispass)</span></span></span><span class="hljs-string">"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">fi</span></span> dump=$(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"CONFIG GET dir"</span></span> | <span class="hljs-variable"><span class="hljs-variable">${CLI}</span></span> | grep ^/)/redis.rdb <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> bgsave | <span class="hljs-variable"><span class="hljs-variable">${CLI}</span></span> &gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> try=10 save_complete=0 sleep 10 <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> [ <span class="hljs-variable"><span class="hljs-variable">$try</span></span> -gt 0 ] &amp;&amp; [ <span class="hljs-variable"><span class="hljs-variable">$save_complete</span></span> -eq 0 ] ; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> BG=$(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'info'</span></span> | <span class="hljs-variable"><span class="hljs-variable">${CLI}</span></span> | awk -F: <span class="hljs-string"><span class="hljs-string">'/bgsave_in_progress/{sub(/\r/, "", $0); print $2}'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> [[ <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BG}</span></span></span><span class="hljs-string">"</span></span> = <span class="hljs-string"><span class="hljs-string">"0"</span></span> ]] ; <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> save_complete=1 <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Saving dump is finish"</span></span> &gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"Wait save dump"</span></span> &gt;&gt; <span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> try=$((try - 1)) sleep 60 <span class="hljs-keyword"><span class="hljs-keyword">fi</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> [ <span class="hljs-variable"><span class="hljs-variable">$save_complete</span></span> -eq 1 ];<span class="hljs-keyword"><span class="hljs-keyword">then</span></span> tar czhf - <span class="hljs-variable"><span class="hljs-variable">${DUMP}</span></span> | ssh <span class="hljs-variable"><span class="hljs-variable">${SSH}</span></span> <span class="hljs-string"><span class="hljs-string">"cat -&gt; </span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${REMOTE_PATH}</span></span></span><span class="hljs-string">/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">${BACKUP_NAME}</span></span></span><span class="hljs-string">"</span></span> \; &gt;&gt;<span class="hljs-variable"><span class="hljs-variable">$LOG</span></span> 2&gt;&amp;1 || die_if_tar_failed redis_6383_tarring <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> die redis_6383_bgsave_timeout <span class="hljs-keyword"><span class="hljs-keyword">fi</span></span></code> </pre> <br>  In the next posts we will talk about the organization of the backup of server settings and Git, site files and large volumes, about backups checks (we will definitely check them for operability).  And later we will lay out our decision in the open source. </div><p>Source: <a href="https://habr.com/ru/post/336754/">https://habr.com/ru/post/336754/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../336740/index.html">Translation of Hans Buvald’s article “Action Based Testing”</a></li>
+<li><a href="../336742/index.html">Signals on c #</a></li>
+<li><a href="../336746/index.html">Contractor for CRM: looking for ways to fail the project</a></li>
+<li><a href="../336750/index.html">University inside Eram</a></li>
+<li><a href="../336752/index.html">Announcement of the festival CG Space # 6</a></li>
+<li><a href="../336756/index.html">About the translation of the book "Kali Linux Revealed"</a></li>
+<li><a href="../336758/index.html">We write GraphQL API server on Yii2 with a client on Polymer + Apollo. Part 1. Server</a></li>
+<li><a href="../336760/index.html">VMware vSAN 6.6.1 ─ one more step to perfection</a></li>
+<li><a href="../336762/index.html">Go on devices with small memory</a></li>
+<li><a href="../336764/index.html">[in bookmarks] PDF-version of articles about Bash-scripts</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Materialize the search results, or how we released 25 processor cores</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Not so long ago, we solved the problem of optimizing the resource consumption of our elasticsearch cluster. Having failed to customize the elastic its...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Materialize the search results, or how we released 25 processor cores</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/web/4ac/331/112/4ac331112a15462aaa04793d70016471.png"></p><br><p>  Not so long ago, we solved the problem of optimizing the resource consumption of our elasticsearch cluster.  Having failed to customize the elastic itself, we did something like a search results cache, using the approach called "reverse" search or percolator.  Under the cut there is a story about how we work with metadata of metrics and the percolator itself. </p><a name="habracut"></a><br><p>  The purpose of the monitoring service that we develop is to show the causes of the problems, for this we remove a lot of detailed metrics about different subsystems of the client's infrastructure. </p><br><p>  On the one hand, we solve the problem of recording a large number of metrics from thousands of hosts, on the other hand, metrics do not lie dead in our repository, but are constantly read: </p><br><ul><li>  Clients look at graphs that, when drawn, can read several thousand metrics. </li><li>  we have a lot of pre-configured triggers for detecting typical problems, and each of them can constantly be read by a lot of metrics </li></ul><br><h2 id="chto-takoe-metrika">  What is a metric </h2><br><p>  When we started the development of okmeter (at that time there were no public versions of the influxdb, prometheus), it was immediately clear to us that the metrics should not be "flat".  In our case, the metric identifier is a key-value dictionary (we historically call it label_set): </p><br><pre><code class="hljs json">{ <span class="hljs-attr"><span class="hljs-attr">"name"</span></span>: <span class="hljs-string"><span class="hljs-string">"nginx.requests.rate"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"status"</span></span>: <span class="hljs-string"><span class="hljs-string">"403"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"source_hostname"</span></span>: <span class="hljs-string"><span class="hljs-string">"front3"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"file"</span></span>: <span class="hljs-string"><span class="hljs-string">"/var/log/access.log"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"cache_status"</span></span>: <span class="hljs-string"><span class="hljs-string">"MISS"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"url"</span></span>: <span class="hljs-string"><span class="hljs-string">"/order"</span></span> }</code> </pre> <br><p>  For each such metric, we have values ​​that are tied to specific points in time (time series). </p><br><h2 id="kak-my-hranim-metriki">  How we store metrics </h2><br><p>  Based on the hash from label_set, for each metric a string key is calculated by which we identify the metrics in the repository.  And here we share the task of storing metric values ​​by key from the task of storing and processing meta information about metrics: </p><br><p><img src="https://habrastorage.org/web/a24/e38/5d1/a24e385d1c8f4ef5986690f64431953a.png"></p><br><p>  We will not discuss the storage of metric values ​​in this article, but we will talk about metadata in more detail. </p><br><p>  The meta information of a metric is the key itself, a label_set, creation time, update time, and several other service fields. </p><br><p>  We store this information in cassandra and can receive it through the key metrics.  In addition to the main metadata repository, we have an index in elasticsearch, which by some search query of the user returns a set of keys of metrics. </p><br><h2 id="zapis-metrik">  Record metrics </h2><br><p>  When a packet of metrics comes from an agent installed on the client’s server, the following for each metric occurs on the server: </p><br><ul><li><p>  We calculate metric_key, check if this metric is in the meta information storage (C *) </p><br></li><li><p>  Register a new one if needed (recorded in C * and ES) </p><br></li><li><p>  We raise the updated_ts and calculate whether it is time to update it (updated every 12 hours, in order to reduce the load on indexing in ES) </p><br></li><li><p>  If it's time, update the updated_ts in C * and ES </p><br></li><li>  We write value in metric_storage </li></ul><br><h2 id="chtenie-metrik">  Reading metrics </h2><br><p>  We have 2 main sources of requests for reading metrics: user requests for drawing graphs and a trigger check system.  Such requests are some kind of expression on our dsl: </p><br><pre> <code class="hljs lisp">top(<span class="hljs-number"><span class="hljs-number">5</span></span>, sum_by(<span class="hljs-name"><span class="hljs-name">url</span></span>, metric(<span class="hljs-name"><span class="hljs-name">name=</span></span>“nginx.requests.rate”, status=“<span class="hljs-number"><span class="hljs-number">5</span></span>*”)))</code> </pre> <br><p>  This expression contains: </p><br><ul><li><p>  The "selector" of metrics (arguments of the metric () function), which is a search query for selecting all metrics interesting to the user.  In this case, we select all metrics with the name "nginx.requests.rate" and the status label, which has a prefix of "5" (we want to count all http-5xx errors) </p><br></li><li>  Metric conversion functions.  In this case, we will group all the selected metrics (by sum) by url label (for example, values ​​from different servers or files are added), and then we take only 5 of the largest total values, and fold the tail into a value labeled "~ other" </li></ul><br><p>  At the same time, our request always works in a certain time interval: [since_ts = X, to_ts = Y] </p><br><ul><li><p>  The metric selector is converted to approximately the same query to elasticsearch (a valid json query is much more verbose): </p><br><pre> <code class="hljs json">{<span class="hljs-attr"><span class="hljs-attr">"name"</span></span>: “nginx.requests.rate”, <span class="hljs-attr"><span class="hljs-attr">"status_prefix"</span></span>: <span class="hljs-string"><span class="hljs-string">"5"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"created_lt"</span></span>: <span class="hljs-string"><span class="hljs-string">"Y"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"updated_gt"</span></span>: <span class="hljs-string"><span class="hljs-string">"X+12h"</span></span>}</code> </pre> <br></li><li><p>  Received N (often thousands) of keys </p><br></li><li><p>  We go to C * to receive label_sets on keys </p><br></li><li><p>  We go to metric_storage to receive data on keys </p><br></li><li>  We calculate the expression top (5, sum_by (...)) </li></ul><br><h2 id="nagruzka-i-razmer-dannyh">  Load and data size </h2><br><p>  At the moment, our cloud is processing just over 100 thousand metrics per second per record.  The average number of requests per request is about 350 rps (90% of them are from triggers).  Each search query is 1-3 ES indexes, each index ~ 100 million documents (~ 30GB). </p><br><p>  At the same time, CPU consumption by an elastic will not leave anyone indifferent who counts the money spent on hosting :) </p><br><p><img src="https://habrastorage.org/web/8ce/b9a/85a/8ceb9a85adde462dacc0011593e90440.png"></p><br><h2 id="elasticsearch">  Elasticsearch </h2><br><p>  We tried to turn the elasticsearch settings, expecting that the built-in query cache was created just for our case of repeated queries.  There was an attempt to model an index to which for some queries no updates come in to exclude cache invalidation for these queries. </p><br><p>  But unfortunately, all our exercises did not give a decrease in the resources consumed, nor a decrease in the elastic response time. </p><br><h2 id="vneshniy-kesh">  External cache </h2><br><p>  We decided to make the search results cache external to ES and formulated the following requirements for it: </p><br><ul><li><p>  The search is always on a time interval. </p><br></li><li><p>  Metrics that stopped coming should go out of cache </p><br></li><li>  New metrics should be included in search results within 1 minute. </li></ul><br><p>  With such requirements, you can just cache the ES response for only 1 minute, while it is clear that there will be no hit rate.  As a result, we came to the conclusion that we will not only do a cache, but something like a materialized view with the search results for each search query we know. </p><br><h2 id="perkolyator">  Percolator </h2><br><p>  The idea was that with each metric entry we would check what known search query it matches.  In case of a match, the metric is written to our cache. <br>  Such an approach is called a <a href="https://en.wikipedia.org/wiki/Prospective_search">"prospective search"</a> , it is also a "reverse search", it is also a "percolator". <br>  As I understand it, the term <a href="https://ru.wikipedia.org/wiki/%25D0%259F%25D0%25B5%25D1%2580%25D0%25BA%25D0%25BE%25D0%25BB%25D1%258F%25D1%2586%25D0%25B8%25D1%258F">"percolation"</a> is used here because of the similarity of the process, we somehow check the "flow" of a document through many search queries. </p><br><p>  In the usual search task, we have documents, we build an index of them, in which (very simplistic) each "word" corresponds to a list of documents in which this word occurs. </p><br><p><img src="https://habrastorage.org/web/c5b/7ae/bea/c5b7aebea4c84c7bab07dec5055fc67e.png"></p><br><p>  In the case of percolation, we have previously known search queries, and each document is a search query: </p><br><p><img src="https://habrastorage.org/web/4ad/01d/865/4ad01d8650274dd09ca3e387031df848.png"></p><br><p>  Percolator implementations: </p><br><ul><li>  In elasticsearch there is <a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-percolate-query.html">percolate query</a> </li><li>  In solr there is an open <a href="https://issues.apache.org/jira/browse/SOLR-4587">ticket</a> , maybe they will finish it sometime </li><li>  <a href="https://github.com/flaxsearch/luwak">Luwak</a> - library for java based on Lucene </li><li>  <a href="https://cloud.google.com/appengine/docs/standard/java/javadoc/com/google/appengine/api/prospectivesearch/ProspectiveSearchService">Google App Engine Prospective Search API</a> is a service for GAE, but it is already deprecated </li></ul><br><p>  We considered only elasticsearch, there the percolator is a special type of index in which we describe the structure of our future documents: what will be the fields of the document and their types (mapping).  Further in this index we save our requests, and then we search by submitting documents for input. </p><br><p>  Inside the ES, with each percolation request, a temporary index is created in memory, consisting of only one document that we submitted for input.  Of all the saved queries, those that are obviously not suitable for the document on a set of fields are discarded.  After that, for each remaining candidate request, a search is performed on our temporary index. </p><br><p>  On our simple benchmark, we received 2-10ms on checking 1 document for compliance with 1 request in the percolator.  With our flow of documents, it will be very expensive.  In addition, we have not learned to "cook" elasticsearch :) </p><br><h2 id="naivnyy-samodelnyy-perkolyator">  Naive homemade percolator </h2><br><p>  Let's return to our metrics.  As I said above, our document is a key-value dictionary.  Our search query is a search by exact or prefix match fields.  That is, as such, full-text search is not required. </p><br><p>  We decided to try to make a "naive" implementation of the percolator, that is, to check on the forehead that each metric matches all known queries.  We have a write stream of ~ 100 thousand metrics per second, each metric needs to be checked for compliance with ~ 100 queries. </p><br><p>  One test benchmark (this piece of our code works on golang, it was the prototype that was written on it) showed ~ 300ns.  Since this is a completely cpu bound task, we have the right to sum up the time, we get: </p><br><p> <code>100k * 100 = 10M   </code> <br> <code>10M * 300ns = 3    = 3  </code> </p> <br><p>  The logic of our cache turned out something like this: </p><br><img width="500" src="https://habrastorage.org/web/ff0/68b/163/ff068b163c354fa4953b449675a2b12d.png"><br><p><br>  Additional steps were added to the process of recording metrics: </p><br><ul><li>  Raise all saved queries for this client from  * </li><li>  We check every metric that arrives for a match for each request. </li><li>  In case of coincidence, we write the meta information about the metric in the cache, the same metric can be written into the cache many times (duplicates will be removed by cassandra) </li></ul><br><p>  It is worth noting that after we register a new request, the cache for it was not validated immediately.  We have to wait until the end of the write requests that have already begun and have not seen the new request in the list of known ones.  Therefore, we move the cache initialization time by the timeout value of the request to write metrics. </p><br><h2 id="kak-ustroen-kesh">  How does the cache </h2><br><p>  We keep the cache in Cassandra, the results for each query are beaten to pieces in time (each piece is 24 hours).  This is done in order to ensure the leaching of the results of the metrics that have stopped coming. </p><br><img width="500" src="https://habrastorage.org/web/ba7/1c5/071/ba71c507175f44f4810e6d2d984d01a1.png"><br><p>  Upon request, we read all daily pieces that fall into the time interval of interest to us and combine the results into memory. </p><br><p>  The value is the dictionary key metrics and the json label_set view.  Thus, if we use the results from the cache, we don’t need to additionally go to the cassandra for the metadata on the key as we did after receiving the results from ES. </p><br><h2 id="vykatili-v-production">  Rolled out in production </h2><br><p>  After we rolled the cache into the battle and it became valid for most requests, the load on the ES dropped dramatically: </p><br><p><img src="https://habrastorage.org/web/11a/850/0a7/11a8500a7802494ebecc1aea54e6eebe.png"></p><br><p>  At the same time, resource consumption of cassandra has not changed: </p><br><p><img src="https://habrastorage.org/web/026/e81/0dc/026e810dc30249d2a224441241322f2e.png"></p><br><p>  And the backend that performs the percolation grew just by the predicted ~ 3 cores: </p><br><p><img src="https://habrastorage.org/web/0c7/479/c42/0c7479c429334985a16535b9eae60c36.png"></p><br><p>  As a bonus, we got a good latency optimization, taking the results from the cache turned out to be about 5 times faster than going to ES and then getting the meta information from C *: </p><br><p><img src="https://habrastorage.org/web/c94/ae3/b04/c94ae3b0475749f7a6a2ef218cb36eac.png"></p><br><h2 id="proverka-konsistentnosti">  Consistency check </h2><br><p>  To make sure that we didn’t get anywhere with the logic of the cache, the first few days the search went simultaneously on both the ES and the cache, and we compared the results and wrote the corresponding metric.  After switching the load to the cache, we did not begin to cut the validation logic of the cache and make speculative requests in ES for 1% of requests.  The same requests are also a “hot-water bottle” for ES, otherwise without a load, the indices may not get into page cache and user requests will be blunt. </p><br><h2 id="itogo">  Total </h2><br><p>  We tried not to make an external cache, but to force ES to use an internal one.  But I had to do cycling.  But there is a plus: we will hang additional logic on the percolator. </p><br><p>  According to the results, we shrank well along the glands, while our homemade percolator scales quite well.  This is quite important for us, as we are rapidly growing both in the number of clients and in the number of metrics from each client server. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/335266/">https://habr.com/ru/post/335266/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../335254/index.html">How development workflow affects task decomposition</a></li>
+<li><a href="../335256/index.html">Multiprotocol NAS access to Netapp resources with ACLs</a></li>
+<li><a href="../335260/index.html">What happens at the junction of the database and operating system?</a></li>
+<li><a href="../335262/index.html">How to avoid mistakes when changing CRM</a></li>
+<li><a href="../335264/index.html">Digitalization and what kind of beast</a></li>
+<li><a href="../335270/index.html">YouTrack 2017.3 release: JavaScript workflow automation, improved Kanban support, and more</a></li>
+<li><a href="../335272/index.html">12 useful sites for creative teams</a></li>
+<li><a href="../335276/index.html">Analysis of Nikita Makarov's report on a revolver, mnemonic, warehouse manager and other useful things.</a></li>
+<li><a href="../335278/index.html">Colibri-ui - our solution for automating mobile application testing</a></li>
+<li><a href="../335280/index.html">Oh, My Code - a new program about IT management on the Technostrim channel</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Bug in NTFS, or how to hang the whole system</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Not so long ago, when developing a file system filter, there was a problem that caused the entire system to hang. It would seem that the filter perfor...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Bug in NTFS, or how to hang the whole system</h1><div class="post__text post__text-html js-mediator-article">  Not so long ago, when developing a file system filter, there was a problem that caused the entire system to hang.  It would seem that the filter performed very simple actions and was very primitive itself.  To find out the reason, I had to go down to debugging and reverse engineering the NTFS driver.  The analysis revealed a very interesting effect.  If you compile and run a very simple program shown in the figure below, access to the corresponding volume will hang. <br><br><div style="text-align:center;"><img width="650" hspace="5" src="https://habrastorage.org/web/91c/371/c02/91c371c025f84a1abf34beb0251e8fe0.png"></div><br>  Those.  in this example, if you try to open any file relative to the $ mft file, access to the entire volume “C” will hang, and since this volume is system-wide, the entire system will also freeze.  You do not need to have any rights.  If the volume was not a system volume, then only access to this volume will hang, but if you perform a reboot, the system will hang on it. <br><a name="habracut"></a><br><h2>  Some theory </h2><br>  Before describing the essence of the problem, it is worth considering the basic principles of building file systems.  When a process opens a file, in addition to the received HANDLE on it, structures also form in the kernel space, both by the kernel itself and by the file system, which, in essence, represent the volume file in memory.  The figure below shows these structures. <br><br><div style="text-align:center;"><img width="600" hspace="5" src="https://habrastorage.org/web/d6d/079/c76/d6d079c7653c4a6496740109aaa9517e.png"></div><br>  The HANDLE file always refers to the structure of the FILE_OBJECT kernel.  This structure is formed by the kernel before sending a request to the file system.  The file system, in turn, initializes the fields of this structure.  Thus, the FILE_OBJECT structure will contain pointers to file system structures: FCB (File control block, contains all the necessary data for file management) and CCB (Context Control Block, contains data unique to a particular open instance).  It is also possible that two different HANDLEs will refer to the same volume file, as reflected on the left.  The FCB structure contains a list of all CCB structures.  The CCB structure contains a pointer to the corresponding FCB.  Those.  There will be exactly one FCB structure for each open volume file in memory.  If a file is opened several times, exactly as many CCB structures will be formed, how many times the corresponding file has been opened, and all these structures will refer to a single FCB structure. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Since file access can be performed simultaneously by a different or the same process, these parallel operations must be serialized.  It is possible that some operations will be performed simultaneously (for example, reading), however, there are situations where access must be performed exclusively (for example, writing).  For this, the kernel provides a serialization mechanism - ERESOURCE.  This object can be captured both exclusively and shared.  If the object is captured exclusively, then any attempt to capture it will be in the waiting queue.  If an object is captured shared, then attempts to also capture it shared will be satisfied immediately.  If the object is captured separately and the waiting queue is not empty (i.e. there was an attempt of exclusive capture), then any attempts to capture it will be placed in the waiting queue. <br><br>  FCB file system structures for access serialization contain these mechanisms and actively use them during file access.  This ensures the integrity of the file both in memory and on the volume. <br><br>  The $ mft file of the NTFS file system is system file.  This file describes the location of all files on the volume.  NTFS when mounted opens it for personal use.  If you try to read the contents of a directory or while opening a file, NTFS will read the $ mft file.  Whenever you try to delete a file or create a file, NTFS will write to this file.  Consequently, before any such operation, the ERESOURCE mechanism of this file will also be captured, then the operation itself will be executed, after which the mechanism will be released. <br><br><h2>  NtfsCommonCreate function </h2><br>  To understand the essence of the problem, it is necessary to understand the principle of operation of the NTFS file system NtfsCommonCreate function.  A very simplified pseudocode is shown below.  Only those parts of the function that are directly related to the problem are given. <br><br><div style="text-align:center;"><img width="500" hspace="5" src="https://habrastorage.org/web/a22/8e8/b06/a228e8b067be481b8b61f04e23bbf98f.png"></div><br>  The NTFS file system stores a tree of already open files / directories.  Therefore, it is advisable in order to improve performance to find the target file in this tree instead of repeatedly reading the volume.  Consequently, the function will try to find it using the function NtfsFindStartingNode.  If the file could not be found, then the function will try to find the directory in which it is located.  This attempt will be performed up to the root of the file system.  The NtfsFindStartingNode function returns a pointer to the FCB structure of either the file itself or the directory that is closest in depth to the target file.  The function will also return a part of the raw path relative to the found directory.  Also, the function pre-captures the ERESOURCE of the found directory or file is shared. <br><br>  Next, the NtfsCommonCreate function checks if there is a part of the raw path, if not, then the NtfsFindStartingNode function has found the file itself, and in this case, the NtfsCommonCreate function ends.  Otherwise, the function continues to search for the file, but already on the volume. <br><br>  As can be seen from the pseudo-code, the function contains a loop in which the directories leading to the file are opened successively.  At the beginning of the cycle, it is checked whether the file is a directory, and if not, then the function ends with an error.  Otherwise, the next name in the path is extracted and an attempt is made to open a file / directory with that name using the NtfsOpenSubdirectory function.  The NtfsOpenSubdirectory function also captures the open file / directory exclusively.  Before calling the NtfsOpenSubdirectory function, the previous open directory is also released with the NtfsOpenSubdirectory function.  The work cycle will continue to the directory in which the alleged file will be located. <br><br>  Upon completion of its work in the event of unsuccessful completion, the NtfsCommonCreate function will close the last found directory using the NtfsTeardownStructures function.  Also, this function will release the ERESOURCE directory / file, if possible.  Those.  if this directory / file is not open.  Since  this directory / file has been opened by the file system only, most likely, that their ERESOURCE will be released, and the FCB file will be closed. <br><br><h2>  The essence of the problem </h2><br>  When an attempt is made to open a file relative to the $ mft file, the NtfsFindStartingNode function will not find it, since  this function performs the search a little differently, unlike the NtfsOpenSubdirectory function, which always finds this file.  Consequently, a cycle will start, starting at the root of the file system.  Next, the NtfsOpenSubdirectory function will open this file and capture it with ERESOURCE exclusively.  At the next iteration, the loop will find that the file is not a directory, and, therefore, will interrupt its operation with an error.  And when you finish your work, the NtfsCommonCreate function will use the NtfsTeardownStructures function to attempt to close it.  The function NtfsTeardownStructures, in turn, will face the fact that it will not be able to close the file, because  it is opened by the file system itself when mounted.  In this case, contrary to the expectations of the NtfsCommonCreate function, the NtfsTeardownStructures function will not release the ERESOURCE $ mft file.  Thus, he will remain captured forever.  Therefore, for example, when attempting to create a file or read a file of a volume, the NTFS file system will attempt to capture the ERESOURCE $ mft file and freeze at this point forever. <br><br><h2>  Conclusion </h2><br>  This problem can not be called a vulnerability, but with remote access to the machine, it is possible to disrupt its operation.  This error persists up to the latest versions of Windows, with the exception of the latest updates, starting at least with Windows Vista.  As already mentioned, the description of the operation of the NTFS file system in this case is very simplified and reflects only the essence of the problem.  In fact, the implementation is much more complicated than the above description. </div><p>Source: <a href="https://habr.com/ru/post/329166/">https://habr.com/ru/post/329166/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../329150/index.html">How to write a chat bot in PHP for the VKontakte community</a></li>
+<li><a href="../329152/index.html">Javascript style elements</a></li>
+<li><a href="../329154/index.html">Online ticket office: first results</a></li>
+<li><a href="../329156/index.html">Two words about abstract forces ruling Worlds</a></li>
+<li><a href="../329160/index.html">Unreal engine 4. Sequencer instead of Matinee</a></li>
+<li><a href="../329168/index.html">Pygest # 9. Releases, articles, interesting projects from the world of Python [May 8, 2017 - May 22, 2017]</a></li>
+<li><a href="../329170/index.html">Domestic processor from the company ELVIS</a></li>
+<li><a href="../329174/index.html">Load testing: where to start and where to look</a></li>
+<li><a href="../329176/index.html">From dependent types to homotopic type theory on Scala + Shapeless + ProvingGround</a></li>
+<li><a href="../329178/index.html">PostgreSQL Diagnostic Techniques - Vladimir Borodin and Ildus Kurbangaliev</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

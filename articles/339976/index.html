@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How IIS supports our BI analytics, and what are the features of settings under Highload</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the analytical part of the Yandex.Money backend, Microsoft IIS is being actively used, and some knowledge has already accumulated about its use in ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How IIS supports our BI analytics, and what are the features of settings under Highload</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/59/df/61/59df6120ad247857792140.png"></p><br><p>  In the analytical part of the Yandex.Money backend, Microsoft IIS is being actively used, and some knowledge has already accumulated about its use in a high-loaded environment that I want to share. </p><br><p>  Our analytics runs on the Microsoft stack ( <a href="https://habrahabr.ru/company/yamoney/blog/326436/">SQL Server</a> and SSIS, SSAS, SSRS), one of the best BI solutions on the market.  Once our BI is based on the services of a single vendor, then it is logical to use Microsoft’s IIS solution for hosting web applications. </p><br><p>  <strong>In the article I will tell you about the features of working with applications running on IIS that are typical for a high-loaded environment.</strong> <a name="habracut"></a></p><br><p>  To begin, we synchronize with you our ideas about "Hayload".  As an illustration of a highly loaded system, the article mainly uses our system of fraud protection (antifraud).  It processes all incoming Yandex.Money operations - and this is not one hundred operations per second. </p><br><h1 id="1-minimum-operaciy-na-odin-zapros-a-vse-tyazheloe--na-zapusk-servisa">  # 1 Minimum operations per request, and all heavy - to start the service </h1><br><p>  It is important to exclude logging, calls to other services and everything else that is not required for a response from processing a user request.  Secondary actions can be performed in parallel processes outside the main thread.  Especially critical is the observance of this rule, when the service has a certain SLA response. </p><br><p>  Anything that is initialized “for a while” should not do this when the first request comes from the user.  One of our most important anti-fraud services, anti-fraud, once required loading the entire set of rules at the start of each new request handler. </p><br><blockquote>  Imagine a simple network firewall that, when a new packet arrives, passes its contents through a long set of rules.  Only in the case of an antifraud, the number of rules and conditions in them have reached such volumes that it is impossible to load all this every time you start the next processing flow without a significant decrease in the responsiveness of the service.  At peak antifraud loads, the processor load even reached 100% over several minutes. </blockquote><p>  In addition, long initialization is fraught with cascading performance degradation.  When the first request arrives, the anti-fraud creates a separate handler for it and loads the entire list of security rules there, and the user admires the offer to wait a bit. </p><br><p><img src="https://habrastorage.org/webt/59/df/61/59df61208f582156877098.png"><br>  <em>The old process of responding to user requests with a lack of resources ready handlers.</em> </p><br><p>  Now imagine that, until the loading of the rules for the previous handler is complete, a transfer request arrives from other users.  A similar operation is launched for each of them, and there can be quite a few such duplicate initializations.  All this led to periodic interface delays of 30 seconds or more. </p><br><p>  Therefore, the object with the rules made the only one and hung up for launch along with the main service.  Now the handlers are started in a couple of milliseconds and do not affect the overall performance of the server (bursts within 10%).  Initially, there were thoughts to make their launch proactive, but given the quick start of each handler, this would not have a noticeable effect on performance. </p><br><p>  On this, of course, you should not stop - you need to introduce optimization at all levels of the system.  By the way, when processing the rules, we revised the basic mechanism and divided the rules into online and offline logic and servers, but this story deserves a separate story in the future. </p><br><h1 id="2-ne-zabudte-pro-svyazannye-zaprosy-i-raznye-uzly">  # 2 Do not forget about related queries and different nodes </h1><br><p>  When it comes to working with a server farm, you need to either teach the application to bind a user session to a specific node, or correctly handle logically related requests that come to different nodes. </p><br><p>  Since binding a session to a single node is wrong in terms of users' fault tolerance and happiness, it is better to immediately build a synchronization system so that any cluster node knows about the results of the queries of its “colleagues”.  This can be done in different ways, for example: </p><br><ol><li>  Use common for all database nodes, which stores the necessary results of all queries.  The important point is that not all requests are stored in such a database, but only those that can be useful on other nodes - this also should not be forgotten when developing an application.  Architecturally, such a database can easily become a bottleneck, so you need to carefully monitor its performance.  For example, in time to move from normal to SSD-drives. </li><li>  Transfer this task to the client.  That is, build it in such a way that it includes the result of the previous related query in the next one. </li><li>  Finally, you can build an application architecture so that there are not two requests for one process.  No related requests - no problem. </li></ol><br><p>  For example, we want to know when making a payment when the source account was opened.  To do this, you will need to either find the account opening operation itself, or save some of its data separately for later use.  In our case, option 1 is used. </p><br><h1 id="3-progrevat-ili-ne-progrevat">  # 3 Warm up or not warm up </h1><br><p>  The application must always be running, and the launch itself must be done in advance, before the appearance of real requests.  In addition, the service should already be “warmed up” with test requests in order to immediately process incoming calls with minimal delays. </p><br><p>  This is to some extent hampered by the default IIS settings, due to which unloaded processes periodically stop.  Even if they are automatically launched at the first relevant request from the outside, the application will need time for initial initialization, processing of related requests and so on. </p><br><blockquote>  Previously, web application restarts occurred every 30 minutes on one of the nodes.  Therefore, we wrote a Powershell script that took the load off the service on the balancer, restarted the application and ran several dozen requests.  After that, the script waited for initialization and, when the application started responding quickly enough, returned the “combat” traffic to the server.  However, the algorithm is still relevant, despite the reduction of planned restarts. </blockquote><p>  Therefore, before starting the process or restarting the web application, it is necessary to transfer the load to another server, wait for the newly launched one to warm up and then include it in incoming processing. </p><br><h1 id="4-pravilnyy-vybor-populyacii-potokov">  # 4 Choosing the right stream population </h1><br><p>  IIS has a limited set of service streams for working with disks, a network, etc. These streams are used to process most user requests, and at some point the resources of service streams may not be enough. </p><br><p>  IIS has two key stream settings that can limit performance: </p><br><ul><li><p>  <strong>Queue Length</strong> - adjusts the queue length for incoming requests. </p><br></li><li>  <strong>Worker process</strong> - the number of independent copies of the application.  There is no universal council on the value, therefore it is necessary to experimentally select the one that is appropriate in your environment. </li></ul><br><p>  In addition, there is the parameter <strong>Database connection pooling</strong> , which is configured in the client DBMS on the side of the web application.  Here you need to carefully select values, otherwise there will be a lot of unused connections to the database, each of which consumes memory. </p><br><p>  In addition to the service ones, there are worker threads (WorkerThreads) - just those that are used by the server application to start new handlers of the same anti-fraud.  It is desirable to issue these flows exactly as much as is required for work.  Parameters can be roughly calculated by the following algorithm: </p><br><ol><li>  Take from the characteristics of a particular system the number of requests per unit of time.  For example, in our case, this value linearly depends on the number of payments of the entire payment system. </li><li>  The number of units of time for each request is best determined experimentally - for example, by turning on logging in the application.  IIS logs can also be useful - there are both queries themselves and timestamps. </li><li>  The lower limit of the number of threads is obtained by multiplying Clauses 1 and 2. </li></ol><br><p>  If it fails to calculate, it is better to conduct an experiment in a test environment, because simply setting the maximum values ​​is not the best idea.  You should not waste server resources and increase the time of IIS initialization. </p><br><p>  Of course, this algorithm can only be considered as a starting point for evaluating your application.  For example, possible load peaks in your environment are not taken into account.  For a full assessment, you will need to consider <a href="https://habrahabr.ru/post/250881/">many other parameters</a> that are clearly beyond the scope of this article. </p><br><p>  Speaking of resources, the stable operation of 64-bit applications can be hampered by auxiliary <strong>libraries compiled under 32-bits</strong> — right up to the crash of the main application.  When debugging 64-bit applications, you should not forget that the IIS emulator from Microsoft Visual Studio 2012 (and earlier) will not work, since it is 32-bit and you need to use an instance of IIS for debugging in 64-bit mode problems. </p><br><h1 id="5-vykladka-prilozheniya-na-ves-klaster">  # 5 Layout of the application on the entire cluster </h1><br><p>  From the point of view of exploitation, for Yandex.Money antifraud, a 1 + N cluster is needed, in which you can make changes only once, regardless of the number of nodes.  Therefore, experiments in choosing the appropriate “rollout” logic led to the following algorithm: </p><br><ol><li>  The load is removed from one of the nodes, after which an update is installed. </li><li>  A check is performed on the application's performance (results of the monitoring system, viewing logs, etc.). </li><li>  The script performs a remote backup of the application from the neighboring working server and distributes the release to other machines.  In this case, the load is not disconnected </li></ol><br><blockquote>  Speaking of monitoring.  Of course, the approach for each application is different, but we use IIS logging as one of the tools.  Once a day, a script is launched that scans the logs with the help of Microsoft LogParser and generates a report with an average time, number and ratio of response status (500, 200, etc.).  I do not post the code itself, because there is too much added solely under the realities of our system.  But the idea from the article <a href="http://msprogrammer.serviciipeweb.ro/2010/09/20/logparser-powershell-and-quick-and-dirty-parsing-of-iis-files/">LogParser, PowerShell and IIS files was</a> used as a basis. </blockquote><p>  It is important to pre-unify the layout of applications on disks.  That is, to locate the site in the same folders on each server - this will simplify further automation.  To run an IIS farm, you will need <strong>Shared Config</strong> to store a single IIS configuration for all nodes, which is better placed on the local drives of each server with synchronization scripts. </p><br><blockquote>  When placing Shared Config on a network folder, "special effects" are possible - for example, IIS will not be able to read the configuration and will quench all applications. </blockquote><p>  A common data storage (in our case, anti-fraud rules) may also be required.  For this, it is convenient to use DFS synchronization: the application works with a local folder on the node, and the data of this folder is synchronized over the other machines by means of DFS, which also handles conflicts itself.  For greater fault tolerance and ease of upgrading, you can use the Many-to-Many synchronization scheme. </p><br><h1 id="esche-para-slov-o-balansirovke">  A couple more words about balancing </h1><br><p>  The key element of any distributed and high-loaded system is the balancer of incoming requests.  For example, requests from users to frontend systems.  Such a balancer can be of two types: </p><br><ol><li>  Without “feedback” - the internal balancer algorithm simply distributes the incoming request flow among the cluster nodes.  A prime example is the NLB service built into Windows Server.  It only checks if the neighboring nodes are alive and does not know anything about the state of the applications.  The service is quite flexible in load distribution and can be controlled from the command line, but it works only on one local network. </li><li> A more intelligent balancer, which evaluates the state of nodes and redistributes requests for any deviations.  For example, for <strong>outgoing</strong> requests from web servers, you can use Haproxy, which periodically polls all cluster nodes and distributes requests based on this data. </li></ol><br><p>  Using Microsoft's web server is convenient for those who use the stack of applications and the development of the same manufacturer.  If your application does not need large data structures, then memory costs on the hosts will be minimal.  In addition, most of the necessary options and features are provided out of the box, which is clearly simpler than building analogs on Opensource. </p><br><p>  If the application is written on the same .Net - why launch it on a “foreign” platform with a fight? </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/339976/">https://habr.com/ru/post/339976/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../339966/index.html">Five stages of the evolution of CRM users</a></li>
+<li><a href="../339968/index.html">Data Geometry 5. Base Conversion</a></li>
+<li><a href="../339970/index.html">IoTmanager is a mobile MQTT client with an unusual concept</a></li>
+<li><a href="../339972/index.html">Raiffeisenbank DevOps: Flight Phase</a></li>
+<li><a href="../339974/index.html">How we did and do memed</a></li>
+<li><a href="../339978/index.html">TLS 1.2 and new GOST</a></li>
+<li><a href="../339980/index.html">Lenovo data center solutions</a></li>
+<li><a href="../339982/index.html">A cohort analysis shows a picture that is completely different from our usual perception.</a></li>
+<li><a href="../339984/index.html">Case: endless development of the ultimate flash drive or how not to start a startup. Part 1: from idea to product</a></li>
+<li><a href="../339986/index.html">VoIP server for a small company (FreePBX 14, Asterisk 15, Ubuntu 16.04) part 1</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

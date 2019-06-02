@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Using timeout & strace utilities to monitor user inactivity to break a Shellinabox connection</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, I was engaged in researching what solutions exist for implementing a web-ssh proxy server. The essence of the task is to enable users to con...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Using timeout & strace utilities to monitor user inactivity to break a Shellinabox connection</h1><div class="post__text post__text-html js-mediator-article"><p>  Recently, I was engaged in researching what solutions exist for implementing a web-ssh proxy server.  The essence of the task is to enable users to connect to an arbitrary ssh-server via a web interface.  Usually, web-ssh solutions are designed to connect to the server on which they are deployed, but as part of my task I wanted the user to specify the IP, port, username and password of the user (or key) and connect to an arbitrary server.  I did not manage to find a similar solution on the move. </p><br><blockquote>  Actually, of course, there is Guacamole, but for my task, using this application was too costly both in terms of development resources and functions and their organization, so I refused to use Guacamole. </blockquote><p>  However, for the open shellinabox package, I found a solution on a <a href="https://tools.bartlweb.net/webssh/">blog</a> in German, which I decided to bring to the level I needed.  The result is a nice Docker container, which can be found on both <a href="https://github.com/bwsw/webshell">GitHub</a> and <a href="https://hub.docker.com/r/bwsw/webshell/">Dockerhub</a> , which solves all the necessary tasks. </p><br><p>  But the article is not about that, but about the accompanying Python code that I had to write.  The fact is that I didn’t like that if the user opened web ssh and went somewhere, the session would hang endlessly, which in my opinion is unacceptable. <a name="habracut"></a>  This leads to the following negative consequences: </p><br><ol><li>  Terminal proxy resources are used inefficiently because it has to service unused sessions; </li><li>  A ssh window opened in the browser without supervision brings a sense of longing and vulnerability. </li></ol><br><p>  In general, I decided that I want to make sure that the shellinabox breaks the connection if the user does not write anything to the console (stdin) for a few minutes and does not receive data to stdout. </p><br><p>  Long enough Google search showed me that goals can be achieved using the timeout and strace commands.  The timeout command turned out to be new for me, its purpose is to ensure the interruption of the process upon reaching a certain timeout in the event that it did not end. </p><br><p>  I use the strace command often, however, I usually use it to track the reason why some service or team is not working as expected.  As part of my search for how to monitor activity on the stdin channels, the stdout process, I found that strace can also provide this: </p><br><pre><code class="bash hljs">strace -e write=1,2 -e trace=write -p &lt;PID&gt;</code> </pre> <br><p>  In general, these teams were what I needed to carry out my plans.  The general scheme looks like this: </p><br><ol><li>  When opening a new connection, shellinabox runs the python script; </li><li>  The Python script forks a process daemon for monitoring the activity of a process that monitors its own PID; </li><li>  The python script performs (exec) ssh (replacing itself with ssh). </li></ol><br><p>  For those who want to immediately see how the whole script works, send it <a href="https://github.com/bwsw/webshell/blob/master/shellinabox.py">here</a> .  For the rest, further in parts. </p><br><p>  Briefly, the code can be presented as follows. </p><br><pre> <code class="python hljs">monitor_daemon(inactivity_interval, identity_file) ... ... os.execv(<span class="hljs-string"><span class="hljs-string">"/usr/bin/ssh"</span></span>, [<span class="hljs-string"><span class="hljs-string">"/usr/bin/ssh"</span></span>] + identity_args + [<span class="hljs-string"><span class="hljs-string">"-o"</span></span>, <span class="hljs-string"><span class="hljs-string">"StrictHostKeyChecking=no"</span></span>, <span class="hljs-string"><span class="hljs-string">"-o"</span></span>, <span class="hljs-string"><span class="hljs-string">"UserKnownHostsFile=/dev/null"</span></span>, <span class="hljs-string"><span class="hljs-string">"-p"</span></span>, str(peer_port), <span class="hljs-string"><span class="hljs-string">"%s@%s"</span></span> % (peer_login, peer_ip)])</code> </pre> <br><p>  The code is simple and self-evident.  All magic is inside the <code>monitor_daemon</code> function: </p><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">monitor_daemon</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(inactivity_interval, identity_file)</span></span></span><span class="hljs-function">:</span></span> orig_pid = os.getpid() <span class="hljs-keyword"><span class="hljs-keyword">try</span></span>: pid = os.fork() <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> pid &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">except</span></span> OSError <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> e: print(<span class="hljs-string"><span class="hljs-string">"Fork #1 failed: %d (%s)"</span></span> % (e.errno, e.strerror)) sys.exit(<span class="hljs-number"><span class="hljs-number">1</span></span>) os.chdir(<span class="hljs-string"><span class="hljs-string">"/"</span></span>) os.setsid() os.umask(<span class="hljs-number"><span class="hljs-number">0</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">try</span></span>: pid = os.fork() <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> pid &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>: sys.exit(<span class="hljs-number"><span class="hljs-number">0</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">except</span></span> OSError <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> e: print(<span class="hljs-string"><span class="hljs-string">"Fork #2 failed: %d (%s)"</span></span> % (e.errno, e.strerror)) sys.exit(<span class="hljs-number"><span class="hljs-number">1</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> identity_file != <span class="hljs-string"><span class="hljs-string">""</span></span>: time.sleep(<span class="hljs-number"><span class="hljs-number">1</span></span>) os.unlink(identity_file) <span class="hljs-keyword"><span class="hljs-keyword">try</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span>: proc = subprocess.Popen(<span class="hljs-string"><span class="hljs-string">'timeout %d strace -e write=1,2 -e trace=write -p %d'</span></span> % (inactivity_interval, orig_pid), shell=<span class="hljs-keyword"><span class="hljs-keyword">True</span></span>, stdout=subprocess.PIPE, stderr=subprocess.PIPE) proc.poll() counter = <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> line <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> proc.stderr.readlines(): counter += <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(counter &lt;= <span class="hljs-number"><span class="hljs-number">3</span></span>): os.kill(orig_pid, signal.SIGKILL) sys.exit(<span class="hljs-number"><span class="hljs-number">0</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">except</span></span> Exception <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> e: <span class="hljs-keyword"><span class="hljs-keyword">pass</span></span> sys.exit(<span class="hljs-number"><span class="hljs-number">0</span></span>)</code> </pre> <br><p>  where we are most interested in part: </p><br><pre> <code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">while</span></span> <span class="hljs-keyword"><span class="hljs-keyword">True</span></span>: proc = subprocess.Popen(<span class="hljs-string"><span class="hljs-string">'timeout %d strace -e write=1,2 -e trace=write -p %d'</span></span> % (inactivity_interval, orig_pid), shell=<span class="hljs-keyword"><span class="hljs-keyword">True</span></span>, stdout=subprocess.PIPE, stderr=subprocess.PIPE) proc.poll() counter = <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> line <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> proc.stderr.readlines(): counter += <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(counter &lt;= <span class="hljs-number"><span class="hljs-number">3</span></span>): os.kill(orig_pid, signal.SIGKILL) sys.exit(<span class="hljs-number"><span class="hljs-number">0</span></span>)</code> </pre> <br><p>  in which the monitoring starts in a cycle, which, after a specified waiting period, completes the ssh process, if required. </p><br><p>  That's all.  The solution was simple enough, but it took some time to study the available tools. </p><br><p>  PS: I am not a professional python developer, the code is suboptimal. <br>  PPS: If someone has a desire to improve the code, welcome to the <a href="https://github.com/bwsw/webshell/blob/master/Dockerfile">repository</a> , I will gladly accept PRs. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/332544/">https://habr.com/ru/post/332544/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../332534/index.html">Annealing and freezing: two fresh ideas on how to accelerate the learning of deep networks.</a></li>
+<li><a href="../332536/index.html">Making money from rain or drought. The Weather Company Experience</a></li>
+<li><a href="../332538/index.html">WI-FI in the subway: network architecture and underground stones</a></li>
+<li><a href="../332540/index.html">5 fresh examples of parsing and improving the design in simple ways</a></li>
+<li><a href="../332542/index.html">Meanwhile, Proxmox VE has been updated to version 5.0.</a></li>
+<li><a href="../332546/index.html">Announcement of Moscow Spark # 2</a></li>
+<li><a href="../332548/index.html">Announcement Ruby Meetup # 6</a></li>
+<li><a href="../332550/index.html">Simple ingredients for a better UX.</a></li>
+<li><a href="../332552/index.html">How I found a bug in Intel Skylake processors</a></li>
+<li><a href="../332554/index.html">Using the KOMPAS-3D API → Lesson 3 → Correct connection to KOMPAS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

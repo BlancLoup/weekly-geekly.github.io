@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Phantom: large garbage collection</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article is a continuation, beginning here . For those who have not clicked on the link, a brief introductory: 
+
+ We discuss garbage collection in...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Phantom: large garbage collection</h1><div class="post__text post__text-html js-mediator-article">  This article is a continuation, beginning <a href="https://habrahabr.ru/post/281236/">here</a> .  For those who have not clicked on the link, a brief introductory: <br><br>  We discuss garbage collection in the Phantom operating system, that is, in the virtual (bytecode) environment of a machine running in persistent RAM.  The size of persistent memory is about the size of the disk, that is, units of terabytes for today and, potentially, tens and hundreds of terabytes tomorrow. <br><br>  Since we are talking about virtual memory, a significant part of the objects is in any case not in RAM, regardless of the algorithm and the approach we have chosen in general.  That is - the cost of access to the object is great.  This, in general, is a disk operation. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In addition, it should be expected that in a networked environment, aggregates of such virtual machines will exchange proxy objects, that is, there will be a graph of objects spread over many machines on the network and, of course, throughout this nightmare you will need to be able to collect garbage not only on one machine, but also on the network. <br><br>  The idea of ​​garbage collection that I have adopted in such an environment looks like a combination of two collectors. <br><a name="habracut"></a><br>  The first is fast, deterministic, but not guaranteeing 100% collection.  Currently it is implemented on the principle of counting the number of references to an object.  Imperfect, but rather simple and predictable model. <br><br>  The second is slow, non-deterministic (it is difficult to predict the operating time), but accurate and uncompromising.  In the traditional environment, such a collector would require a stop of the world, but there is a trick - if the assembly is kept on a full copy of the system state, then all the garbage collected in the copy will be garbage also in a later version of the same state that neither was happening.  The beauty of the approach is that Phantom realizes the persistence through the creation of snapshots - full copies of the state of the virtual machine's object memory.  That is - an environment in which you can calmly and rationally collect garbage is already there. <br><br>  In fact, at this moment the task seems trivial - on the “immobilized patient”, garbage can be collected in the simplest and simplest way possible.  Yes?  Looks like no. <br><br>  Question one - storing intermediate information about the status of the assembly.  And its volume.  We have to assume that the situation is terrible and the system has managed to push itself into a corner, having spent all disk space.  How much should we reserve for the collector so that he can finish the work? <br><br>  The second question is the restartability of the algorithm.  It would be tempting to implement the collector as a full-time program under Phantom, which, therefore, lives in persistent memory and OS restarts for it are imperceptible, the entire state of the program is preserved and garbage collection just continues further after the system restart.  But due to the first requirement, such an implementation can be dangerous - if there is not enough memory, the user process can “finish” it and the work of the garbage collector will be stopped.  This would be solved through quoting memory allocation, but in the current version of the OS it is not there, well, in general, the solution looks very elegant, but from the point of view of debugging it will most likely look like hell. <br><br>  Therefore, it would be good to rely on the garbage collector on some simple data structure that is easy to store and process in a linear fashion.  For example, a simply linked list, organized as a task list, from which the algorithm pulls out atomic tasks and to which it adds tasks in the process of solving an “pulled out” task. <br><br>  In this case, it would be good to avoid modifying the original snapshot (copy of the system memory), and updating the list itself to make it atomic so that turning off the algorithm at any point does not lead to a failure. <br><br>  In general, such a naive implementation suggests itself: a list of unexplained roots objects, a list of visited visited objects, and an algorithm that comes down to: <br><br><ul><li>  For an empty roots and visited, put an object in it according to the address zero. </li><li>  For non-empty - read and delete the address of the object, if it is not in visited - add it to visited, add all its children to roots </li><li>  For empty roots and non-empty visited - to pass linearly all objects in the address space of the snapshot, if they are not found in the visited - to mark them as garbage in the current address space (this process can also be made restartable if you record the memory address from time to time ) </li></ul><br>  Naturally, this is a very inefficient algorithm, but it can be optimized in a rather trivial way.  For example, like this: we do not make the roots queue, but store the stack and the tail of this stack in memory, with a large number of bypass leaf objects going on without modifying the disk portion of this stack.  The only important thing is that the objects in the disk copy only fall entirely and leave it only after all children are bypassed. <br><br>  The problem is that each step of this algorithm requires viewing the entire visited, which is potentially the collapse of all hopes, a fiasco. <br><br>  The trouble is that “You cannot cache memory in the memory - you should definitely view it in its entirety.  This suggests an obvious idea - to make it not a list, but a tree sorted by the address of the object.  Then the search for an object in the tree will be reduced logarithmically, and, most importantly, fragments of the tree can be cached, since brute force is not needed. <br><br>  By the way, if you have ideas about such an algorithm, please write. <br><br>  A separate question arises in case of failure of disk I / O for any page.  Strictly speaking, in such a situation garbage collection is impossible at all.  Although for a given snapshot, the disappearance of the page (and, therefore, the links contained in it) makes some of the objects inaccessible, that is, the actual garbage, it would be short-sighted just to take everything and destroy it. <br><br>  Firstly, it would be good to have some analogue of lost + found for such situations.  Although it is completely unclear how to implement it.  Secondly, in the current operating system, the corresponding page can be quite alive.  Therefore, it would be fair to do this: check if this page is in later shots or in memory.  If it is in memory, force its placement into snapshot, even if it has not changed (usually Phantom has not changed pages, of course, does not write again), stop the build and restart it at a later snapshot.  If there is no luck and the page is nowhere, turn on recovery mode and at the end of the normal assembly heuristically search in the trash for subtrees of objects of tangible size that are excluded from the trash and “suspended” in a special place in the object hierarchy. <br><br>  What else is important? <br><br>  In general, the subsystem of the virtual persistent memory of the Phantom and its virtual bytecode machine (object environment) do not know a damn about each other.  The second lives in the first.  And that's all. <br><br>  But one fairly typical case that needs a link between them.  This case looks simple: between two snapshots, the program in the OS Phantom selects, uses and frees a couple of gigabytes of objects.  For example, it calculates the graphics and in the process creates temporary data.  By the beginning of snapshot they are not needed and irrelevant.  But the memory in which they lay, "touched", was modified.  From a snapshot point of view, this is a reason to write such a memory into a snapshot.  In reality, its contents are no longer interesting to anyone and, moreover, should be zeroed out of sin.  It would be logical, when releasing a large area of ​​memory, to inform the paging subsystem that this section is not only not dirty, but also not needed at all and does not need to be saved.  And when recovering from snapshot, it should be read as a page of zeros. <br><br>  This again seems trivial, but not.  The <a href="https://habrahabr.ru/post/281236/">previous article</a> talked about the problem of deleting objects by zeroing the reference counter and that this can be done only after the virtual machine instruction passes all the threads. <br><br>  Technically, the easiest way to do this is to do the removal after the snapshot. <br><br>  Why?  Because snapshot is guaranteed to suspend all threads on the boundary of the bytecode instructions.  Why after, and not during?  Because the synchronous part of the snapshot must be run so that it is invisible to running programs. <br><br>  And after - late, because then the "unnecessary" pages, nevertheless, will fall into snapshot. <br><br>  As a result, this means that you need to perform a not very obvious chain of operations: <br><br><ol><li>  Suspend all threads on the border of the instructions and immediately "release" them </li><li>  Perform the release of objects with a zero reference count that was claimed to be deleted before this stop (checking that the counter is still zero) </li><li>  Suspend all threads on the border of the instructions again </li><li>  Execute snapshot synchronous part (in memory) </li><li>  “Release” stopped threads </li><li>  To quietly finish the asynchronous part of the snapshot (input-output) </li></ol><br>  To all this, you still need to add a lock on that snapshot on which garbage collection takes place, from removal, as well as a mechanism that allows you to keep at least three partially blocked snapshots - <br><br><ul><li>  Old garbage collector </li><li>  More relevant, which is full and suitable for restart </li><li>  The latter, which is in the process of formation </li></ul><br>  And maybe a few more that are stored in backup mode / time machine. <br><br>  On this, let me put a semicolon, and ask the question: what statistics on the state of the object environment would you consider useful to collect in the garbage collection process?  We still go around the objects, it is possible to conduct a particular analysis relatively free. </div><p>Source: <a href="https://habr.com/ru/post/331974/">https://habr.com/ru/post/331974/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../331960/index.html">Third Coming GOST 28147-89 or Russian Roulette</a></li>
+<li><a href="../331962/index.html">Compare #NotPetya and #Petya - is it possible to decrypt your files? Updated</a></li>
+<li><a href="../331966/index.html">How to start a fire before our fire or our list of general IT security principles</a></li>
+<li><a href="../331968/index.html">Enterprise Software Update: Option for PDM / PLM Systems</a></li>
+<li><a href="../331972/index.html">Benefits of interactive prototyping</a></li>
+<li><a href="../331976/index.html">Kotlin and the cost of developing the game (+ a little offtopic)</a></li>
+<li><a href="../331978/index.html">Day after the Petya virus</a></li>
+<li><a href="../331982/index.html">We use Laravel IoC container at full capacity</a></li>
+<li><a href="../331986/index.html">Football as an exact science: how ITMO University helps the organizers of the Confederations Cup and the 2018 World Cup</a></li>
+<li><a href="../331988/index.html">Graphics for indie games. What to do if the roundels and sticks do not suit you</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

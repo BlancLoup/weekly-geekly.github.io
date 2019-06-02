@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL indexes - 3</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the first article, we looked at the PostgreSQL indexing mechanism , in the second, the access methods interface , and now we are ready to talk abou...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL indexes - 3</h1><div class="post__text post__text-html js-mediator-article"><br>  In the first article, we looked at <a href="https://habrahabr.ru/company/postgrespro/blog/326096/">the PostgreSQL indexing mechanism</a> , in the second, <a href="https://habrahabr.ru/company/postgrespro/blog/326106/">the access methods interface</a> , and now we are ready to talk about specific types of indexes.  Let's start with the hash index. <br><br><h1>  Hash </h1><br><h2>  Device </h2><br><h3>  General theory </h3><br>  Many modern programming languages ​​include hash tables as the base data type.  Outwardly, it looks like a regular array, but the index is not an integer, but any data type (for example, a string).  PostgreSQL hash index is similar.  How it works? <br><br>  As a rule, data types have very large ranges of allowable values: how many different rows can theoretically be represented in a text type column?  At the same time, how many different values ​​are actually stored in a text column of a table?  Usually not much. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The idea of ​​hashing is to match a value of any data type to a small number (from 0 to <em>N</em> −1, total <em>N</em> values).  This mapping is called a <em>hash function.</em>  The resulting number can be used as an index of a regular array, where and add links to table rows (TID).  Elements of such an array are called <em>hash-table baskets</em> - several TIDs can be in one basket if the same indexed value is found in different rows. <br><br>  The hash function is the better, the more evenly it distributes the initial values ​​to the baskets.  But even a good function will sometimes give the same result for different input values ​​- this is called a <em>collision.</em>  So, TIDs corresponding to different keys can appear in one basket, and therefore TIDs obtained from the index should be rechecked. <br><a name="habracut"></a><br>  Just as an example: what hash function can you think of for strings?  Let the number of baskets be 256. Then, as the basket number, you can take the code of the first character (say, we have one-byte encoding).  Is this a good hash function?  Obviously not: if all the lines start with the same character, they all fall into the same basket;  there is no talk of uniformity, you have to recheck all the values ​​and the whole point of hashing is lost.  What if we add up the codes of all characters modulo 256?  It will be much better, although also far from perfect.  If you're wondering how this hash function actually works in PostgreSQL, see the definition of hash_any () in <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dblob%3Bf%3Dsrc/backend/access/hash/hashfunc.c%3Bhb%3DHEAD">hashfunc.c</a> . <br><br><h3>  Index device </h3><br>  Let's go back to the hash index.  Our task is to quickly find the corresponding TID by the value of a certain data type (index key). <br><br>  When inserted into the index, we calculate the hash function for the key.  Hash functions in PostgreSQL always return an integer type, which corresponds to the range of 2 <sup>32</sup> ≈ 4 billion values.  The number of baskets is initially equal to two and increases dynamically, adjusting to the amount of data;  basket number can be calculated by hash code using bit arithmetic.  In this basket and put our TID. <br><br>  But this is not enough, because TIDs that correspond to different keys can get into one basket.  How to be?  It would be possible to write to the basket along with the TID also the initial value of the key, but this would greatly increase the size of the index.  So, to save space in the basket, it is not the key itself that is saved, but its hash code. <br><br>  When searching in the index, we calculate the hash function for the key and get the number of the basket.  It remains to iterate over the entire contents of the basket and return only suitable TIDs with the necessary hash codes.  This is done efficiently, since the hash-TID pairs are stored in an orderly manner. <br><br>  But it may happen that two different keys will not just fall into the same basket, but will have the same 4-byte hash codes - no one has canceled collisions.  Therefore, the access method asks the general indexing mechanism to control each TID, re-checking the condition on the table row (the mechanism can do this at the same time with a visibility check). <br><br><h3>  Page organization </h3><br>  If you look at the index not from the point of view of planning and executing the query, but through the eyes of the buffer cache manager, it turns out that all information, all index records should be packed into pages.  Such index pages are placed in the buffer cache and pushed out from there in the same way as tabular pages. <br><br><img src="https://habrastorage.org/web/aa7/83b/c8c/aa783bc8cbfc4be49baec029339eb539.png"><br><br>  The hash index, as seen in the picture, uses four types of pages (gray rectangles): <br><br><ul><li>  Metapast (meta page) - zero page, contains information about what is inside the index; </li><li>  Basket pages (bucket page) - main index pages, store data in the form of “hash code - TID” pairs; </li><li>  Overflow pages (overflow page) - arranged in the same way as the pages of baskets, and are used in the case when one page for a basket is not enough; </li><li>  Bitmap pages - they mark the released overflow pages that can be used for other baskets. </li></ul><br>  The down arrows from the index page elements symbolize TIDs — links to table rows. <br><br>  With the next increase in the index, two times more baskets (and, correspondingly, pages) are created at the same time than the last time.  In order not to allocate at once such, potentially large, number of pages, in version 10 they made a smoother increase in size.  Well, overflow pages are allocated just as needed and are tracked in the bitmap pages, which are also highlighted as needed. <br><br>  Note that the hash index does not know how to decrease in size.  If you delete part of the indexed rows, once selected pages are no longer returned to the operating system, they are only reused for new data after cleaning (VACUUM).  The only way to reduce the physical size of the index is to rebuild it from scratch with the REINDEX or VACUUM FULL command. <br><br><h2>  Example </h2><br>  Here is an example of creating a hash index.  In order not to invent our tables, we will continue to use the air traffic <a href="https://habrahabr.ru/post/316428/">demonstration database</a> , and this time we will take a table of flights. <br><br> <code>demo=# create index on flights <strong>using hash</strong> (flight_no); <br> WARNING:  hash indexes are not WAL-logged and their use is discouraged <br> CREATE INDEX <br> <br> demo=# explain (costs off) select * from flights where flight_no = 'PG0001'; <br> QUERY PLAN <br> ---------------------------------------------------- <br> Bitmap Heap Scan on flights <br> Recheck Cond: (flight_no = 'PG0001'::bpchar) <br> -&gt;  Bitmap Index Scan on flights_flight_no_idx <br> Index Cond: (flight_no = 'PG0001'::bpchar) <br> (4 rows) <br></code> <br>  An unpleasant feature of the current implementation of the hash index is that actions with it do not fall into the log of proactive recording (which PostgreSQL warns us about when creating the index).  As a result, hash indexes cannot be restored after a failure and do not participate in replication.  In addition, the hash index is significantly inferior to the B-tree in its universal application, and its effectiveness also raises questions.  That is, to use such indexes now has no practical meaning. <br><br>  However, the situation will change this fall with the release of the tenth version of PostgreSQL.  In it, the hash index finally provided support for the journal and further optimized the memory allocation and efficiency of simultaneous work. <br><br><h2>  Hash Semantics </h2><br>  Why has the hash index existed almost from the very birth of PostgreSQL to the present day in a state in which it cannot be used?  The fact is that the hashing algorithm is used in the DBMS very widely (in particular, for hash connections and groupings), and the system needs to know which hash function to apply to which data types.  But this correspondence is not static, it cannot be set once and for all - PostgreSQL allows you to add new types on the fly.  Here in the method of accessing the hash, such a correspondence is contained, and it is presented as a binding of auxiliary functions to operator families: <br><br> <code>demo=# select   opf.opfname as opfamily_name, <br> amproc.amproc::regproc AS opfamily_procedure <br> from     pg_am am, <br> pg_opfamily opf, <br> pg_amproc amproc <br> where    opf.opfmethod = am.oid <br> and      amproc.amprocfamily = opf.oid <br> and      am.amname = 'hash' <br> order by opfamily_name, <br> opfamily_procedure; <br> <br> opfamily_name    | opfamily_procedure <br> --------------------+-------------------- <br> abstime_ops        | hashint4 <br> aclitem_ops        | hash_aclitem <br> array_ops          | hash_array <br> bool_ops           | hashchar <br> ... <br></code> <br>  Although these functions are not documented, they can be used to calculate the hash code values ​​of the corresponding type.  For example, for the text_ops family, the hashtext function is used: <br><br> <code>demo=# select hashtext(''); <br> hashtext <br> ----------- <br> 127722028 <br> (1 row) <br> <br> demo=# select hashtext(''); <br> hashtext <br> ----------- <br> 345620034 <br> (1 row) <br></code> <br><br><h2>  Properties </h2><br>  Let's look at the properties of the hash index that this access method reports about itself to the system.  We quoted <a href="https://habrahabr.ru/company/postgrespro/blog/326106/">the last time</a> ;  now we confine ourselves to the results: <br><br> <code>name      | pg_indexam_has_property <br> ---------------+------------------------- <br> can_order     | f <br> can_unique    | f <br> can_multi_col | f <br> can_exclude   | t <br> <br> name      | pg_index_has_property <br> ---------------+----------------------- <br> clusterable   | f <br> index_scan    | t <br> bitmap_scan   | t <br> backward_scan | t <br> <br> name        | pg_index_column_has_property <br> --------------------+------------------------------ <br> asc                | f <br> desc               | f <br> nulls_first        | f <br> nulls_last         | f <br> orderable          | f <br> distance_orderable | f <br> returnable         | f <br> search_array       | f <br> search_nulls       | f <br></code> <br>  The hash function does not preserve the order relation: from the fact that the value of the hash function of one key is less than the value of the function of another key, no conclusions can be drawn about how the keys themselves are ordered.  Therefore, the hash index in principle can support a single operation “equal”: <br><br> <code>demo=# select   opf.opfname AS opfamily_name, <br> amop.amopopr::regoperator AS opfamily_operator <br> from     pg_am am, <br> pg_opfamily opf, <br> pg_amop amop <br> where    opf.opfmethod = am.oid <br> and      amop.amopfamily = opf.oid <br> and      am.amname = 'hash' <br> order by opfamily_name, <br> opfamily_operator; <br> <br> opfamily_name |  opfamily_operator <br> ---------------+---------------------- <br> abstime_ops   | =(abstime,abstime) <br> aclitem_ops   | =(aclitem,aclitem) <br> array_ops     | =(anyarray,anyarray) <br> bool_ops      | =(boolean,boolean) <br> ... <br></code> <br>  Accordingly, the hash index can not produce ordered data (can_order, orderable).  For the same reason, the hash index does not work with undefined values: the operation "equal" does not make sense for null (search_nulls). <br><br>  Since keys are not stored in the hash index (but only key hashes), it cannot be used for index access exclusively (returnable). <br><br>  Multi-column indexes (can_multi_col) this access method does not support. <br><br><h2>  Insides </h2><br>  Starting from version 10, the internal structure of the hash index can be <a href="https://www.postgresql.org/docs/devel/static/pageinspect.html">viewed</a> through the <a href="https://www.postgresql.org/docs/devel/static/pageinspect.html">pageinspect</a> extension.  Here is what it will look like: <br><br> <code>demo=# create extension pageinspect; <br> CREATE EXTENSION <br></code> <br>  Metastpage (we get the number of rows in the index and the maximum number of the used cart): <br><br> <code>demo=# select hash_page_type(get_raw_page('flights_flight_no_idx', <strong>0</strong> )); <br> hash_page_type <br> ---------------- <br> metapage <br> (1 row) <br> demo=# select ntuples, maxbucket from hash_metapage_info(get_raw_page('flights_flight_no_idx', <strong>0</strong> )); <br> ntuples | maxbucket <br> ---------+----------- <br> 33121 |       127 <br> (1 row) <br></code> <br>  Basket page (we get the number of current lines and lines that can be cleared): <br><br> <code>demo=# select hash_page_type(get_raw_page('flights_flight_no_idx', <strong>1</strong> )); <br> hash_page_type <br> ---------------- <br> bucket <br> (1 row) <br> demo=# select live_items, dead_items from hash_page_stats(get_raw_page('flights_flight_no_idx', <strong>1</strong> )); <br> live_items | dead_items <br> ------------+------------ <br> 407 |          0 <br> (1 row) <br></code> <br><br>  And so on.  But to understand the meaning of all available fields is unlikely to work without examining the source code.  With such a desire, it’s worth starting with the <a href="https://git.postgresql.org/gitweb/%3Fp%3Dpostgresql.git%3Ba%3Dblob%3Bf%3Dsrc/backend/access/hash/README%3Bhb%3DHEAD">README</a> . <br><br>  <a href="https://habrahabr.ru/company/postgrespro/blog/330544/">Continued</a> . </div><p>Source: <a href="https://habr.com/ru/post/328280/">https://habr.com/ru/post/328280/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../328268/index.html">How to create a truly popular museum application on the example of "Weapons of Heroes." Victory Day is dedicated</a></li>
+<li><a href="../328270/index.html">Podcast "Rules of the Game": accounting subtleties for technological (and other) business</a></li>
+<li><a href="../328272/index.html">How softrender wrote yes the game wrote</a></li>
+<li><a href="../328276/index.html">We do deface site using XSS</a></li>
+<li><a href="../328278/index.html">Wrong nameless</a></li>
+<li><a href="../328282/index.html">Classified ads from social. networks. Looking for a better solution</a></li>
+<li><a href="../328284/index.html">Game development based on physical simulation (for realistic destructible game world)</a></li>
+<li><a href="../328286/index.html">The delay in online broadcasts from a webcam, you heartless bitch</a></li>
+<li><a href="../328288/index.html">Returning a customer is easy - don't let him go</a></li>
+<li><a href="../328290/index.html">Troubleshooting MySQL Access Permissions: Frequently Asked Questions</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>GitLab PostgreSQL postmortem</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="On January 31, 2017, GitLab experienced an accident related to the operation of the PostgreSQL DBMS, as a result of which part of the data was deleted...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>GitLab PostgreSQL postmortem</h1><div class="post__text post__text-html js-mediator-article">  On January 31, 2017, GitLab experienced an accident related to the operation of the PostgreSQL DBMS, as a result of which part of the data was deleted, and the project was stopped for the duration of the recovery.  Several months have passed, and a lot has been written on this topic, and GitLab himself presented an exhaustive <a href="https://about.gitlab.com/2017/02/10/postmortem-of-database-outage-of-january-31/">obituary</a> in which he told what happened, what measures were taken to restore and what measures would be taken to prevent such accidents.  Very entertaining reading, we recommend to read it even to those who are far from Postgres. <br><br><img src="https://habrastorage.org/web/8d0/e63/1ba/8d0e631ba70c47f69de88f3fb11eaab0.png"><br><br>  In comments to <a href="https://habrahabr.ru/company/pgdayrussia/blog/328006/">our interview with Alexey Lesovsky</a> , some representatives of the community, jokingly, made a claim that we mentioned the GitLab accident, but in the end we didn’t conduct a detailed debriefing.  We decided to improve and asked Alexey to write a small “debriefing”.  The main purpose of this publication is a detailed analysis of the obituary, highlighting the key points, an attempt to analyze them and offer recommendations on how to act in such a situation.  And, of course, consider the measures that the GitLab team plans to take to prevent such incidents in the future. <br><a name="habracut"></a><br>  The list of key points in chronological order, to which we pay attention, is as follows: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  LVM snapshots as a means of moving a database from production to staging. </li><li>  What to do when the replica is behind the master? </li><li>  We do pg_basebackup correctly, part 1. </li><li>  Out max_wal_senders, but how? </li><li>  max_connections = 8000. </li><li>  “Hanging” pg_basebackup, or doing pg_basebackup correctly, part 2. </li><li>  strace: what is good for the admin, it is not always necessary for dBA. </li><li>  rm or not rm: how to deal with sensitive data? </li><li>  Backup methods. </li><li>  Different versions of Postgres on production. </li><li>  Idle mail in the crown. </li></ol><br>  Let's start debriefing.  Also, at the end there will be a second list, in it we will briefly review the measures that have been or will be taken in the future to avoid a repetition of similar incidents. <br><br>  <b>1. LVM snapshots as a means of transferring a database from production to staging.</b> <br><br>  The task of updating the staging environment is quite common, therefore, proven practices and solutions have already appeared.  One of these solutions is to create a snapshot and transfer the snapshot to staging.  The solution is quite convenient and customizable, but it has several drawbacks.  Most implementations of snapshots are made on the basis of copy-on-write, therefore, when creating a snapshot at the time of its existence, we receive additional load on disk storage.  Basically, this is important for write-intensive loads.  In the case where the latency level is important to you, this can be a problem. <br><br>  The more correct way to transfer the database from production to staging are backups.  There is a configured backup, and staging is updated from there.  In this scenario, no additional load is created by snapshots and indirectly checked backups for successful recovery.  If staging is not updated - this is a clear sign that something is wrong with the backups. <br><br>  <b>2. What to do when the replica is behind the master?</b> <br><br>  Unfortunately, the article does not mention how engineers discovered the presence of replication lag, but, given that the replica eventually fell off irrevocably, we can conclude that we noticed too late.  What recommendations can be made here?  Of course, monitoring replication lag, ideally with alert.  But the “knee” method of checking the lag with a script for the crown will also go along with the subsequent sending of a letter, SMS or something else. <br><br>  When using streaming replication, lag monitoring is one of those things that should be done immediately after setup.  There are many reasons why a replica may start to lag behind.  To monitor replication in Postgres, there is a pg_stat_replication view - this is a very cool thing, with some experience, it allows you to determine even the cause of the lag: network, disks, long requests, etc. <br><br>  If you find that the replica is lagging behind, and you don’t know how soon it will fall off permanently, then a temporary solution is to increase the wal_keep_segments parameter.  This parameter is updated without restarting the postgrese, a regular reload (see pg_reload_conf ()), but it’s worth remembering that the price may be an increase in disk space usage, 1 segment is 16MB.  After the parameter is increased, you can begin to search and eliminate the causes of the lag. <br><br>  You can also note that the guys admitted that they do not use WAL archiving, which is also in vain - it would help restore the replica.  But, in general, the role of WAL archives is not only in the task of backing up the replica.  In the presence of backup through pg_basebackup, the use of archives allows you to flexibly manage the recovery (see Point in time recovery). <br><br>  <b>3. Do pg_basebackup correctly, part 1.</b> <br><br>  As is known from the obituary, before starting pg_basebackup, the engineer cleared the directory to which the backup was supposed to be copied.  Indeed, pg_basebackup, upon detecting that the directory is not empty, will immediately exit.  However, when dealing with sensitive data, it is always better to use mv instead of rm.  The time of disks with a small volume has long passed, and such a rule can make life much easier.  This applies not only to directories, but also tables in databases, databases with the _old suffix and much more.  Although this will not work with terabyte databases, it is always better to rename the object after a couple of weeks, making sure that it is not needed by anyone, to be silently deleted than to do it right away. <br><br>  <b>4. max_wal_senders ended, but how?</b> <br><br>  When connecting pg_basebackup, an error exceeding the limit max_wal_senders was observed.  This parameter defines the limit of simultaneous connections for replication.  If you remember, GitLab had only one replica, and it irretrievably fell off.  Thus, all connections should have been free.  However, the engineering team encountered an error, and there are no other options besides trying to run several pg_basebackup at the same time. <br><br>  In general, it makes no sense: if the first pg_basebackup doesn't work, then why should it earn the second one?  But, if we still encounter this error, it is worth remembering that changing max_wal_senders requires restarting the postgres (which is often unacceptable), and it was better to find out who occupied the connections (and these were the waiting pg_basebackup) and stop them.  Why raise the limit?  To run more parallel pg_basebackup? <br><br>  <b>5. max_connections = 8000</b> <br><br>  The next point is the connection limit set to 8000. This is a very large number for this setting.  Postgres is arranged in such a way that for each client connection it generates a separate process.  All this works well while the actively working postgresovy backends do not become more than the processor cores in the system.  After that, with a further increase in processes, productivity begins to decline. <br><br>  In order not to keep a large number of connections to the postgres, a pgbouncer was invented that allows you to compress a large number of client connections into a relatively small number of connections to the postgres.  For example, the same 8000 client connections can be closed on pgbouncer, and that will establish connections to the postgres only as needed.  Again, using pgbouncer would potentially help avoid wasting time on the error and additional restarting the postgres. <br><br>  <b>6. “Hanging” pg_basebackup, or doing pg_basebackup correctly, part 2.</b> <br><br>  Moving on: the limits of connections are fixed, now we need to figure out why pg_basebackup hangs?  The reason for the so-called hangup lies in the specifics of pg_basebackup.  Before you start copying the database, you need to wait for the execution of the so-called.  “Checkpoint” (checkpoint).  Checkpoint - this is a procedure that can greatly strain postgres, with the result that the performance will thoroughly squeeze.  Therefore, in order not to strain the system, pg_basebackup by default waits for the regular checkpoint to complete, the time and speed of which depends on the postgre settings.  If you specify the "-c fast" parameter, then pg_basebackup initiates an urgent checkoint to execute without delay. <br><br>  As you understand, in the process of waiting, when the checkpoint is completed, pg_basebackup does not write any messages, and this played a cruel joke with the engineer.  However, thanks to the GitLab team, the <a href="">postgres will now get better</a> . <br><br>  <b>7. strace: what is good for the admin, it is not always necessary for DBA.</b> <br><br>  Next, the engineers tried to figure out why pg_basebackup hangs, and used strace for this.  From my own experience I can say that strace is not exactly what is needed.  strace is needed at the moment when the process under investigation falls with errors or at some points in time does not work correctly.  You can understand that the process is “hanging” by using the top utility: if we see 0 in the% CPU field, the process is likely to be pending. <br><br>  And to investigate the causes of the so-called “hangs,” a trace trace of the process is needed in order to understand what function it is on.  For this, the / proc // stack and, if you have some experience, gdb are suitable.  Unfortunately, Postgres by itself does not represent an opportunity to see what the process there is that is waiting to start copying, so engineers should be aware of the features of pg_basebackup. <br><br>  <b>8. rm or not rm: how to deal with sensitive data?</b> <br><br>  We came to the moment when the database directory on the master was deleted.  Actually, this item is a repetition of the above: try to use mv, if possible.  Use rm only after you are convinced that no one has realized about the allegedly missing data. <br><br>  <b>9. Backup methods.</b> <br><br>  So, the accident occurred, and you need to perform a restore from backup.  Let's see what backup methods the team relied on: <br><br><ul><li>  daily pg_dump: a rather stupid method that offers recovery only for a specific point in time - the start time of pg_dump; </li><li>  daily LVM snapshot - there are no complaints about this method, provided that the base does not experience write-intensive loads; </li><li>  Asure daily snapshot: I have nothing to say, I didn’t have to use it; </li><li>  replication from the wizard: replication is not considered to be a backup, since the accidental deletion of data simply replicates to the replica.  You can use deferred replication (see recovery_min_apply_delay), but in this situation you need to have an understanding of how to recover if something was accidentally deleted. </li></ul><br>  Anyway, the general recommendation is: try not to use replicas as a backup, you have your own tools for backup.  The most preferred tool is pg_basebackup + WAL archiving.  The main advantage of using this method is the ability to restore data to a specific point in time or transaction number within the existing archive.  However, this solution has a drawback - the requirement for the place.  Each base backup is a complete copy of the instance, and the size of the archive depends on the number of CRUD operations.  Therefore, when setting up a backup, you should take into account the total storage size for backup copies, taking into account the number of storage days. <br><br>  At the moment there are several products that implement this backup model: <br><br><ol><li>  Barman, if you have your own servers. </li><li>  WAL-E, if your servers are in Amazon. </li></ol><br>  The last thing to add is the need to monitor that 1) backups are being made successfully;  2) backup copies exist at all;  3) is the result of a test restore from backup. <br><br>  <b>10. Different postgres versions on production.</b> <br><br>  The next point that you can find fault with is the availability of different versions of potsgres on production.  In the case of GitLab, this just led to the inability to make backup copies.  Therefore, in any plan for upgrading to the next major version, there should be an item for deleting old post-upgrade packages. <br><br>  <b>11. Idle mail in the crown.</b> <br><br>  It seems to me, and many may disagree with me, email notifications are becoming a rather rare notification mechanism.  However, no matter what mechanism you use, you should always be sure that it really works.  In my practice, there was a case when inside the monitoring that notified the SMS team, there was a function of sending a test SMS every evening to the duty administrator, to check that everything is fine with the operator and with the balance everything is fine.  In case of failure, spam in the mail began and the flag in the web interface was lit - and it really helped. <br><br>  In the case of GitLab, mail for crown was simply not configured initially.  If you put something important in crowns, think about notifications. <br><br>  As a result, the base was restored from the LVM image, copying took 18 hours, and this is a very long period.  At the same time, the snapshot was on staging, and this turned out to be the most acceptable option.  All this is an unsuccessful chosen backup strategy (every 24 hours) and a coincidence.  The result should be a more thoughtful approach to backups with more flexible recovery options that provide minimal data loss. <br><br>  The GitLab team posted information about the measures that should be taken in order to avoid similar events in the future.  Let's briefly analyze them. <br><br>  <b>1. Update PS1 across all hosts to more clearly differentiate between hosts and environments (# 1094).</b> <br><br>  Looks quite reasonable.  Making an individual command prompt text is a fairly frequent and correct practice. <br><br>  <b>2. Prometheus monitoring for backups (# 1095).</b> <br><br>  This measure also looks very reasonable, but monitoring settings should be done after the entire backup system has been revised and rebuilt.  Monitoring should include not only the backup age and size, but also the number of available backups, as well as information about which copies were successfully checked for recovery. <br><br>  <b>3. Set PostgreSQL's max_connections to a sane value (# 1096).</b> <br><br>  Even 800 is too much, I would recommend looking towards the pgbouncer and try using it.  However, he has his limitations, which he imposes on the application that works with him, so here you need to pre-test. <br><br>  <b>4. Investigate Point in time recovery &amp; continuous archiving for PostgreSQL (# 1097).</b> <br><br>  Yes, this should definitely be done. <br><br>  <b>5. Hourly LVM snapshots of the production databases (# 1098).</b> <br><br>  A dubious idea, given that the pictures were used to update staging.  For this purpose, backups made under task # 1097 are also quite suitable. <br><br>  <b>6. Azure disk snapshots of production databases (# 1099).</b> <br><br>  It is difficult to comment, but if you want to duplicate the main functionality for backup copies, then why not? <br><br>  <b>7. Move staging to the ARM environment (# 1100).</b> <br><br>  The task looks strange.  To restore production from staging, where all data can be significantly changed, is a dubious idea, in the end, such a recovery will only get worse. <br><br>  <b>8. Recover production replica (s) (# 1101).</b> <br><br>  This of course needs to be done ASAP.  Any more or less serious postgrese installation is now deployed with at least one stream replica. <br><br>  <b>9. Automated testing of recovering PostgreSQL database backups (# 1102).</b> <br><br>  Yes, this is a very necessary thing, it is definitely needed. <br><br>  <b>10. Improve PostgreSQL replication documentation / runbooks (# 1103).</b> <br><br>  Yes, the instructions need to be updated in such a way that even the night watchman of the neighboring warehouse can make a recovery on them. <br><br>  <b>11. Investigate pgbarman for creating PostgreSQL backups (# 1105).</b> <br><br>  Yes, the barman is definitely a good tool, but considering that GitLab uses Amazon S3, WAL-E looks better.  However, Barman developers do not rule out the possibility, and even offer to sponsor support for Amazon S3 at Barman. <br><br>  <b>12. Investigate using Backup and Realtime Replication (# 494).</b> <br><br>  Yes, the thing is reliable, despite the considerable number of issues in the tracker, it works stably and without complaints. <br><br>  <b>13. Build Streaming Database Restore.</b> <br><br>  Yes, that's right, there are backups and there is a check for the restoration of these backups through restoration on the staging environment. <br><br>  <b>14. Assign an owner for data durability.</b> <br><br>  A responsible person is definitely needed.  In addition, it is advisable for all to read the instructions that are made under # 1103. <br><br><img src="https://habrastorage.org/files/a61/060/56f/a6106056fcce49a29cd997efd8bc97b9.png"><br><br>  Many thanks to Alexey for the detailed analysis.  Be sure to leave your comments and thoughts on the accident that happened in Gitlab and the measures taken!  And, of course, we invite everyone to discuss this topic with Lesha in summer in St. Petersburg on <b><a href="http://pgday.ru/ru/2017%3Futm_source%3Dhabr%26utm_medium%3Dpost%26utm_campaign%3Dgitlab">PG Day Russia</a></b> !  :) </div><p>Source: <a href="https://habr.com/ru/post/328938/">https://habr.com/ru/post/328938/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../328924/index.html">Scheme (Lisp) Games in DrRacket</a></li>
+<li><a href="../328928/index.html">In response to the Ukrainian (and not only) prohibitions: the decentralized EmerDNS system against site blocking</a></li>
+<li><a href="../328932/index.html">WannaCry vs. Adylkuzz: who is ahead of whom?</a></li>
+<li><a href="../328934/index.html">Anonymous business logic data: separation from personal data</a></li>
+<li><a href="../328936/index.html">How to simplify writing articles in Habrahabr for 2 clicks?</a></li>
+<li><a href="../328940/index.html">Neuroculture part 2: about the bot that posts photos</a></li>
+<li><a href="../328942/index.html">Ruby on Rails agreement. Part 2</a></li>
+<li><a href="../328946/index.html">Kotlin is the official development language for Android. We understand the intricacies of the language on Stepik</a></li>
+<li><a href="../328952/index.html">Implementing drag & drop functionality in an iOS application</a></li>
+<li><a href="../328954/index.html">Creating a Web API application using. NET Core + MongoDB. NET Driver</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

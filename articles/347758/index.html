@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Nonrandom chance, or Attack on PRNG in .NET</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Random numbers should not be generated with a method chosen at random. 
+ - Donald Knuth 
+
+
+ Delving into the source code of one service in search of v...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Nonrandom chance, or Attack on PRNG in .NET</h1><div class="post__text post__text-html js-mediator-article"><blockquote>  <em>Random numbers should not be generated with a method chosen at random.</em> <br>  <em>- Donald Knuth</em> </blockquote><br><p>  Delving into the source code of one service in search of vulnerabilities, I came across the generation of a one-time code for SMS authentication.  The code request handler looked like this: </p><br><pre><code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">class</span></span> <span class="hljs-title"><span class="hljs-title">AuthenticateByPhoneHandler</span></span> { <span class="hljs-comment"><span class="hljs-comment">/* ... */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">string</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GenerateCode</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> =&gt; rnd.Next(<span class="hljs-number"><span class="hljs-number">100000</span></span>, <span class="hljs-number"><span class="hljs-number">1000000</span></span>).ToString(); <span class="hljs-keyword"><span class="hljs-keyword">readonly</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> Random rnd = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Random(); }</code> </pre> <br><p>  The problem is visible to the naked eye: to generate a 6-digit code, the class Random is used - a simple non-cryptographic pseudo-random number generator (PRNG).  We will deal with them closely: let's learn how to predict the sequence of random numbers and estimate the possible scenario of an attack on the service. </p><br><h1 id="potokobezopasnost">  Thread safety </h1><br><p>  By the way, note that in the above code snippet, access to a static instance of the Random class from several threads is not synchronized.  This can lead to an unpleasant incident, which can often be found in questions and answers to StackOverflow: </p><br><p><img src="https://habrastorage.org/webt/jw/fd/gv/jwfdgvotcjwt1wct-mz93tdkhnq.png"></p><a name="habracut"></a><br><p>  That is, the first attack scenario is simple - we send to the server a lot of parallel requests for sending SMS, as a result, an instance of the class Random is in a very poor condition. </p><br><p>  However, this attack is too rough.  In addition, to violate the performance of the service in the plans were not included.  Therefore, we turn to the prediction of codes sent in SMS. </p><br><h1 id="potroshim-randomcs">  Goodbye Random.cs </h1><br><p>  The documentation <a href="https://msdn.microsoft.com/en-us/library/system.random(v%3Dvs.80).aspx">says</a> that the Random class implements the algorithm for generating random numbers using the subtraction method proposed by Donald Knuth in the second volume of “The Art of Programming”, a variation of <a href="https://ru.wikipedia.org/wiki/%25D0%259C%25D0%25B5%25D1%2582%25D0%25BE%25D0%25B4_%25D0%25A4%25D0%25B8%25D0%25B1%25D0%25BE%25D0%25BD%25D0%25B0%25D1%2587%25D1%2587%25D0%25B8_%25D1%2581_%25D0%25B7%25D0%25B0%25D0%25BF%25D0%25B0%25D0%25B7%25D0%25B4%25D1%258B%25D0%25B2%25D0%25B0%25D0%25BD%25D0%25B8%25D1%258F%25D0%25BC%25D0%25B8">the Fibonacci retarded generator</a> . </p><br><blockquote>  It's funny that the algorithm is implemented with a <a href="https://connect.microsoft.com/VisualStudio/feedback/details/634761/system-random-serious-bug">typo</a> .  The generator is initialized with values ​​that differ from those described by the Whip, therefore the properties and period of the generated numbers may be worse than expected.  Microsoft decided not to fix the implementation so as not to break backward compatibility.  Instead, the documentation appeared clause about the "modified" version of the algorithm. </blockquote><br><p>  This is the method for generating the next pseudo-random number. </p><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">InternalSample</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> locINext = inext; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> locINextp = inextp; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(++locINext &gt;= <span class="hljs-number"><span class="hljs-number">56</span></span>) locINext = <span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(++locINextp &gt;= <span class="hljs-number"><span class="hljs-number">56</span></span>) locINextp = <span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> retVal = SeedArray[locINext] - SeedArray[locINextp]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(retVal == <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>.MaxValue) retVal--; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(retVal &lt; <span class="hljs-number"><span class="hljs-number">0</span></span>) retVal += <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>.MaxValue; SeedArray[locINext] = retVal; inext = locINext; inextp = locINextp; <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> retVal; } <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> inext = <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> inextp = <span class="hljs-number"><span class="hljs-number">21</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">readonly</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>[] SeedArray = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>[<span class="hljs-number"><span class="hljs-number">56</span></span>];</code> </pre> <br><p>  The generator has an internal <code>SeedArray</code> state of 56 <code>SeedArray</code> (the zero element is not used, so there are actually 55 of them).  A new pseudo-random number is obtained by subtracting two numbers located in the internal state with <code>inext</code> and <code>inextp</code> .  The same number replaces the element of the internal state with the <code>inext</code> index. </p><br><p><img src="https://habrastorage.org/webt/cv/lb/c2/cvlbc2ow8wzoqfuzid4maieakhk.png"></p><br><p>  This means that in order to predict the next pseudo-random number, one does not need to know the theory of additive random generators, but rather just to know the current internal state of the generator.  And this can be done on the basis of its output values. </p><br><h1 id="predskazyvaem-buduschee">  Predict the future </h1><br><p>  As a predictor, we will use an instance of the same class Random, in which we will replace the internal state of <code>SeedArray</code> through reflection.  To fill the internal state, we need a function inverse to <a href="http://referencesource.microsoft.com/">converting</a> an arbitrary Int32 number from the internal state to the range <code>[min;max)</code> : </p><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetInternalStateValue</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> minValue, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> maxValue, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">value</span></span></span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> range = maxValue - minValue; <span class="hljs-comment"><span class="hljs-comment">//    range &gt; int.MaxValue return (int) ((double) (value - minValue) / range * int.MaxValue); }</span></span></code> </pre> <br><p>  In this method, operations with real numbers are used, so we only get an approximate value of the internal state.  Let's write a test to find out how big the error is on our range <code>[100000; 1000000)</code>  <code>[100000; 1000000)</code> : </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> rnd = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Random(<span class="hljs-number"><span class="hljs-number">31337</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> seedArray = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span>[] {<span class="hljs-number"><span class="hljs-number">0</span></span>}.Concat( <span class="hljs-comment"><span class="hljs-comment">//   SeedArray   Enumerable.Range(0, 55) .Select(i =&gt; rnd.Next(Min, Max)) .Select(val =&gt; GetInternalStateValue(Min, Max, val))) .ToArray(); var predictor = new Random(); typeof(Random) .GetField("SeedArray", BindingFlags.Instance | BindingFlags.NonPublic) .SetValue(predictor, seedArray); //   for(int i = 0; i &lt; 10; i++) Console.WriteLine($"{rnd.Next(Min, Max)} vs {predictor.Next(Min, Max)}");</span></span></code> </pre> <br><p>  We get: </p><br><pre> <code class="cs hljs"><span class="hljs-number"><span class="hljs-number">103753</span></span> vs <span class="hljs-number"><span class="hljs-number">103754</span></span> <span class="hljs-comment"><span class="hljs-comment">// (+1) 617169 vs 617169 523211 vs 523211 382862 vs 382862 516139 vs 516140 // (+1) 555187 vs 555187 384855 vs 384856 // (+1) 543554 vs 543553 // (-1) 327867 vs 327867 745153 vs 745153</span></span></code> </pre> <br><p>  Voila!  Now you can, knowing the sequence of 55 numbers, almost accurately predict the following pseudo-random numbers from the desired range. </p><br><blockquote>  After the prediction (55 - 21 = 34) of numbers, the error increases, and it is better to reinitialize the predictor. </blockquote><br><h1 id="scenariy-ataki">  Attack scenario </h1><br><p>  For the implementation of the attack must take into account another nuance.  The vulnerable service had several replicas, requests for which were randomly balanced.  One could also check the randomness of balancing, but this was not required - the server’s response contained an HTTP header with the name of the service replica. </p><br><p>  In addition, the service had a limit - no more than 3 SMS per number.  However, it is easy to get around through any free service for receiving SMS, which provides a pool of phone numbers. </p><br><p>  Now the entire mosaic assembly.  The attack scenario will be as follows: </p><br><ol><li>  We choose the time when the service request flow is minimal to avoid pseudo-random numbers being generated by other users. </li><li>  Using the phone numbers from the pool, we get N × 55 SMS with access codes, where N is the number of service replicas. </li><li>  Using the <code>GetInternalStateValue</code> method to <code>GetInternalStateValue</code> convert numbers from a range, we fill the internal states of N instances of the random number generator. </li><li>  We send SMS to the phone number of interest, predict the sent code, enter the service under someone else’s account. </li><li>  If the code does not fit (we assume that due to an error when working with real numbers), try (+1) and (-1). </li><li>  We take the next phone of interest ... </li></ol><br><h1 id="vyvod">  Conclusion </h1><br><p>  Predicting the future for a Random instance is a simple matter. </p><br><blockquote>  Prediction of the past is also not a problem.  To do this, just in the same way, initialize the internal state of the generator, and then “reverse” the <code>InternalSample</code> method and wind back 55 already known values. </blockquote><br><p>  When using Random, you need to remember to synchronize access or use <code>ThreadStatic</code> instances.  When creating multiple instances, you need to take care of the seed, so as not to get a lot of equally initialized objects. </p><br><p>  In security-critical places, you need to use a cryptographically stable and thread-safe <a href="https://msdn.microsoft.com/en-us/library/system.security.cryptography.rngcryptoserviceprovider.aspx">RNGCryptoServiceProvider</a> and not disclose unnecessary information about the environment. </p><br><h1 id="ssylki-po-teme">  Related Links </h1><br><ul><li>  <a href="https://gist.github.com/dscheg/a4c7bc9d1a9d7003d73e0a9a53e87345">Predictor Test Source Code</a> </li><li>  <a href="http://portal.idc.ac.il/en/schools/cs/research/documents/sinai_2011.pdf">Analysis of PRNG implementations in standard libraries C, Java, .NET and PHP</a> </li><li>  <a href="https://github.com/dotnet/corefx/issues/23298">Discussion of errors in the implementation of Random</a> </li><li>  <a href="https://gist.github.com/fuglede/772402ecc3997ada82a03ce65361781b">An article about the influence of typos in the implementation of Random on the quality of pseudo-random numbers</a> </li><li>  <a href="https://fuglede.dk/en/blog/bias-in-net-rng/">An article about the effect of rounding off operations with real numbers in the implementation of Random on the distribution of pseudo-random numbers</a> </li></ul></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/347758/">https://habr.com/ru/post/347758/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../347748/index.html">Object in a case or Optional in Java 8 and Java 9. Part 3: “What's added in Java 9”</a></li>
+<li><a href="../347750/index.html">Learn OpenGL. Lesson 4.6 - Cubic cards</a></li>
+<li><a href="../347752/index.html">Spring AOP. Little question from the interview</a></li>
+<li><a href="../347754/index.html">JavaScript proxy: beautiful and useful</a></li>
+<li><a href="../347756/index.html">SuperJob IT meetup. Work with business requirements at different project scales</a></li>
+<li><a href="../347760/index.html">And so it will do ... or how the data of 14 million Russians were in my hands</a></li>
+<li><a href="../347764/index.html">20 times cheaper, 2.5 times more accurate and twice as convenient</a></li>
+<li><a href="../347768/index.html">Conservative national crypto regulation. What do new bills carry us?</a></li>
+<li><a href="../347770/index.html">Industrial barcode scanners: new technologies in AutoID</a></li>
+<li><a href="../347772/index.html">MentorHack: Tinder for Mentor Search, AI Boss and a bit of HRTech</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

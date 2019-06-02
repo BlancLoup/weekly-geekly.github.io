@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>S3 Storage Balancing with GoBetween + VRRP</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Using Ceph to store backups using their S3-compatible RadosGW storage, we came to the conclusion that one radosGW could not cope with the load assigne...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>S3 Storage Balancing with GoBetween + VRRP</h1><div class="post__text post__text-html js-mediator-article">  Using Ceph to store backups using their S3-compatible RadosGW storage, we came to the conclusion that one radosGW could not cope with the load assigned to it and decided that it would be time to unbalance it with concomitant fault tolerance.  As a result, we came to the solution of balancing with the help of GoBetween (a very light L4 balancer, for more details on <a href="https://gobetween.io/">gobetween.io</a> ), and fault tolerance was organized using VRRP. <br><br>  There was such a scheme: <br><br><ol><li>  master node vrrp receives data stream over http (s); </li><li>  gobetween scatters all traffic to itself and the backup vrrp node; </li><li>  radosgw, in turn, write directly to ceph; </li><li>  in the case of the fall of the master node vrrp, backup node takes the entire load on itself until the master rises </li></ol><br>  Our implementation of this action read below. <br><a name="habracut"></a><br>  <b>Given:</b> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  Ceph cluster (Jewel) <br><ul><li>  IP Monitors: 10.0.1.1, 10.0.1.2, 10.0.1.3 </li></ul></li><li>  Two iron servers (CentOS) <br><ul><li>  The first server is 10.0.0.1 (let's call it gbt1.example.com) </li><li>  The second server is 10.0.0.2 (gbt2.example.com) </li><li>  The total IP will be 10.0.0.3 (s3.example.com) </li></ul></li><li>  Domain example.com </li></ol><br>  <b>Task:</b> <br><br>  Make balancing failover for S3 storage organized with RadosGW <br><br>  <b>Stages:</b> <br><br><ol><li>  Deploy RadosGW on two servers </li><li>  Organize resiliency with VRRP </li><li>  Organize S3 traffic balancing using GoBetween </li><li>  Check </li></ol><br><h3>  Preparation (on both machines everything is identical) </h3><br>  CentOS 7.4 is installed on the servers, immediately after installing the OS, we will update everything: <br><br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># yum -y update</span></span></code> </pre> <br>  Install all the software we need for TK (except for ceph itself, because at first only its repository is installed): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># yum -y install keepalived centos-release-ceph-jewel wget</span></span></code> </pre> <br>  At the moment we have not yet installed Ceph, so install it: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># yum -y install ceph-radosgw</span></span></code> </pre> <br>  Immediately configure the firewall, opening the necessary ports and allowing services: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># firewall-cmd --permanent --add-port=18080/tcp # firewall-cmd --direct --permanent --add-rule ipv4 filter INPUT 0 --in-interface enp2s0 --destination 224.0.0.18 --protocol vrrp -j ACCEPT # firewall-cmd --direct --permanent --add-rule ipv4 filter OUTPUT 0 --out-interface enp2s0 --destination 224.0.0.18 --protocol vrrp -j ACCEPT # firewall-cmd --permanent --add-port=10050/tcp # firewall-cmd --reload</span></span></code> </pre> <br>  Turn off SELinux (just in case): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux # setenforce 0</span></span></code> </pre> <br><h3>  Expand RadosGW </h3><br>  Initially, the Ceph cluster has already been raised, I think we will not touch upon the details here, the topic is not of this article, we will immediately move on to setting up radosGW. <br><br>  The config is given as an example, in your case some parameters may differ: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># cat /etc/ceph/ceph.conf [global] fsid = 01dea7f3-91f4-48d1-9d44-ba93d4a103c5 mon_host = 10.0.1.1, 10.0.1.2, 10.0.1.3 auth_cluster_required = cephx auth_service_required = cephx auth_client_required = cephx public_network = 10.0.1.0/24 [client] rbd_cache = true [client.radosgw.gateway] rgw_frontends = civetweb port=18080 rgw_region = example rgw_region_root_pool = .example.rgw.root rgw_zone = example-s3 rgw_zone_root_pool = .example-s3.rgw.root host = s3 keyring = /etc/ceph/client.radosgw.gateway rgw_dns_name = s3.example.com rgw_print_continue = true</span></span></code> </pre> <br>  Don't forget to copy the /etc/ceph/client.radosgw.gateway key from any Ceph cluster node <br>  Run radosgw: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># systemctl start ceph-radosgw@radosgw.gateway</span></span></code> </pre> <br>  And add it to the autostart: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># systemctl enable ceph-radosgw@radosgw.gateway</span></span></code> </pre> <br><h3>  Expand VRRP </h3><br>  On the master node (the difference in the state and priority options): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># cat /etc/keepalived/keepalived.conf global_defs { notification_email { user@example.com } notification_email_from gbt@example.com smtp_server mail.example.com smtp_connect_timeout 30 router_id GBT1 } vrrp_instance VI_1 { state MASTER interface enp2s0 virtual_router_id 33 priority 101 advert_int 1 smtp_alert authentication { auth_type PASS auth_pass 123123123 } virtual_ipaddress { 10.0.0.3 } }</span></span></code> </pre> <br>  On the backup node: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># cat /etc/keepalived/keepalived.conf global_defs { notification_email { user@example.com } notification_email_from gbt@example.com smtp_server mail.example.com smtp_connect_timeout 30 router_id GBT1 } vrrp_instance VI_1 { state BACKUP interface enp2s0 virtual_router_id 33 priority 100 advert_int 1 smtp_alert authentication { auth_type PASS auth_pass 123123123 } virtual_ipaddress { 10.0.0.3 } }</span></span></code> </pre> <br>  Restart and add to autostart (both nodes): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># systemctl restart keepalived # systemctl enable keepalived</span></span></code> </pre> <br><h3>  Expand GoBetween </h3><br>  First, download and unpack the gobetween binary: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># wget https://github.com/yyyar/gobetween/releases/download/0.5.0/gobetween_0.5.0_linux_amd64.tar.gz # tar -xzf gobetween_0.5.0_linux_amd64.tar.gz -C /usr/local/bin/</span></span></code> </pre> <br>  We write gobetween config (for SSL connections we specify the location of the keys).  The config on both nodes is the same: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># cat /etc/gobetween.toml [logging] level = "debug" # "debug" | "info" | "warn" | "error" output = "/var/log/gobetween.log" [api] enabled = true # true | false bind = ":8888" # "host:port" cors = false # cross-origin resource sharing [defaults] max_connections = 0 # Maximum simultaneous connections to the server client_idle_timeout = "0" # Client inactivity duration before forced connection drop backend_idle_timeout = "0" # Backend inactivity duration before forced connection drop backend_connection_timeout = "0" # Backend connection timeout (ignored in udp) [servers] [servers.sample] protocol = "tls" bind = "0.0.0.0:443" balance = "roundrobin" [servers.sample.discovery] kind = "static" static_list = [ "10.0.0.1:18080 weight=1", "10.0.0.2:18080 weight=1" ] [servers.sample.tls] root_ca_cert_path = "/etc/exampleSSC-CA.crt" cert_path = "/etc/s3.example.com.crt" key_path = "/etc/s3.example.com.key" [servers.sample.healthcheck] fails = 1 passes = 1 interval = "2s" timeout="1s" kind = "ping" ping_timeout_duration = "500ms" [servers.sample2] protocol = "tcp" bind = "0.0.0.0:80" balance = "roundrobin" [servers.sample2.discovery] kind = "static" static_list = [ "10.0.0.1:18080 weight=1", "10.0.0.2:18080 weight=1" ] [servers.sample2.healthcheck] fails = 1 passes = 1 interval = "2s" timeout="1s" kind = "ping" ping_timeout_duration = "500ms"</span></span></code> </pre> <br>  The gobetween is started by the following command (add to autostart in any way convenient for you): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># /usr/local/bin/gobetween -c /etc/gobetween.toml</span></span></code> </pre> <br><h3>  Check </h3><br>  For verification, you can use any S3 client, for example, such as s3cmd or DragonDisk.  The verification option for s3cmd will look like this (taking into account that the s3.example.com is already specified as the server in the config): <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># s3cmd ls</span></span></code> </pre> <br>  If you already have at least some bucket there, then his name will be in the exhaust, if there are no buckets, then there will be an empty exhaust. <br><br>  How it looks now - you can see on the screen below.  Statistics per day (graphics in gigabytes per second): <br><br><img src="https://habrastorage.org/webt/tp/w4/gm/tpw4gmekbk3qp6_nwycjjdqranw.png"><br><br><h3>  Results </h3><br>  The load has decreased significantly, there are no blunts left and now all backups have time to pack up for the night (before that, at the height of the working day, it could still be collected). <br><br>  I hope this hautushka will help you in accelerating and reducing the load on the radosgw </div><p>Source: <a href="https://habr.com/ru/post/346436/">https://habr.com/ru/post/346436/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../346426/index.html">How to implement Secure Development Lifecycle and not turn gray. The story of Yandex on ZeroNights 2017</a></li>
+<li><a href="../346428/index.html">How does the capital domain zone .MOSCOW live three years after its launch?</a></li>
+<li><a href="../346430/index.html">Docker in production: update</a></li>
+<li><a href="../346432/index.html">Easy “Frontend” on Golang for manual testing of Ethereum smart contract without JavaScript and Web3</a></li>
+<li><a href="../346434/index.html">Nvidia drivers and telemetry</a></li>
+<li><a href="../346438/index.html">Twenty years with user experience: squeezing practical experience</a></li>
+<li><a href="../346440/index.html">Just about the graphs. Attempt to popularize</a></li>
+<li><a href="../346442/index.html">The story of how I steal credit card numbers and passwords from visitors to your sites</a></li>
+<li><a href="../346444/index.html">Meltdown & Specter vulnerabilities patches cause problems with downloading Ubuntu 16.04</a></li>
+<li><a href="../346446/index.html">Data Modeling Zone EU 2017</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

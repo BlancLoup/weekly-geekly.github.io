@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Dostering nginx and php on sockets with log rotation</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The article on Habré discussed the “docker way” (TM), which says: one container is one process.  one process per container  Each container should have...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Dostering nginx and php on sockets with log rotation</h1><div class="post__text post__text-html js-mediator-article">  The <a href="https://habrahabr.ru/post/346634/">article on Habré</a> discussed the “docker way” (TM), which says: one container is one process. <div class="spoiler">  <b class="spoiler_title">one process per container</b> <div class="spoiler_text">  Each container should have only one concern <br><br>  It makes it easier to scale horizontally and reuse containers.  For instance, there are three containers for each instance. <br><br>  You may have heard that there should be “one process per container”.  It is not necessarily true.  In addition to the process of spraying, there could be some processes of their own accord.  For instance, Celery can spawn multiple processes, or Apache might create a process per request.  It is not a hard and fast rule.  Keep it clean and modular as possible. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      If you can use container lines, you can use. </div></div>  Following this principle when completing nginx is fraught with two consequences.  Configuring the interaction of nginx and php-fpm in different processes through a unix socket is a <a href="https://medium.com/%40shrikeh/setting-up-nginx-and-php-fpm-in-docker-with-unix-sockets-6fdfbdc19f91">bit more complicated</a> than it might seem.  And the <a href="https://blog.amartynov.ru/docker-logrotate/">rotation of the logs</a> , which in a normal installation is “out of the box”, cannot be carried out in principle, because  requires sending a USR1 nginx signal, for which another process is needed. <br><a name="habracut"></a><br><blockquote>  As a result of the discussion, it became clear that instead of sending the USR1 nginx signal, add the copytruncate option to the logrotate configuration.  So in the container there is no need to run multiple processes.  However, all actions on the startup setup of log rotation on cron will still need to be performed not inside the container, but on the host where the container works.  When running both a web server and log rotation in a single container, a separate configuration of the rotation on the host is no longer required. <br></blockquote><br><br>  The above links provide solutions.  But the first time it did not work, and I had to look for reasons.  Therefore, besides the links, I present the results of my experiments.  In order to be able to get acquainted with the method of <a href="https://habrahabr.ru/post/347196/">protection against DDoS-attacks,</a> openresty will be launched instead of the nginx server (build of nginx from Taobao with the Lua scripting engine).  This server has a different location to the file directories compared to nginx.  But everything else is absolutely identical. <br><br>  First, create a docker-compose.yml file in the project root directory: <br><br><pre><code class="hljs vhdl">version: <span class="hljs-string"><span class="hljs-string">"3"</span></span> services: app: build: <span class="hljs-keyword"><span class="hljs-keyword">context</span></span>: ./docker/php # dockerfile: docker/php/Dockerfile args: UID: <span class="hljs-string"><span class="hljs-string">"3000"</span></span> working_dir: /app nginx: build: <span class="hljs-keyword"><span class="hljs-keyword">context</span></span>: ./docker/nginx # dockerfile: docker/nginx/Dockerfile args: UID: <span class="hljs-string"><span class="hljs-string">"3000"</span></span> ports: - <span class="hljs-number"><span class="hljs-number">8000</span></span>:<span class="hljs-number"><span class="hljs-number">80</span></span></code> </pre> <br>  We assume that container creation scripts will be stored in docker / php / Dockerfile and docker / nginx / Dockerfile files.  The name of the Dockerfile is the default name, therefore there is no need to explicitly set it in the configuration. <br><br>  Create a docker / php / Dockerfile file: <br><br><pre> <code class="hljs perl">FROM php:<span class="hljs-number"><span class="hljs-number">7</span></span>-fpm ARG UID RUN addgroup --gid $UID --<span class="hljs-keyword"><span class="hljs-keyword">system</span></span> app \ &amp;&amp; adduser --uid $UID --<span class="hljs-keyword"><span class="hljs-keyword">system</span></span> --disabled-login --disabled-password --gid $UID app</code> </pre><br>  The php: 7-fpm image is loaded and a user is created with the identifier specified by the UID parameter (in docker-compose.yml UID: 3000) with the name app in the app group.  This is needed to set permissions to read the socket from the container where openresty will be launched. <br><br>  In order to get the log rotation in nginx or openresty, it is necessary that the container does not shut down when restarting the web server, as well as that cron is running in the same container.  That is, it will not be a single-process container, but otherwise it will not work.  It is recommended to run multiple processes through supervisor. <br><br>  Create a docker / nginx / Dockerfile file: <br><br><pre> <code class="hljs perl">FROM openresty/openresty:xenial RUN apt-get update &amp;&amp; apt-get install -<span class="hljs-keyword"><span class="hljs-keyword">y</span></span> supervisor cron logrotate COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf COPY ./logrotate.conf /etc/logrotate.conf COPY ./cron.d /etc/cron.d/nginx ARG UID RUN <span class="hljs-keyword"><span class="hljs-keyword">mkdir</span></span> -p /var/<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>/supervisor \ &amp;&amp; <span class="hljs-keyword"><span class="hljs-keyword">chmod</span></span> <span class="hljs-number"><span class="hljs-number">644</span></span> /etc/logrotate.conf &amp;&amp; <span class="hljs-keyword"><span class="hljs-keyword">chown</span></span> root:root /etc/logrotate.conf \ &amp;&amp; <span class="hljs-keyword"><span class="hljs-keyword">chmod</span></span> <span class="hljs-number"><span class="hljs-number">644</span></span> /etc/cron.d/nginx &amp;&amp; <span class="hljs-keyword"><span class="hljs-keyword">chown</span></span> root:root /etc/cron.d/nginx \ &amp;&amp; addgroup --gid $UID --<span class="hljs-keyword"><span class="hljs-keyword">system</span></span> app \ &amp;&amp; adduser --uid $UID --<span class="hljs-keyword"><span class="hljs-keyword">system</span></span> --disabled-login --disabled-password --gid $UID app ENTRYPOINT [<span class="hljs-string"><span class="hljs-string">"/usr/bin/supervisord"</span></span>]</code> </pre><br>  At first, all necessary programs are integrated.  Then the configuration files from the ./docker/nginx/ directory are copied to the container's internal file system.  Further, some of these files are assigned 644 rights (otherwise the system will not rotate the logs).  And it also creates a user and app group with the same ID (UID: 3000). <br><br>  It is also necessary to create several configuration files. <br><br>  The docker / php / zz-docker.conf file (the name of zz-docker.conf is present in the configuration of the php image: 7-fpm. This is not described anywhere and can change. Unfortunately, there are no detailed descriptions of images at the moment, and have to investigate them after downloads from repository): <br><br><pre> <code class="hljs pgsql">[<span class="hljs-keyword"><span class="hljs-keyword">global</span></span>] daemonize = <span class="hljs-keyword"><span class="hljs-keyword">no</span></span> [www] ;<span class="hljs-keyword"><span class="hljs-keyword">listen</span></span> = [::]:<span class="hljs-number"><span class="hljs-number">9000</span></span> # Don<span class="hljs-string"><span class="hljs-string">'t need this listen = /sock/docker.sock listen.owner = app listen.group = app listen.mode = 0660</span></span></code> </pre><br>  The parameter <code>listen = /sock/docker.sock</code> will be the same as in the nginx configuration. <br><br>  The main configuration file nginx will have to be rewritten.  in openresty, it does not contain the necessary parameters, and this is the location of the logs, the process identifier, the user (app), and the directory with the virtual server configurations (/conf.d). <br><br><pre> <code class="nginx hljs"><span class="hljs-attribute"><span class="hljs-attribute">user</span></span> app; <span class="hljs-attribute"><span class="hljs-attribute">error_log</span></span> /var/log/nginx/error.log <span class="hljs-literal"><span class="hljs-literal">debug</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">pid</span></span> /var/run/nginx.pid; <span class="hljs-section"><span class="hljs-section">http</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">access_log</span></span> /var/log/nginx/access.log; <span class="hljs-attribute"><span class="hljs-attribute">include</span></span> mime.types; <span class="hljs-attribute"><span class="hljs-attribute">default_type</span></span> application/octet-stream; <span class="hljs-section"><span class="hljs-section">server</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">listen</span></span> <span class="hljs-number"><span class="hljs-number">80</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">server_name</span></span> localhost; <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> / { <span class="hljs-attribute"><span class="hljs-attribute">root</span></span> html; } } <span class="hljs-attribute"><span class="hljs-attribute">include</span></span> /usr/local/openresty/nginx/conf/conf.d/*; }</code> </pre><br>  Create a virtual server with the server.conf configuration: <br><br><pre> <code class="nginx hljs"><span class="hljs-section"><span class="hljs-section">server</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">listen</span></span> <span class="hljs-number"><span class="hljs-number">80</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">server_name</span></span> local; <span class="hljs-attribute"><span class="hljs-attribute">root</span></span> /usr/share/nginx/html; <span class="hljs-attribute"><span class="hljs-attribute">disable_symlinks</span></span> <span class="hljs-literal"><span class="hljs-literal">off</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">client_max_body_size</span></span> <span class="hljs-number"><span class="hljs-number">50M</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> <span class="hljs-regexp"><span class="hljs-regexp">~ (/assets|/favicon.ico)</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">try_files</span></span> /build<span class="hljs-variable"><span class="hljs-variable">$uri</span></span> <span class="hljs-variable"><span class="hljs-variable">$uri</span></span> =<span class="hljs-number"><span class="hljs-number">404</span></span>; } <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> / { <span class="hljs-attribute"><span class="hljs-attribute">try_files</span></span> <span class="hljs-variable"><span class="hljs-variable">$uri</span></span> /app.php<span class="hljs-variable"><span class="hljs-variable">$is_args</span></span><span class="hljs-variable"><span class="hljs-variable">$args</span></span>; } <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> <span class="hljs-regexp"><span class="hljs-regexp">~ \.php$</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">fastcgi_pass</span></span> unix:/sock/docker.sock; <span class="hljs-attribute"><span class="hljs-attribute">try_files</span></span> <span class="hljs-variable"><span class="hljs-variable">$fastcgi_script_name</span></span> =<span class="hljs-number"><span class="hljs-number">500</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">fastcgi_split_path_info</span></span><span class="hljs-regexp"><span class="hljs-regexp"> ^(.+\.php)(/.*)$</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">include</span></span> fastcgi_params; <span class="hljs-attribute"><span class="hljs-attribute">fastcgi_param</span></span> SCRIPT_FILENAME <span class="hljs-variable"><span class="hljs-variable">$document_root</span></span><span class="hljs-variable"><span class="hljs-variable">$fastcgi_script_name</span></span>; } }</code> </pre><br>  We <code>unix:/sock/docker.sock</code> proxy not through a port, but through a <code>unix:/sock/docker.sock</code> socket <code>unix:/sock/docker.sock</code> . <br><br>  Now create the logrotate.conf file: <br><br><pre> <code class="hljs perl">/var/<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>/nginx/*.log { size=<span class="hljs-number"><span class="hljs-number">1</span></span>k missingok rotate <span class="hljs-number"><span class="hljs-number">8</span></span> notifempty sharedscripts postrotate [ ! -f /var/run/nginx.pid ] || <span class="hljs-keyword"><span class="hljs-keyword">kill</span></span> -USR1 <span class="hljs-string"><span class="hljs-string">`cat /var/run/nginx.pid`</span></span> endscript }</code> </pre><br><br>  And the task for cron: <br><br><pre> <code class="hljs ruby">SHELL=<span class="hljs-regexp"><span class="hljs-regexp">/bin/sh</span></span> PATH=<span class="hljs-regexp"><span class="hljs-regexp">/usr/local</span></span><span class="hljs-regexp"><span class="hljs-regexp">/sbin:/usr</span></span><span class="hljs-regexp"><span class="hljs-regexp">/local/bin</span></span><span class="hljs-symbol"><span class="hljs-symbol">:/sbin</span></span><span class="hljs-symbol"><span class="hljs-symbol">:/bin</span></span><span class="hljs-symbol"><span class="hljs-symbol">:/usr/sbin</span></span><span class="hljs-symbol"><span class="hljs-symbol">:/usr/bin</span></span> MAILTO=<span class="hljs-string"><span class="hljs-string">""</span></span> <span class="hljs-comment"><span class="hljs-comment"># mh dom mon dow user command * * * * * root logrotate -v /etc/logrotate.conf #</span></span></code> </pre><br><br>  File size size = 1k and rotation rotation every minute (* * * * *) is not for a working server, but only for the rotation of logs to be observed at the minimum time.  The logrotate command copies logs to archive files.  But until nginx is restarted, the real creation of a new empty log file will not happen.  In order for nginx to open the logs again, the awesome command <code>kill -USR1 `cat /var/run/nginx.pid`</code> . <br><br>  Finally, the supervisor configuration: <br><br><pre> <code class="hljs javascript">[supervisord] nodaemon=<span class="hljs-literal"><span class="hljs-literal">true</span></span> logfile=<span class="hljs-regexp"><span class="hljs-regexp">/dev/</span></span><span class="hljs-literal"><span class="hljs-literal">null</span></span> [program:nginx] command=<span class="hljs-regexp"><span class="hljs-regexp">/usr/</span></span>local/openresty/bin/openresty -g <span class="hljs-string"><span class="hljs-string">'daemon off;'</span></span> [program:cron] command=cron -f</code> </pre><br>  It doesn't matter where all these configuration files are located, because  all paths are specified in the COPY statements from the Dockerfile, and in the volumes values ​​from the docker-compose.yml.  Now you need to be patient and write down all the necessary paths in docker-compose.yml. <br><br><pre> <code class="hljs ruby"><span class="hljs-symbol"><span class="hljs-symbol">version:</span></span> <span class="hljs-string"><span class="hljs-string">"3"</span></span> <span class="hljs-symbol"><span class="hljs-symbol">services:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">app:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">build:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">context:</span></span> ./docker/php <span class="hljs-symbol"><span class="hljs-symbol">args:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">UID:</span></span> <span class="hljs-string"><span class="hljs-string">"3000"</span></span> <span class="hljs-symbol"><span class="hljs-symbol">working_dir:</span></span> /app <span class="hljs-symbol"><span class="hljs-symbol">volumes:</span></span> - ./<span class="hljs-symbol"><span class="hljs-symbol">:/app</span></span> - ./<span class="hljs-symbol"><span class="hljs-symbol">html:</span></span>/usr/share/nginx/html - ./docker/php/zz-docker.<span class="hljs-symbol"><span class="hljs-symbol">conf:</span></span>/usr/local/etc/php-fpm.d/zz-docker.conf - ./docker/<span class="hljs-symbol"><span class="hljs-symbol">sock:</span></span>/sock <span class="hljs-symbol"><span class="hljs-symbol">expose:</span></span> - <span class="hljs-number"><span class="hljs-number">9000</span></span> <span class="hljs-symbol"><span class="hljs-symbol">links:</span></span> - mysql <span class="hljs-symbol"><span class="hljs-symbol">nginx:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">build:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">context:</span></span> ./docker/nginx <span class="hljs-symbol"><span class="hljs-symbol">args:</span></span> <span class="hljs-symbol"><span class="hljs-symbol">UID:</span></span> <span class="hljs-string"><span class="hljs-string">"3000"</span></span> <span class="hljs-symbol"><span class="hljs-symbol">ports:</span></span> - <span class="hljs-number"><span class="hljs-number">8000</span></span><span class="hljs-symbol"><span class="hljs-symbol">:</span></span><span class="hljs-number"><span class="hljs-number">80</span></span> <span class="hljs-symbol"><span class="hljs-symbol">volumes:</span></span> - ./<span class="hljs-symbol"><span class="hljs-symbol">:/app/</span></span> - ./html/<span class="hljs-symbol"><span class="hljs-symbol">:/usr/share/nginx/html/</span></span> - ./docker/nginx/nginx.<span class="hljs-symbol"><span class="hljs-symbol">conf:</span></span>/usr/local/openresty/nginx/conf/nginx.conf - ./docker/nginx/conf.d/<span class="hljs-symbol"><span class="hljs-symbol">:/usr/local/openresty/nginx/conf/conf</span></span>.d/ - ./docker/nginx/log/<span class="hljs-symbol"><span class="hljs-symbol">:/var/log/nginx/</span></span> - ./lua/<span class="hljs-symbol"><span class="hljs-symbol">:/usr/share/nginx/lua/</span></span> - ./docker/sock/<span class="hljs-symbol"><span class="hljs-symbol">:/sock/</span></span> <span class="hljs-symbol"><span class="hljs-symbol">links:</span></span> - app <span class="hljs-symbol"><span class="hljs-symbol">depends_on:</span></span> - app</code> </pre><br>  Now you can add Lua scripts (see the <a href="https://habrahabr.ru/post/347196/">article on Habré</a> ). <br><br>  apapacy@gmail.com <br>  January 27, 2018 </div><p>Source: <a href="https://habr.com/ru/post/347662/">https://habr.com/ru/post/347662/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../347646/index.html">Leave all doubts: how to avoid the impostor syndrome</a></li>
+<li><a href="../347648/index.html">Outside the office. We automate specialized processes in a medical manufacturing company.</a></li>
+<li><a href="../347650/index.html">How the principles of the game "Playing Lean" help in the creation of products</a></li>
+<li><a href="../347654/index.html">10 skills cool designer in 2018</a></li>
+<li><a href="../347658/index.html">We get our neighbor's Wi-Fi using standard MacOS tools.</a></li>
+<li><a href="../347664/index.html">Miner Monero: now in YouTube advertising</a></li>
+<li><a href="../347666/index.html">The code was checked literally by line: how our firewall was certified by FSTEC</a></li>
+<li><a href="../347668/index.html">Break and fallthrough operator</a></li>
+<li><a href="../347670/index.html">Developing Tic-Tac-Toe on native javascript</a></li>
+<li><a href="../347672/index.html">How robots help people start investing in the stock market: what is roboking and how it works</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>As we ivi rewrote etl: Flink + Kafka + ClickHouse</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A year ago, we decided to redo the scheme of data collection in the application and data on customer actions. The old system worked fine, but each tim...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>As we ivi rewrote etl: Flink + Kafka + ClickHouse</h1><div class="post__text post__text-html js-mediator-article">  A year ago, we decided to redo the scheme of data collection in the application and data on customer actions.  The old system worked fine, but each time it was becoming more and more difficult to make changes there. <br><br> <a href="https://habrahabr.ru/company/ivi/blog/347408/"><img src="https://habrastorage.org/webt/pw/ne/-z/pwne-zjsv77sp-sb6w5e-7q9xws.jpeg"></a> <br><br>  In this article I will tell you what technologies we began to use for collecting and aggregating data in a new project. <br><a name="habracut"></a><br><div class="spoiler">  <b class="spoiler_title">And that's why</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/1y/dh/k5/1ydhk5i2znf8umdolr_dbdjiyu8.jpeg" alt="image"><br>  This is how our old data flow pattern looked like. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      A lot of data from our microservices, overflowed with scripts in Hive. <br><br>  Flume loaded client data from Kafka into several more tables, plus Flume loaded information about views from the file system of one of the services.  In addition, there were dozens of scripts in cron and oozie. <br><br>  At some point, we realized that it was impossible to live like this.  Such a data loading system is almost impossible to test.  Each unloading is accompanied by prayers.  Each new ticket for revision - a quiet rattle of the heart and teeth.  Making it so that the system is completely tolerant to the fall of any of its components has become very difficult. <br></div></div><br>  Thinking about how we want to see the new ETL and trying on technology and prayers, we got the following scheme: <br><br><img src="https://habrastorage.org/webt/wo/ap/nj/woapnjcwqz8hh7-ccrrcor_j-n0.jpeg" alt="image"><br><br><ul><li>  All data comes on http.  From all services.  Data in json. </li><li>  We store raw (not processed) data in kafka for 5 days.  In addition to ETL, data from kafka also uses other backend services. <br></li><li>  All data processing logic is in one place.  For us, this has become java-code for the Apache Flink framework.  About this wonderful framework later. </li><li>  For storing intermediate calculations, use redis.  Flink has its own <a href="https://ci.apache.org/projects/flink/flink-docs-release-1.4/ops/state/state_backends.html">state-storage</a> , it is tolerant to crashes and makes checkpoints, but its problem is that you cannot recover from it when the code changes. </li><li>  We store everything in Clickhouse.  We connect with external dictionaries all tables, data from which microservices do not send us events via http. </li></ul><br>  If there is no point in writing about a custom http-service storing data in kafka, and about kafka service itself, then I want to stop in more detail about how we use Flink and ClickHouse. <br><br><h2>  <font color="#fd004c">Apache flink</font> </h2><br>  <a href="https://flink.apache.org/">Apache Flink</a> is an open source stream processing platform for distributed applications with a high degree of fault tolerance and crash tolerance. <br><br>  When data is needed for analysis faster and fast aggregation of large data flow is necessary for quick response to certain events — the standard, ETL approach does not work.  This is where streaming-processing will help us. <br><br>  The beauty of this approach is not only in the speed of data delivery, but also in the fact that all processing is in one place.  You can weigh everything with tests, instead of a set of scripts and sql queries, it becomes like a project that can be supported. <br><br><div class="spoiler">  <b class="spoiler_title">Consider the simplest example of processing a stream from kafka based on Apache Flink</b> <div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> ivi.ru.groot; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.apache.flink.api.common.functions.FlatMapFunction; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.apache.flink.streaming.api.datastream.DataStream; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.apache.flink.streaming.api.environment.StreamExecutionEnvironment; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.apache.flink.streaming.util.serialization.SimpleStringSchema; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.apache.flink.util.Collector; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.json.JSONException; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> org.json.JSONObject; <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.util.Properties; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> Exception </span></span>{ <span class="hljs-comment"><span class="hljs-comment">//   flink- final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(); //    kafka Properties kafkaProps = new Properties(); kafkaProps.setProperty("bootstrap.servers", "kafka.host.org.ru:9092"); kafkaProps.setProperty("zookeeper.connect", "zoo.host.org.ru:9092"); kafkaProps.setProperty("group.id", "group_id_for_reading"); FlinkKafkaConsumer010 eventsConsumer = new FlinkKafkaConsumer010&lt;&gt;("topic_name", new SimpleStringSchema(), kafkaProps); //       (DataStreamApi)        DataStream&lt;String&gt; eventStreamString = env.addSource(eventsConsumer).name("Event Consumer"); //      .        Hello eventStreamString = eventStreamString.filter(x -&gt; x.contains("Hello")); //         json      JSONObject DataStream&lt;JSONObject&gt; jsonEventStream = eventStreamString.flatMap(new FlatMapFunction&lt;String, JSONObject&gt;() { @Override public void flatMap(String value, Collector&lt;JSONObject&gt; out) throws Exception { try{ //        json out.collect(new JSONObject(value)); } catch (JSONException e){} } }); //   stout  json-. jsonEventStream.print(); //    env.execute(); } }</span></span></code> </pre> <br>  <a href="https://ci.apache.org/projects/flink/flink-docs-release-1.4/quickstart/java_api_quickstart.html">About</a> how to quickly create a maven project with flink dependencies and small examples. <br><br>  <a href="https://ci.apache.org/projects/flink/flink-docs-release-1.4/dev/stream/operators/index.html">Here is a</a> detailed description of the DataStream API, with which you can perform almost any conversion with the data stream. <br></div></div><br>  The flink cluster can be started in yarn, mesos or with the help of separate (embedded in the flink package) task- and job-manager's. <br><br><div class="spoiler">  <b class="spoiler_title">Flink has a great web interface.</b> <div class="spoiler_text">  The web interface allows you to see how much data on which part of the graph is processed, how much a specific worker has processed, and how much a separate subtask of an individual worker has processed.  In the web-interface, you can display metrics, you can determine which part of the code slows down using the back-pressure mechanism.  Back-pressure determines what percentage of the data did not have time to filter through the graph section.  Example graph for our ETL: <br><br><img src="https://habrastorage.org/webt/rq/-8/ql/rq-8qltd71wkthptigq-7lb4jom.png" alt="image"><br></div></div><br>  In addition to the obvious task of storing data in the right format, we wrote code using Flink to solve the following problems: <br><br><ul><li>  Generate sessions for events.  Session becomes uniform for all events of one user_id.  Regardless, what was the source of the message. </li><li>  We enter the geo-information for each event (city, region, country, latitude and longitude). </li><li>  Calculate the “funnels”.  Our analysts describe a specific sequence of events.  We are looking for this sequence for a user within one client session and label events that have fallen into the funnel. </li><li>  The combination of data from different sources.  In order not to make unnecessary joines, it can be understood in advance that a column from table A may be needed in future in table B. This can be done at the processing stage. </li></ul><br>  For fast work of all this machinery, I had to do a couple of simple tricks: <br><br><ul><li>  All data is partitioned by user_id at the fill stage in kafka. </li><li>  We use redis as state storage.  Redis is simple, reliable and super fast when we talk about key-value storage. </li><li>  Get rid of all window functions.  No to all delays! </li></ul><br><h2>  <font color="#fd004c">Clickhouse</font> </h2><br>  At the time of design, Clickhouse looked like an ideal option for our storage and analytical tasks.  Column storage with compression (similar in structure to parquet), distributed query processing, sharding, replication, query sampling, nested tables, external dictionaries from mysql and any ODBC connection, data deduplication (albeit deferred), and many other goodies ... <br><br>  We started testing ClickHouse a week after the release, and to say that everything was rosy at once was to lie. <br><br>  There is no imputed allocation of access rights.  Users get through the xml file.  You cannot configure the readOnly user to access one database and full access to another database.  Either full or only reading. <br><br>  There is no normal join.  If the right side of the join does not fit in memory, I'm sorry.  No window functions.  But we decided to do this by building a “funnel” mechanism in Flink, which allows you to track sequences of events and tag them.  The minus of our “funnels” is that we cannot look at them retroactively before being added by the analyst.  Or you need to reprocess data. <br><br>  For a long time there was no normal ODBC driver.  This is a huge barrier to implement the database, because many BI (Tableau in particular) have this very interface.  Now there is no problem. <br><br>  Having been at the last conference on CH (December 12, 2017), the developers of the database encouraged me.  Most of the problems that I care about should be solved in the first quarter of 2018. <br><br>  Many people criticize ClickHouse for syntax, but I like it.  As one of my esteemed colleague put it, Clickhouse is a “database for programmers”.  And this is a little truth.  You can greatly simplify requests if you use the coolest and unique functionality.  For example, <a href="https://clickhouse.yandex/docs/ru/functions/higher_order_functions.html">higher order functions</a> .  Lambda calculations on arrays right in sql.  Is this a miracle ???  Or that I really liked - <a href="https://clickhouse.yandex/docs/ru/agg_functions/combinators.html%3Fhighlight%3Dcountif">combinators of aggregate functions</a> . <br><br>  This functionality allows attaching a set of suffixes (-if, -merge, -array) to functions, modifying the operation of this function.  Extremely interesting developments. <br><br>  Our Clickhouse solution is based on the ReplicatedReplacingMergeTree tabular engine. <br>  The distribution of data across the cluster looks like this: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/1f/hj/zm/1fhjzms7gkhc91qmeai4hrw5gcy.jpeg" alt="image"></div><br>  A distributed table is a wrapper over a local table (ReplicatedReplacingMergeTree) that all insert and select go to.  These tables deal with sharding data when inserting.  Queries to these tables will be distributed.  Data, if possible, is distributed distributed on remote servers. <br><br>  ReplicatedReplacingMergeTree is an engine that replicates data and at the same time, at every turn, it collapses duplicates on certain keys.  Keys for deduplication are specified when creating the table. <br><br><h2>  <font color="#fd004c">Summary</font> </h2><br>  This ETL scheme allowed us to have a replicable tolerant repository.  If there is an error in the code, we can always roll back the consumer offset to kafka and process part of the data again, without making any special efforts to move the data. </div><p>Source: <a href="https://habr.com/ru/post/347408/">https://habr.com/ru/post/347408/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../347398/index.html">Application Security with Citrix NetScaler</a></li>
+<li><a href="../347400/index.html">Security Week 1: Witnesses do not steal, old deep exploits, Google Play against swinishness</a></li>
+<li><a href="../347402/index.html">How can a beginner contribute to an open source project with 20K stars?</a></li>
+<li><a href="../347404/index.html">Scrum implementation by techie: real experience, pitfalls, tips & tricks</a></li>
+<li><a href="../347406/index.html">Python for teaching science informatics: Simulating Queuing Systems</a></li>
+<li><a href="../347410/index.html">Vacuuming IDEA Ultimate Code with Data Flow Analysis</a></li>
+<li><a href="../347412/index.html">Method for analyzing multichannel user interaction</a></li>
+<li><a href="../347418/index.html">Intel warns users about the "malfunction" of Specter-Meltdown patches</a></li>
+<li><a href="../347420/index.html">DevFest North in St. Petersburg. How it was</a></li>
+<li><a href="../347422/index.html">Linux-2018: the most promising distributions</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

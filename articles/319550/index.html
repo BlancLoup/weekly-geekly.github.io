@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Load balancing with Pacemaker and iPaddr (Active / Active cluster)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I want to tell you about another way to load balance. About Pacemaker and iPaddr (resource agent) and setting it up for an Active / Passive cluster ha...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Load balancing with Pacemaker and iPaddr (Active / Active cluster)</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/files/246/8dc/e38/2468dce38afd462fbb3ef3bf6d5e69d4.png"></p><br><p>  I want to tell you about another way to load balance.  About Pacemaker and iPaddr (resource agent) and setting it up for an Active / Passive cluster has already been said a lot, but I found very little information on the organization of a full Active / Active cluster using this module.  I will try to correct this situation. </p><br><p>  To begin, I will tell you more than this method of balancing is remarkable: </p><br><ul><li>  <strong>Lack of external balancer</strong> - On all the nodes in the cluster, one common virtual IP address is configured.  All requests are sent to him.  Nodes respond to requests to this address randomly and by agreement between themselves. </li><li>  <strong>High Availability</strong> - If one node falls, its responsibilities are picked up by the other. </li><li>  <strong>Easy setup</strong> - Setup is done in just 3-5 teams. <br><a name="habracut"></a></li></ul><br><h2 id="vvodnye-dannye">  Input data </h2><br><p>  Let's look at the picture at the beginning of the article, we will see the following devices: </p><br><ul><li>  <strong>Gateway</strong> - IP: 192.168.100.1 </li><li>  <strong>HostA</strong> - IP: 192.168.100.101 </li><li>  <strong>HostB</strong> - IP: 192.168.100.102 </li><li>  <strong>HostC</strong> - IP: 192.168.100.103 </li></ul><br><p>  Clients will contact the external address of our gateway, it will redirect all requests to the virtual IP 192.168.100.100, which will be configured on all three nodes of our cluster. </p><br><h2 id="podgotovka">  Training </h2><br><p> First of all, we need to make sure that all our nodes can contact each other via a single hostname, for reliability, it is better to immediately add node addresses to <code>/etc/hosts</code> : </p><br><pre> <code class="hljs css">192<span class="hljs-selector-class"><span class="hljs-selector-class">.168</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.100</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.101</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">hostA</span></span> 192<span class="hljs-selector-class"><span class="hljs-selector-class">.168</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.100</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.102</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">hostB</span></span> 192<span class="hljs-selector-class"><span class="hljs-selector-class">.168</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.100</span></span><span class="hljs-selector-class"><span class="hljs-selector-class">.103</span></span> <span class="hljs-selector-tag"><span class="hljs-selector-tag">hostC</span></span></code> </pre> <br><p>  Install all the necessary packages: </p><br><pre> <code class="bash hljs">yum install pcs pacemaker corosync <span class="hljs-comment"><span class="hljs-comment">#CentOS, RHEL apt-get install pcs pacemaker corosync #Ubuntu, Debian</span></span></code> </pre> <br><p>  When installing pcs creates a user <code>hacluster</code> , let's set a password for it: </p><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> CHANGEME | passwd --stdin hacluster</code> </pre> <br><p>  Further operations are performed on a single node. <br>  Configure authentication: </p><br><pre> <code class="bash hljs">pcs cluster auth HostA HostB HostC -u hacluster -p CHANGEME --force</code> </pre> <br><p>  Create and run a cluster “Cluster” of three nodes: </p><br><pre> <code class="bash hljs">pcs cluster setup --force --name Cluster hostA hostB hostC pcs cluster start --all</code> </pre> <br><p>  See the result: </p><br><pre> <code class="bash hljs">pcs cluster status</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Conclusion</b> <div class="spoiler_text"><pre> <code class="hljs sql">Cluster Status: Last updated: Thu Jan 19 12:11:49 2017 Last <span class="hljs-keyword"><span class="hljs-keyword">change</span></span>: Tue Jan <span class="hljs-number"><span class="hljs-number">17</span></span> <span class="hljs-number"><span class="hljs-number">21</span></span>:<span class="hljs-number"><span class="hljs-number">19</span></span>:<span class="hljs-number"><span class="hljs-number">05</span></span> <span class="hljs-number"><span class="hljs-number">2017</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> hacluster via crmd <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> hostA Stack: corosync <span class="hljs-keyword"><span class="hljs-keyword">Current</span></span> DC: hostA (<span class="hljs-keyword"><span class="hljs-keyword">version</span></span> <span class="hljs-number"><span class="hljs-number">1.1</span></span><span class="hljs-number"><span class="hljs-number">.14</span></span><span class="hljs-number"><span class="hljs-number">-70404</span></span>b0) - <span class="hljs-keyword"><span class="hljs-keyword">partition</span></span> <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> quorum <span class="hljs-number"><span class="hljs-number">3</span></span> nodes <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> resources configured <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span>: [ hostA hostB hostC ] PCSD <span class="hljs-keyword"><span class="hljs-keyword">Status</span></span>: hostA: <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span> hostB: <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span> hostC: <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span></code> </pre> </div></div><br><p>  <em>Some steps were borrowed from the <a href="https://habrahabr.ru/post/263091/">article</a> <a href="https://habrahabr.ru/users/lelik13a/" class="user_link">Lelik13a</a> , thanks to him for that.</em> </p><br><p>  In our particular case, neither quorum nor stonith is required by our cluster, so we boldly disable both: </p><br><pre> <code class="bash hljs">pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> no-quorum-policy=ignore pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> stonith-enabled=<span class="hljs-literal"><span class="hljs-literal">false</span></span></code> </pre> <br><p>  Further, if you have resources for which this is necessary, you can refer to the <a href="https://habrahabr.ru/users/silvar/" class="user_link">Silvar</a> <a href="https://habrahabr.ru/post/200348/">article</a> . </p><br><h2 id="para-slov-o-mac-adresah">  A few words about MAC addresses </h2><br><p>  Before we begin, we need to understand that all our nodes will be configured with the same IP and the same mac-address, on request for which they will give answers one by one. </p><br><p>  The problem is that each switch works in such a way that during operation it creates its own switching table, in which each mac-address is associated with a specific physical port.  The switching table is created automatically, and serves to unload the network from "unnecessary" L2-packets. </p><br><p>  So, if the mac-address is in the switching table, then the packets will be sent only to one port to which this mac-address is assigned. </p><br><p>  Unfortunately, this does not suit us and we need to make sure that all our hosts in the cluster simultaneously "see" all these packages.  Otherwise, this scheme will not work. </p><br><p>  First we need to make sure that the mac address we are using is a <a href="https://en.wikipedia.org/wiki/Multicast_address">multicast</a> address.  That is, it is in the range of <code>01:00:5E:00:00:00</code> - <code>01:00:5E:7F:FF:FF</code> .  Having received a packet for such an address, our switch will transmit it to all other ports, except the source port.  In addition, some managed switches allow you to configure and define multiple ports for a specific MAC address. </p><br><p>  You may also have to disable the <a href="http://xgu.ru/wiki/Dynamic_ARP_Protection">Dynamic ARP Inspection</a> feature if it is supported by your switch, as it may cause blocking of arp responses from your hosts. </p><br><h2 id="nastroyka-ipaddr-resursa">  Configuring the iPaddr Resource </h2><br><p>  So we got to the most interesting. </p><br><p>  There are currently two versions of the iPaddr with cloning support: </p><br><ul><li><p>  <strong>IPaddr2</strong> ( <code>ocf:heartbeat:IPaddr2</code> ) - Standard agent resource for creating and running a virtual IP address.  It is usually installed along with the standard <code>resource-agents</code> package. </p><br></li><li>  <strong>IPaddr3</strong> ( <code>ocf:percona:IPaddr3</code> ) - An improved version of iPadcon from Percona. <br>  This version includes work-oriented fixes in the clone mode. <br>  Requires separate installation. </li></ul><br><p>  To install IPaadr3, run these commands on each host: </p><br><pre> <code class="bash hljs">curl --create-dirs -o /usr/lib/ocf/resource.d/percona/IPaddr3 \ https://raw.githubusercontent.com/percona/percona-pacemaker-agents/master/agents/IPaddr3 chmod u+x /usr/lib/ocf/resource.d/percona/IPaddr</code> </pre> <br><p>  Further operations are performed on a single node. </p><br><p>  Create a resource for our virtual IP address: </p><br><pre> <code class="bash hljs">pcs resource create ClusterIP ocf:percona:IPaddr3 \ params ip=<span class="hljs-string"><span class="hljs-string">"192.168.100.100"</span></span> cidr_netmask=<span class="hljs-string"><span class="hljs-string">"24"</span></span> nic=<span class="hljs-string"><span class="hljs-string">"eth0"</span></span> clusterip_hash=<span class="hljs-string"><span class="hljs-string">"sourceip-sourceport"</span></span> \ op monitor interval=<span class="hljs-string"><span class="hljs-string">"10s"</span></span></code> </pre> <br><p>  <strong>clusterip_hash</strong> - here you need to specify the desired type of query distribution. <br>  There can be three options: </p><br><ul><li>  <code>sourceip</code> - distribution only by source IP-address, this ensures that all requests from one source will always go to the same host. </li><li>  <code>sourceip-sourceport</code> - distribution by source IP-address and outgoing port.  Each new connection will fall on a new host.  The best option. </li><li>  <code>sourceip-sourceport-destport</code> - distribution by source IP-address outgoing port and destination port.  Provides the best distribution, it is important if you have several services running on different ports. </li></ul><br><p>  For iPaddr2, you must specify the parameter <code>mac=01:00:5E:XX:XX:XX</code> with the mac-address from the multicast range.  IPaddr3 installs it automatically. </p><br><p>  Now we will incline our resource: </p><br><pre> <code class="bash hljs">pcs resource <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> ClusterIP \ meta <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-max=3 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-node-max=3 globally-unique=<span class="hljs-literal"><span class="hljs-literal">true</span></span></code> </pre> <br><p>  This action will create the following rule in <code>iptables</code> : </p><br><div class="spoiler">  <b class="spoiler_title">Rule</b> <div class="spoiler_text"><pre> <code class="hljs pgsql">Chain <span class="hljs-keyword"><span class="hljs-keyword">INPUT</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">policy</span></span> ACCEPT) target prot opt source destination <span class="hljs-keyword"><span class="hljs-keyword">all</span></span> <span class="hljs-comment"><span class="hljs-comment">-- anywhere 192.168.100.100 CLUSTERIP hashmode=sourceip-sourceport clustermac=01:00:5E:21:E3:0B total_nodes=3 local_node=1 hash_init=0</span></span></code> </pre> </div></div><br><p>  As you can see, the <code>CLUSTERIP</code> module is used here. </p><br><p>  It works as follows: </p><br><p>  All packages come to three nodes, but all three Linux kernels know how many nodes receive packets, all three cores number received packets according to a single rule, and, knowing how many nodes and the number of their node, each server processes only its part of the packets, the other packets server ignored - they are processed by other servers. </p><br><p>  Read more about this in this <a href="http://gentoo-wiki.vfose.ru/wiki/%25D0%25A0%25D0%25B0%25D1%2581%25D0%25BF%25D1%2580%25D0%25B5%25D0%25B4%25D0%25B5%25D0%25BB%25D0%25B5%25D0%25BD%25D0%25B8%25D0%25B5_%25D0%25BD%25D0%25B0%25D0%25B3%25D1%2580%25D1%2583%25D0%25B7%25D0%25BA%25D0%25B8_%25D0%25BD%25D0%25B0_LDAP-%25D1%2581%25D0%25B5%25D1%2580%25D0%25B2%25D0%25B5%25D1%2580%25D0%25B0_%25D1%2581%25D1%2580%25D0%25B5%25D0%25B4%25D1%2581%25D1%2582%25D0%25B2%25D0%25B0%25D0%25BC%25D0%25B8_iptables_CLUSTERIP">article</a> . </p><br><p>  Let's look at our cluster again: </p><br><pre> <code class="bash hljs">pcs cluster status</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Conclusion</b> <div class="spoiler_text"><pre> <code class="hljs sql">Cluster Status: Cluster name: cluster Last updated: Tue Jan 24 19:38:41 2017 Last <span class="hljs-keyword"><span class="hljs-keyword">change</span></span>: Tue Jan <span class="hljs-number"><span class="hljs-number">24</span></span> <span class="hljs-number"><span class="hljs-number">19</span></span>:<span class="hljs-number"><span class="hljs-number">25</span></span>:<span class="hljs-number"><span class="hljs-number">44</span></span> <span class="hljs-number"><span class="hljs-number">2017</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> hacluster via crmd <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> hostA Stack: corosync <span class="hljs-keyword"><span class="hljs-keyword">Current</span></span> DC: hostA (<span class="hljs-keyword"><span class="hljs-keyword">version</span></span> <span class="hljs-number"><span class="hljs-number">1.1</span></span><span class="hljs-number"><span class="hljs-number">.14</span></span><span class="hljs-number"><span class="hljs-number">-70404</span></span>b0) - <span class="hljs-keyword"><span class="hljs-keyword">partition</span></span> <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> quorum <span class="hljs-number"><span class="hljs-number">3</span></span> nodes <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> resources configured <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span>: [ hostA hostB hostC ] <span class="hljs-keyword"><span class="hljs-keyword">Full</span></span> <span class="hljs-keyword"><span class="hljs-keyword">list</span></span> <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> resources: <span class="hljs-keyword"><span class="hljs-keyword">Clone</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Set</span></span>: ClusterIP-<span class="hljs-keyword"><span class="hljs-keyword">clone</span></span> [ClusterIP-<span class="hljs-keyword"><span class="hljs-keyword">test</span></span>] (<span class="hljs-keyword"><span class="hljs-keyword">unique</span></span>) ClusterIP:<span class="hljs-number"><span class="hljs-number">0</span></span> (ocf:percona:IPaddr3): Started hostA ClusterIP:<span class="hljs-number"><span class="hljs-number">1</span></span> (ocf:percona:IPaddr3): Started hostB ClusterIP:<span class="hljs-number"><span class="hljs-number">2</span></span> (ocf:percona:IPaddr3): Started hostC PCSD <span class="hljs-keyword"><span class="hljs-keyword">Status</span></span>: hostA: <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span> hostB: <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span> hostC: <span class="hljs-keyword"><span class="hljs-keyword">Online</span></span></code> </pre> </div></div><br><p>  IP addresses have started successfully.  We try to contact them outside. <br>  If everything works as it should, then this setting can be considered complete. </p><br><h2 id="ssylki">  Links </h2><br><ul><li>  <a href="https://abc-unix.ru/docs/abc/126_cluster_pcs_lvm_gfs.html">High Availability Cluster (HA-cluster) based on Pacemaker</a> </li><li>  <a href="https://habrahabr.ru/post/263091/">Pacemaker-based HA-Cluster for LXC and Docker container virtualization</a> </li><li>  <a href="https://habrahabr.ru/post/200348/">pacemaker: how to finish off lying</a> </li><li>  <a href="https://www.percona.com/blog/2014/01/10/using-clusterip-load-balancer-pxc-prm-mha/">The use of iptables load balancer for PXC, PRM, MHA and NDB</a> </li><li>  <a href="https://www.sebastien-han.fr/blog/2012/09/16/pacemaker-load-balancing-with-clone/">Pacemaker load-balancing with Clone</a> </li><li>  <a href="http://gentoo-wiki.vfose.ru/wiki/%25D0%25A0%25D0%25B0%25D1%2581%25D0%25BF%25D1%2580%25D0%25B5%25D0%25B4%25D0%25B5%25D0%25BB%25D0%25B5%25D0%25BD%25D0%25B8%25D0%25B5_%25D0%25BD%25D0%25B0%25D0%25B3%25D1%2580%25D1%2583%25D0%25B7%25D0%25BA%25D0%25B8_%25D0%25BD%25D0%25B0_LDAP-%25D1%2581%25D0%25B5%25D1%2580%25D0%25B2%25D0%25B5%25D1%2580%25D0%25B0_%25D1%2581%25D1%2580%25D0%25B5%25D0%25B4%25D1%2581%25D1%2582%25D0%25B2%25D0%25B0%25D0%25BC%25D0%25B8_iptables_CLUSTERIP">Load sharing on LDAP servers using iptables CLUSTERIP</a> </li><li>  <a href="https://github.com/ClusterLabs/pacemaker/blob/master/doc/Clusters_from_Scratch/en-US/Ch-Active-Active.txt">pacemaker / Ch-Active-Active.txt at master · ClusterLabs / pacemaker</a> </li><li>  <a href="http://clusterlabs.org/doc/en-US/Pacemaker/1.1/html/Clusters_from_Scratch/_clone_the_ip_address.html">9.5.</a>  <a href="http://clusterlabs.org/doc/en-US/Pacemaker/1.1/html/Clusters_from_Scratch/_clone_the_ip_address.html">Clone the IP address</a> </li></ul></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/319550/">https://habr.com/ru/post/319550/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../319534/index.html">Registration is open or NeoQUEST, you are just a space</a></li>
+<li><a href="../319536/index.html">Performance Optimization in React</a></li>
+<li><a href="../319542/index.html">How I did the fastest site in Thailand</a></li>
+<li><a href="../319544/index.html">How well do Assassin's Creed II missions use the open world?</a></li>
+<li><a href="../319548/index.html">Algorithm for finding the equivalent points of the abscissa axis of a polynomial function</a></li>
+<li><a href="../319552/index.html">Step-by-step configuration of web services in OTRS 5</a></li>
+<li><a href="../319554/index.html">The digest of interesting materials for the mobile # 186 developer (January 9-15)</a></li>
+<li><a href="../319558/index.html">VoIP telephony. Asterisk. Non-standard approach to everything. Part 2</a></li>
+<li><a href="../319562/index.html">Android Tips and Tricks</a></li>
+<li><a href="../319564/index.html">Simple computer control with voice</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

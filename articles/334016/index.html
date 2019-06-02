@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Resolving PTRACE_ATTACH Restriction Issues in Docker Containers</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the past two years, we have been using Docker extensively both for developing and executing systems in a production environment, and all current pr...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Resolving PTRACE_ATTACH Restriction Issues in Docker Containers</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/web/fbb/ca3/954/fbbca395443740c4b76335a6b258bf84.png"></p><br><p>  In the past two years, we have been using Docker extensively both for developing and executing systems in a production environment, and all current products for our customers are developed specifically for this containerization system.  It is worth noting that Docker changes quite strongly from version to version, adding both additional features (Swarm, Compose) and additional tools for enhancing the security and control of applications. <a name="habracut"></a></p><br><p>  So with great surprise, we recently discovered that a container that was developed and tested some time ago does not work in the current version of Docker.  The fact is that the container was not quite typical and the <strong>strace</strong> utility was used inside it to analyze the process behavior.  We previously <a href="https://habrahabr.ru/post/332544/">wrote</a> in detail about this application of the utility on Habrahabr. </p><br><p>  Today, our developers finally got their hands on the implementation of this problem <br>  <a href="https://github.com/bwsw/webshell">container</a> to the application and they find that it no longer works.  Having begun to understand the reason for this behavior, we saw that strace, specifically ptrace, cannot join processes and gives an error of the form: </p><br><pre><code class="hljs vhdl">strace: attach: ptrace(PTRACE_ATTACH, ...): Operation <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> permitted Could <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> attach <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> <span class="hljs-keyword"><span class="hljs-keyword">process</span></span>. <span class="hljs-keyword"><span class="hljs-keyword">If</span></span> your uid matches the uid <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> the target <span class="hljs-keyword"><span class="hljs-keyword">process</span></span>, check the setting <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> /proc/sys/kernel/yama/ptrace_scope, <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> try again as the root user. <span class="hljs-keyword"><span class="hljs-keyword">For</span></span> more details, see /etc/sysctl.d/<span class="hljs-number"><span class="hljs-number">10</span></span>-ptrace.conf</code> </pre> <br><p>  The case is quite rare, and the solution is not easily identified by the collective mind of the developers, although there are quite a lot of different clues.  So what was the matter? </p><br><h2 id="podsistema-seccomp">  Seccomp subsystem </h2><br><p>  In new Linux kernels, the new Docker uses the seccomp kernel function, which allows you to block system calls inside the container.  The Docker documentation for this feature is <a href="https://docs.docker.com/engine/security/seccomp/">here</a> .  Ptrace is among the blocked system calls.  The mechanism is <code>--security-opt seccomp=/path/to/file.json</code> using the Docker run <code>--security-opt seccomp=/path/to/file.json</code> , which allows you to specify a file that describes what is allowed and what is not.  Since our container works in a protected environment, we disable this feature completely: <code>--security-opt seccomp=unconfined</code> . </p><br><h2 id="povedenie-ptrace">  Ptrace behavior </h2><br><p>  Strace gave us a hint that there is a certain pseudo-file <code>/proc/sys/kernel/yama/ptrace_scope</code> , which also describes the limitations of ptrace.  We look into the kernel <a href="https://www.kernel.org/doc/Documentation/security/Yama.txt">documentation</a> and find out that everything is not as simple as it was before.  Values ​​of 0-3 in this pseudo file significantly change the behavior of ptrace: </p><br><ul><li>  0 - the UID of the tracing process must match the UID of the traced process or be 0 (the behavior as it was before); </li><li>  1 - limited ptrace, processes must be related, the traced process must be descendant <br>  the tracing or tracing process must have a UID = 0; </li><li>  2 - for the tracing process, the CAP_SYS_PTRACE flag must be set or the child sets the PTRACE_TRACEME flag for itself; </li><li>  3 - tracing is prohibited. </li></ul><br><p>  By completing </p><br><pre> <code class="bash hljs">docker <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> -it &lt;container&gt; cat /proc/sys/kernel/yama/ptrace_scope</code> </pre> <br><p>  we found that the file is set to 1, respectively, not being a related process, strace could not connect to the process being traced.  At the same time, an attempt to set the value 0 to / proc / sys / kernel / yama / ptrace_scope was unsuccessful, a message was received that "/ proc is read only". </p><br><h2 id="privilegirovannyy-zapusk-konteynera">  Privileged Container Launch </h2><br><p>  The Docker flag helped us to overcome this limitation, allowing privileged execution: <code>--privileged</code> , and in the application initialization we added setting the value "0" to the / proc / sys / kernel / yama / ptrace_scope pseudo file. </p><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> 0 &gt; /proc/sys/kernel/yama/ptrace_scope</code> </pre> <br><p>  As a result, the problem was successfully solved.  An example of the solution and arguments for running the container can be found in our GitHub repository for web ssh <a href="https://github.com/bwsw/webshell">proxy</a> . </p><br><blockquote>  It was interesting to note that the Linux kernel receives significant security enhancements and additional tools for managing security settings, which are difficult to learn about if you don’t keep a hand on the pulse and work within applications that develop over long life cycles in stable environments.  One fine day you discover a new amazing world of improvements that “suddenly” showed themselves thanks to such an annoying occasion. </blockquote></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/334016/">https://habr.com/ru/post/334016/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../334004/index.html">Inside Docker Networks: Linking Docker Swarm Containers and Overlay Networks</a></li>
+<li><a href="../334006/index.html">How the advertising network Vungle tries to make life difficult for its customers</a></li>
+<li><a href="../334008/index.html">FIAS is dead, long live ... long live ... yes it is not clear that for now</a></li>
+<li><a href="../334010/index.html">Runtime repainting application</a></li>
+<li><a href="../334012/index.html">Release CLion 2017.2: integration with Clang-Tidy, C ++ 17 in the wizard to create a new project, improving the performance of the IDE</a></li>
+<li><a href="../334018/index.html">Dotty - the future of the Scala language</a></li>
+<li><a href="../334020/index.html">Piracy and four currencies</a></li>
+<li><a href="../334022/index.html">Confederations Cup: what is behind the smooth connection at the stadium</a></li>
+<li><a href="../334024/index.html">Extreme Networks 802.11ac Wave 2 ─ new generation wireless solutions</a></li>
+<li><a href="../334026/index.html">Zimbra - Teamwork</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Dark moments of SELinux</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="During the operation of systems with SELinux, I identified several interesting cases, the solutions of which are hardly described on the Internet. Tod...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Dark moments of SELinux</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/getpro/habr/post_images/36a/f5f/be8/36af5fbe85a5884be84a5e13b7aa8a4a.png" align="left">  During the operation of systems with SELinux, I identified several interesting cases, the solutions of which are hardly described on the Internet.  Today I decided to share my observations with you in the hope that the number of SELinux supporters will increase a little :) </p><a name="habracut"></a><br><h2 id="0-pereustanovka-policy-package">  0. Reinstall policy package </h2><br><p>  If you didn’t know, I’m reporting: the whole SELinux is through the file, and there is no magic there.  Therefore, you can right when SELinux is on, reinstall the policy package if something went wrong. <br>  Example for centos 7 &amp; selinux-policy-minimum </p><br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh setenforce 0 semanage export &gt; exports.semanage yum remove -y selinux-policy-minimum rm -rf /etc/selinux/minimum yum install -y selinux-policy-minimum semodule -RB semanage import -f exports.semanage</span></span></code> </pre> <br><h2 id="1-selinux-v-permissive-mode-no-chast-komand-ne-rabotaet">  1. SELinux in permissive mode, but some commands do not work </h2><br><h3 id="invalid-process-context">  Invalid process context </h3><br><p>  The reason is that some programs try to change the context (by analogy with setuid / setgid) before exec (3), but use the wrong context for this. </p><br><p>  Example: a crond daemon that processes the crontab of the user user whose context is unknown.  In this case, it execlp (3) returns the error 'Invalid context'. </p><br><h4 id="reshenie">  Decision </h4><br><ol><li>  Make policy reload (semodule -R) </li><li>  See which user is used </li><li>  View which selinux user is for him (semanage login -l) </li><li>  Ensure that the / etc / selinux / $ type / contexts / users / $ username file is present </li><li>  If there is no file, reset the defaults by reinstalling the policy package. </li></ol><br><h3 id="invalid-file-context">  Invalid file context </h3><br><p>  If for some reason the author did not happen and the file was left without any context, or with garbage instead of context, access to it can also be blocked due to the fact that open (3) will fall when trying to compare contexts. </p><br><h4 id="reshenie-1">  Decision </h4><br><ol><li>  Make restorecon / path -Rv </li><li>  Make sure the contexts are correct and that all modules are loaded. </li><li>  Make policy reload (semodule -R) </li><li>  If it did not help, reset the defaults by reinstalling the policy package. </li></ol><br><h2 id="2-posle-vklyucheniya-selinux-i-perezagruzki-vse-processy-zapuscheny-ot-kernel_t--v-logah-mnogo-oshibok-pro-dostup-k-kernel_t">  2. After enabling SELinux and rebooting, all processes are started from kernel_t / There are many errors in the logs about accessing kernel_t </h2><br><p>  How does SELinux turn on? </p><br><ol><li>  Create file /.autorelabel </li><li>  Reboot, the kernel sees this file and starts autorelabeling </li><li>  Restart again and start the kernel with the context kernel_t. </li></ol><br><p>  Problems occur at stage two: the kernel knows only about the contexts of the modules that were explicitly included <strong>before the</strong> reboot.  For example, if the systemd module was not enabled, then: </p><br><ul><li>  The kernel is running with the context kernel_t </li><li>  The context transition rules from kernel_t to systemd do not work, because  relabel did not assign him the context init_exec_t, systemd inherits the context kernel_t </li><li>  For the daemons that systemd runs, the context transition rules also do not work, since the rules are written for the init_t context, not the kernel_t.  All daemons are running from kernel_t. </li><li>  .... </li><li>  FAIL </li></ul><br><h3 id="reshenie-2">  Decision </h3><br><ul><li>  Before creating /.autorelabel, manually turn on all the necessary modules using the semodule -e $ module command, or </li><li>  Do restorecon -R / after reboot and reboot the system again, or </li><li>  Make systemctl daemon-reexec and restart all daemons manually if the second reboot is not acceptable </li><li>  Use the offrestorecon * utility instead of /.autorelabel </li></ul><br><h2 id="3-posle-obnovleniya-policy-package-nichego-ne-rabotaet-vse-komandy-pishut-oshibki">  3. After updating the policy package, nothing works, all commands write errors </h2><br><p>  This problem occurs when, after the update, the cyclic dependencies between modules or contexts cannot be resolved.  For example: </p><br><ul><li>  In version 1.0, the settings were made and the local_module module was added. </li><li>  local_module exported context local_module_file_t </li><li>  Was this context assigned with semanage to "/opt/local(/.*)?" </li></ul><br><p>  When upgrading to version 1.1, the local_module module is installed after the context settings for "/ opt / local" are applied, which can lead to a circular dependency.  In fact, this happens rarely from one module, but when there are 30 of them and they link to each other and carry some of the settings "outside" (via semanage fcontext or semanage port for example), then problems are almost guaranteed. </p><br><h3 id="reshenie-3">  Decision </h3><br><ul><li>  Rearrange the policy package (see point 0), or </li><li>  Run sequentially BEFORE update <br><pre> <code class="bash hljs">semanage <span class="hljs-built_in"><span class="hljs-built_in">export</span></span> &gt; outfile semanage fcontext -D semanage user -D semanage port -D semanage login -D <span class="hljs-comment"><span class="hljs-comment"># update your packages semanage import -f outfile</span></span></code> </pre> </li></ul><br><h2 id="4-dolgaya-perezagruzka-pri-vklyuchenii-selinux">  4. Long reboot when SELinux is enabled </h2><br><p>  Autorelabeling is a pain for owners of large servers.  An average server with a database can reboot for 3-4 hours due to the inclusion of SELinux, which is absolutely unacceptable for business. </p><br><h3 id="reshenie-4">  Decision </h3><br><p>  In fact, the labels on the files are in the extended-file system attributes, which can be accessed using the getfattr (1) / setfattr (1) / attr (1) commands.  The attribute is called security.selinux and contains the context as a string.  At the same time, even when SELinux is turned off, the matchpathcon command from libselinux-utils works, which shows the default context for a particular path. </p><br><p>  Combining both of these facts, we get the opportunity to make audorelabel right while the server is running, without spending time on it when rebooting. </p><br><p>  This afternoon I put my code on <a href="https://github.com/kreon/offrestorecon">github</a> , a utility called <strong>offrestorecon</strong> .  Do not forget to turn on all the necessary modules and delete the file /.autorelabel! </p><br><h2 id="5-posle-perezagruzki-sleteli-vse-nastroyki-peremennyh">  5. After the reboot, all the variable settings </h2><br><h3 id="reshenie-5">  Decision </h3><br><p>  Use the -P switch for setsebool, or semanage boolean </p><br><h1 id="vmesto-poslesloviya">  Instead of an afterword </h1><br><p>  If you are interested in the SELinux topic, send comments on your strange cases and their solutions, I will add them to this article.  It is possible that this will make the life of the following security-administrators a little easier. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/332886/">https://habr.com/ru/post/332886/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../332876/index.html">Port forwarding or how to get to the network for NAT using Node.JS</a></li>
+<li><a href="../332878/index.html">Enter the rating of the participant "Habra" and "Toaster" on "My Circle"</a></li>
+<li><a href="../332880/index.html">The critical vulnerability of the BIND authentication mechanism allows you to steal and modify DNS server records</a></li>
+<li><a href="../332882/index.html">Hacking Clocktower - The First Fear</a></li>
+<li><a href="../332884/index.html">About mobile library and love for React Native</a></li>
+<li><a href="../332888/index.html">No rest for the wicked. Photo report from the far reaches of Russia, where we were thanks to Roshydromet</a></li>
+<li><a href="../332890/index.html">Running Java classes and non-textbook JARs</a></li>
+<li><a href="../332892/index.html">Vivaldi Sync: Answers to Questions</a></li>
+<li><a href="../332896/index.html">Privileged ports cause global warming</a></li>
+<li><a href="../332898/index.html">Why changes in the new Phoenix 1.3 are so important</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

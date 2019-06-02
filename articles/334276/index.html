@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Zabbix + RocksDB - migration and first impressions</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Some time ago, I was fascinated by the Facebook team that had filed a special base for monitoring purposes - RocksDB. On closer examination, it turned...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Zabbix + RocksDB - migration and first impressions</h1><div class="post__text post__text-html js-mediator-article">  Some time ago, I was fascinated by the Facebook team that had filed a special base for monitoring purposes - RocksDB.  On closer examination, it turned out that it is a fork of an earlier Google project, it archives data on the fly and, being “in the soul” of NoSQL, it fits in with MySQL as a storage engine. <br><br>  Next came the news that MariaDB included this engine in upstream from version 10.2.  Nishtyak like archiving on the fly and ttl on individual lines under the hood and beckoned to try it on something appropriate ... <br><br>  Zabbix turned out to be a suitable data generator on my farm, and they also decided to pull it onto a new hardware.  But "out of the box" zabbix about rocksdb is not up to date, so I had to poshamanit and test.  If you are interested in the results and conclusions - <a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h3>  Restrictions </h3><br>  The first problem that came out during planning is that myrocks does not know how to <code>CONSTRAINT FOREIGN KEY</code> .  Not able, and all.  And not planned.  NoSQL, however.  It would seem that on this you can minimize the whole project, but a close look at the zabbix data schema shows that the hottest tables — history_uint, history_text, history_log and history_str — where, in fact, data come from all source <s>slots</s> and do not contain foreign keys.  Probably, the zabbix team did it deliberately in order to simplify these tables - but this is all for us. <br><br>  It is worth mentioning here that the creators of myrocks <a href="https://github.com/facebook/mysql-5.6/wiki/Getting-Started-with-MyRocks">do not recommend</a> using a mix of two storage engines in one application, referring to the fact that transactions will not be atomic in this case. <br><br>  But careful consideration of the output of <code>grep -r 'history_uint' zabbix-3.2.5</code> leads to the conclusion that although zabbix does commit transactions when adding values, inside these transactions it does not touch other tables (why should it, really?) - so we crawl through. <br><br>  You also need to change the collation on the plates that we transfer to rocksdb on latin1_bin or utf8_bin.  And in general - it is better to get rid of the latin1 encoding.  This resulted in the following perl-script for converting dump: <br><br><pre> <code class="hljs smalltalk">#!/usr/bin/perl <span class="hljs-string"><span class="hljs-string">$t</span></span>ablename=<span class="hljs-string"><span class="hljs-string">''</span></span>; <span class="hljs-string"><span class="hljs-string">$h</span></span>as_constraints=<span class="hljs-number"><span class="hljs-number">0</span></span>; while(&lt;&gt;) { s/<span class="hljs-type"><span class="hljs-type">CHARACTER</span></span> <span class="hljs-type"><span class="hljs-type">SET</span></span> latin1//; if(/<span class="hljs-type"><span class="hljs-type">CREATE</span></span> <span class="hljs-type"><span class="hljs-type">TABLE</span></span> `(.*)`/) { <span class="hljs-string"><span class="hljs-string">$t</span></span>ablename=<span class="hljs-string"><span class="hljs-string">$1</span></span>; <span class="hljs-string"><span class="hljs-string">$h</span></span>as_constraints=<span class="hljs-number"><span class="hljs-number">0</span></span>; }; if(/<span class="hljs-type"><span class="hljs-type">CONSTRAINT</span></span>/) { <span class="hljs-string"><span class="hljs-string">$h</span></span>as_constraints=<span class="hljs-number"><span class="hljs-number">1</span></span>; }; if(/<span class="hljs-type"><span class="hljs-type">ENGINE</span></span>=<span class="hljs-type"><span class="hljs-type">InnoDB</span></span>/ and <span class="hljs-string"><span class="hljs-string">$h</span></span>as_constraints==<span class="hljs-number"><span class="hljs-number">0</span></span>) { s/<span class="hljs-type"><span class="hljs-type">ENGINE</span></span>=<span class="hljs-type"><span class="hljs-type">InnoDB</span></span>/<span class="hljs-type"><span class="hljs-type">ENGINE</span></span>=<span class="hljs-type"><span class="hljs-type">ROCKSDB</span></span>/; s/<span class="hljs-type"><span class="hljs-type">CHARSET</span></span>=([^ ^;]+)/<span class="hljs-type"><span class="hljs-type">CHARSET</span></span>=<span class="hljs-string"><span class="hljs-string">$1</span></span> <span class="hljs-type"><span class="hljs-type">COLLATE</span></span>=<span class="hljs-string"><span class="hljs-string">$1</span></span>_bin/; }; print <span class="hljs-string"><span class="hljs-string">$_</span></span>; };</code> </pre><br><h3>  Assembly </h3><br>  I collected mariadb from source to .deb-packages and put them already.  It looks something like this (OS - debian 8.8): <br><br><pre> <code class="hljs sql">apt-get <span class="hljs-keyword"><span class="hljs-keyword">update</span></span> apt-<span class="hljs-keyword"><span class="hljs-keyword">get</span></span> <span class="hljs-keyword"><span class="hljs-keyword">install</span></span> git g++ cmake libbz2-dev libaio-dev bison zlib1g-dev libsnappy-dev <span class="hljs-keyword"><span class="hljs-keyword">build</span></span>-essential vim cmake perl bison ncurses-dev libssl-dev libncurses5-dev libgflags-dev libreadline6-dev libncurses5-dev libssl-dev liblz4-dev gdb smartmontools apt-<span class="hljs-keyword"><span class="hljs-keyword">get</span></span> <span class="hljs-keyword"><span class="hljs-keyword">install</span></span> dpkg-dev devscripts chrpath dh-apparmor dh-systemd dpatch libboost-dev libcrack2-dev libjemalloc-dev libreadline-gplv2-dev libsystemd-dev libxml2-dev unixodbc-dev apt-<span class="hljs-keyword"><span class="hljs-keyword">get</span></span> <span class="hljs-keyword"><span class="hljs-keyword">install</span></span> libjudy-dev libkrb5-dev libnuma-dev libpam0g-dev libpcre3-dev pkg-config libreadline-gplv2-dev <span class="hljs-keyword"><span class="hljs-keyword">uuid</span></span>-dev git <span class="hljs-keyword"><span class="hljs-keyword">clone</span></span> https://github.com/MariaDB/server.git mariadb<span class="hljs-number"><span class="hljs-number">-10.2</span></span> cd mariadb<span class="hljs-number"><span class="hljs-number">-10.2</span></span> git checkout <span class="hljs-number"><span class="hljs-number">10.2</span></span> git submodule init git submodule <span class="hljs-keyword"><span class="hljs-keyword">update</span></span> ./debian/autobake-deb.sh</code> </pre><br><h3>  Installation </h3><br>  Not without additional dependencies - <br><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">wget</span></span> http://releases.galeracluster.com/debian/pool/main/g/galera-3/galera-3_25.3.20-1jessie_amd64.deb dpkg -i galera-<span class="hljs-number"><span class="hljs-number">3</span></span><span class="hljs-regexp"><span class="hljs-regexp">*.deb</span></span> apt-get install gawk libdbi-perl socat dpkg -i mysql-common<span class="hljs-regexp"><span class="hljs-regexp">*.deb</span></span> mariadb-server<span class="hljs-regexp"><span class="hljs-regexp">*.deb</span></span> mariadb-plugin<span class="hljs-regexp"><span class="hljs-regexp">*.deb</span></span> mariadb-client<span class="hljs-regexp"><span class="hljs-regexp">*.deb</span></span> libm<span class="hljs-regexp"><span class="hljs-regexp">*.deb</span></span></code> </pre><br><h3>  Build net-snmp </h3><br>  For reasons that are still unclear, net-snmp from debian results in a non-working zabbix assembly - valgrind swears at memory leaks where everything should work quite linearly.  As a result, zabbiks falls. <br><br>  Rescues - net-snmp bulkhead from sources with almost all debian patches superimposed. <br>  I have gathered net-snmp-code-368636fd94e484a5f4be5c0fcd205f507463412a.zip <br>  Perhaps the fresher ones are also being collected. <br>  You will also need a debian archive manager with a debian directory. <br>  Then something like this: <br><br><pre> <code class="hljs bash">version=368636fd94e484a5f4be5c0fcd205f507463412a debian_version=net-snmp_5.7.2.1+dfsg-1.debian.tar.xz unzip -q net-snmp-code-<span class="hljs-variable"><span class="hljs-variable">${version}</span></span>.zip <span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> net-snmp-code-<span class="hljs-variable"><span class="hljs-variable">${version}</span></span> tar -xvJf ../<span class="hljs-variable"><span class="hljs-variable">$debian_version</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> 03_makefiles.patch 26_kfreebsd.patch 27_kfreebsd_bug625985.patch fix_spelling_error.patch fix_logging_option.patch fix_man_error.patch after_RFC5378 fix_manpage-has-errors_break_line.patch fix_manpage-has-errors-from-man.patch agentx-crash.patch TrapReceiver.patch ifmib.patch CVE-2014-3565.patch; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> rm debian/patches/<span class="hljs-variable"><span class="hljs-variable">$i</span></span> touch debian/patches/<span class="hljs-variable"><span class="hljs-variable">$i</span></span> <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> cp ../rules debian/rules dpkg-buildpackage -d -b <span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> .. dpkg -i *.deb</code> </pre><br>  Focus with rules-file - I turned off --with-mysql (replaced with --without-mysql) in it, so as not to tie net-snmp to mysql - then, when experimenting with versions of mariadb, you do not need to reassemble net-snmp.  You can and lower. <br><br><h3>  Build zabbix </h3><br>  The zabbix itself has to be assembled after installing mariadb, since it is linked to the dynamic libraries that arrive with it.  I did something like this: <br><br><pre> <code class="hljs bash">zabbixversion=<span class="hljs-string"><span class="hljs-string">"3.2.7"</span></span> apt-get install libsnmp-dev libcurl4-openssl-dev python-requests <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> [ ! -f zabbix-<span class="hljs-variable"><span class="hljs-variable">${zabbixversion}</span></span>.tar.gz ]; <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> wget https://downloads.sourceforge.net/project/zabbix/ZABBIX%20Latest%20Stable/<span class="hljs-variable"><span class="hljs-variable">${zabbixversion}</span></span>/zabbix-<span class="hljs-variable"><span class="hljs-variable">${zabbixversion}</span></span>.tar.gz tar -xvzf zabbix-<span class="hljs-variable"><span class="hljs-variable">${zabbixversion}</span></span>.tar.gz <span class="hljs-keyword"><span class="hljs-keyword">fi</span></span> <span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> zabbix-<span class="hljs-variable"><span class="hljs-variable">${zabbixversion}</span></span> groupadd zabbix useradd -g zabbix zabbix sed -i <span class="hljs-string"><span class="hljs-string">'s/mariadbclient/mariadb/'</span></span> configure ./configure --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-proxy --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-server --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-agent --with-mysql --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-ipv6 --with-net-snmp --with-libcurl --with-libxml2 make -j5 make install</code> </pre><br>  Profit - it was possible to reduce the appetites of the zabbiks to the place, to abandon the rotation of the plates according to the “create partition / drop partition” scheme - now the housekeeper does the job himself (at least on an ssd disk, heh. Here I would check on innodb in a fresh build , but has not had time yet), and the data retention period has again become managed for each data item separately.  In case of massive problems, the queue is now cleaned several times faster. <br><br>  What has not been tested (exactly because the housekeeper started up) - add the magic piece COMMENT = 'ttl_duration = 864000; ttl_col = clock;'  which, as I understand it, makes sense to “store no more than 864000 seconds, clean at the storage engine level”. <br><br>  Yes, while I tested all this and screwed it, Zabbiks managed to roll out version 3.4, I didn’t check it all out on it, but something tells me what should work. <br><br>  Useful docks that came in handy when writing this article: <br><br><ul><li>  <a href="https://github.com/facebook/mysql-5.6/wiki/Getting-Started-with-MyRocks">Facebook wiki</a> </li><li>  <a href="https://www.percona.com/live/17/sites/default/files/slides/MyRocks_Tutorial.pdf">Percona presentation</a> </li></ul><br>  Miscellaneous other, that got out in Google for certain requests :) <br>  Thanks for attention.  If you have any questions / comments - you are welcome in the comments. </div><p>Source: <a href="https://habr.com/ru/post/334276/">https://habr.com/ru/post/334276/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../334264/index.html">We read, listen, use. Guide on the sources for the development of Android-developer</a></li>
+<li><a href="../334266/index.html">Applications for Tarantool. Part 1. Stored procedures</a></li>
+<li><a href="../334268/index.html">Terrible recruiter, terrible candidate</a></li>
+<li><a href="../334270/index.html">Automate CI / CD for Java applications using Microsoft Visual Studio Team Services</a></li>
+<li><a href="../334274/index.html">If there is no difference between the two code options, choose the one that is easier to debug.</a></li>
+<li><a href="../334278/index.html">A bit about SSL certificates: How to choose and how to get</a></li>
+<li><a href="../334280/index.html">Cryptocurrency in terms of civil law</a></li>
+<li><a href="../334282/index.html">What are chemists and biologists doing at EPAM?</a></li>
+<li><a href="../334284/index.html">Metaclasses in C ++</a></li>
+<li><a href="../334286/index.html">Internet travel. Analysis of foreign SIM-cards</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
