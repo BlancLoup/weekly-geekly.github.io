@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>FPP via FPL: Accelerate FPGA download</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! 
+
+
+ Recently there was a task - to speed up the loading of FPGA. From the appearance of power to the working state, we have no more than 100 ms...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>FPP via FPL: Accelerate FPGA download</h1><div class="post__text post__text-html js-mediator-article"><p>  Hello! </p><br><p>  Recently there was a task - to speed up the loading of FPGA.  From the appearance of power to the working state, we have no more than 100 ms.  Since the chip is not the newest (Altera Cyclone IV GX), it is simply impossible to connect a fast EPCQ flash drive to it.  And we decided to use FPP (Fast Passive Parallel) mode, having installed CPLD Intel MAXV outside with FPL (Flash Parallel Loader) outside.  When starting, CPLD loads data from a flash drive and generates FPP signals at its outputs. </p><br><p>  However, before you make your plans, we collected a DIY layout from what was at hand, and began to experiment "on cats".  Unfortunately, because of the snot on the board, the operating frequencies had to be reduced, but the essence of the FPP operation did not change, but the debugging was simplified.  I decided to write about what happened and how the FPGA is configured in this article.  Who cares, welcome under cat. </p><br><p><img src="https://habrastorage.org/webt/il/gy/e2/ilgye2psepmuspc90qzbsgxxyyg.jpeg"></p><a name="habracut"></a><br><p>  What I plan to talk about: </p><br><ol><li>  FPGA configuration brief.  Typical timeline, what are the modes </li><li>  What steps does the FPGA load time consist of? </li><li>  what is FPP </li><li>  about FPL, what is its role </li><li>  about EPCQ and FPL support </li><li>  about the results of experiments with pictures </li></ol><br><h1>  How is FPGA configured? </h1><br><p>  There are two types of FPGA boot - active and passive.  Active means that the FPGA clocks the external flash and reads the firmware from there.  Passive - that there is a certain host (processor, FPGA, controller) that loads the FPGA firmware. </p><br><p>  Active is well known to everyone, probably: we connect the EPCS / EPCQ flash drive, upload firmware via JTAG and enjoy life, since all the rest of the work of reading data for us will be done by FPGA when the power is turned on. </p><br><p>  Passive is a bit more dreary, because it requires the implementation of additional logic: the processor must load the firmware from somewhere, someone has to “put” this firmware in it, etc.  But passive mode is often faster.  For example, Cyclone IV supports DCLK 40 MHz and 1 data bit in Active Serial mode and 100 MHz and 8 data bits in FPP (Fast Passive Parallel) mode, which is 20 times faster. </p><br><p>  The main signals that are responsible for configuring FPGAs are nCONFIG, nSTATUS, CONF_DONE: </p><br><ul><li>  The nCONFIG input allows you to reset the FPGA (difference from 1 to 0) and initiate the firmware download (difference from 0 to 1) </li><li>  The nSTATUS output tells you whether the FPGA is ready to receive data (level 1) and whether some error has occurred during the configuration or operation of the FPGA (drop to zero) </li><li>  The CONF_DONE output makes it clear that the FPGA is configured.  To be precise, the FPGA received all the configuration data. </li></ul><br><p>  The timing diagram in these modes is not much different.  Here is a model for our case - <a href="https://www.altera.com/en_US/pdfs/literature/hb/cyclone-iv/cyiv-51008.pdf">passive parallel</a> : </p><br><p><img src="https://habrastorage.org/webt/h8/s8/f0/h8s8f04kknrpqwzo0hxkbr908e0.png"></p><br><p>  The following happens in it: </p><br><ol><li>  external host resets FPGA (nCONFIG: 1 -&gt; 0) </li><li>  The FPGA confirms that it is ready by first setting nSTATUS to zero and then releasing it to 1. Also, the CONF_DONE signal is reset to 0 </li><li>  external host initiates FPGA configuration (nCONFIG: 0 -&gt; 1) </li><li>  external host writes data (firmware) until the CONF_DONE signal appears (after CONF_DONE, a couple of dummy ticks are needed) </li></ol><br><p>  Read more about configuring <a href="https://www.altera.com/en_US/pdfs/literature/hb/cyclone-iv/cyiv-51008.pdf">here</a> . </p><br><p>  The choice of configuration mode is made by special FPGA - MSEL legs.  In different families, the number of modes is different.  For example, in Cyclone V, <a href="https://www.altera.com/documentation/sam1403481100977.html">the compression mode and the firmware encryption mode are</a> selected in addition to Active / Passive.  And in Cyclone IV - only Active / Passive and POR Fast / Standard </p><br><p><img src="https://habrastorage.org/webt/7z/wq/gy/7zwqgy26vcytraazvxokhtre6ga.png"></p><br><h1>  How does FPP work </h1><br><p>  FPP (Fast Passive Serial) is a passive mode in which the configuration is loaded into the FPGA with words (1 byte or more) and synchronously, according to the clock cycles of the DCLK signal. </p><br><p>  The “light version” of this mode is Passive Serial, where the firmware is loaded bit by bit. </p><br><p>  For this mode, Dedicated pins are used, some of which (most significant bits of the data) subsequently become normal I / O: </p><br><ul><li>  DCLK </li><li>  DATA [7: 0] </li></ul><br><p>  In higher-end chips (Stratix V, for example), you can load the firmware at 2 (FPPx16) and 4 (FPPx32) bytes per clock. </p><br><h1>  FPGA load time </h1><br><p>  Let's calculate the FPGA boot time in passive mode.  The beginning will be considered the appearance of voltage on the chip (when it reaches a certain value), and the end is the appearance of the CONF_DONE signal. </p><br><p>  The time enlarges from the following stages: </p><br><ul><li>  tPOR: power on reset.  In Fast mode, it takes a few milliseconds, and in Standard mode, hundreds of milliseconds (!).  However, Fast imposes more stringent requirements on the power supply system, since more energy is spent at the start. </li><li>  Configuration Handshake: host waits for nSTATUS = 1, resets FPGA (nCONFIG: 1-&gt; 0), initiates (nCONFIG: 0-&gt; 1).  This stage takes fractions of a millisecond and can be safely neglected. </li><li>  tCFG: sending data to FPGA and monitoring CONF_DONE.  This part takes the main time, which is proportional to the size of the firmware and inversely proportional to the frequency of the DCLK at which data is recorded. </li><li>  tINIT: chip initialization with data loaded into it.  After this stage is completed, the FPGA is fully operational (located in USER MODE).  Takes less than a millisecond, so we also neglect </li></ul><br><p>  tPOR depends exclusively on MSEL settings.  Naturally, where the load time is fundamentally and the power scheme allows, you need to set the mode to Fast (see the tables with MSEL above). </p><br><p>  With tCFG, everything is a bit trickier, because it depends on: </p><br><ul><li>  DCLK frequency.  It is determined by the capabilities of the FPGA and external host.  For cyclone IV, Fmax is 100 MHz </li><li>  firmware size.  It is determined by the FPGA family and the number of logical cells in a particular chip.  In each family, there is always a table with the maximum firmware size for each chip.  For example, for Cyclone IV, see here: link </li><li>  firmware compression  In some chips (Cyclone V) it is determined by the MSEL settings, in some (Cyclone IV) - only by the settings of the firmware converter.  Typical profit from compression is 50-70%, but no one undertakes to give 100% guarantee that it will be in your design that way.  Therefore, it is risky to “pledge” this number. </li></ul><br><p>  This is what the <a href="https://www.altera.com/en_US/pdfs/literature/hb/cyclone-iv/cyiv-51008.pdf">firmware size documentation for Cyclone IV, Table 8-2</a> , says: </p><br><p><img src="https://habrastorage.org/webt/s5/jo/av/s5joavnlbn-wkyboygncjsbck7o.png"></p><br><p>  For example, for the EP4CGX75 chip, the maximum firmware size without compression is 22.010.888 bits = 2.751.361 bytes.  If we assume that the external host is ready to operate at a frequency of 100 MHz, then it will take 2.7e6 / 100e6 = 0.027 seconds = 27 milliseconds to load the maximum firmware.  And if you use compression, then this time can be reduced by about half, getting less than 15 ms! </p><br><p>  However, to obtain a DCLK = 100 MHz frequency, you need to be able to read the firmware at least at the same frequency.  One of the options offered by Intel / Altera is to use CPLD MAX II / V for this purpose.  On the one hand, CPLD reads Flash, on the other hand, it writes to FPGA. </p><br><h1>  FPL </h1><br><p>  And for this task in the collection of ready-made IP-cores there is a <a href="https://www.altera.com/en_US/pdfs/literature/ug/ug_pfl.pdf">Flash Parallel Loader</a> .  This core supports a set of Flash chips with different interfaces (QSPI, NxQSPI, CFI, etc ...), allowing you not only to read the firmware from them, but also to write it down by connecting via JTAG. </p><br><p>  It also allows you to write to Flash not one firmware, but several, thus organizing a "rollback" to a stable image in case of problems with the update. </p><br><p>  See <a href="https://www.altera.com/en_US/pdfs/literature/ug/ug_pfl.pdf">datasheet for</a> more details. </p><br><p>  We chose the Flash Programming &amp; FPGA Configuration mode and the EPCQ as the Flash.  This allows us to meet the required download time and at the same time have the ability to flash Flash via JTAG or flash EPCQ using another host. </p><br><p>  Screenshots of the settings we used: </p><br><p><img src="https://habrastorage.org/webt/mk/q8/g9/mkq8g9ay4ekflwqaf4hrydqi450.png"></p><br><p><img src="https://habrastorage.org/webt/5k/bl/kk/5kblkkbzmrflaefvrgfwzn3xdsg.png"></p><br><p><img src="https://habrastorage.org/webt/qp/cm/y9/qpcmy9e2he8jn95ets6yg6vxgr4.png"></p><br><p>  CPLD firmware occupies 1267 LE and is almost 100% occupied by EPM1270F256C5 (MAX II) or 5M1270ZT144C5 (MAX V).  Without the flash firmware option (say, if some other host can do this), the resources used are significantly less and a margin of 754 LE appears. </p><br><p> Here is the CPLD inclusion scheme: </p><br><p><img src="https://habrastorage.org/webt/yv/p4/ar/yvp4arlr0v_dcn6mhzhlvmmnmyy.png"></p><br><p>  How does FPL work (approximate algorithm): </p><br><ul><li>  on the ready signal (nSTATUS = 1) from the FPGA, it activates nCONFIG according to the diagram above </li><li>  when the FPGA is ready to receive data (nSTATUS has made a drop to zero and back to one), the FPL reads the service data block from Flash.  This block contains the addresses of the firmware (or firmware, if there are several) </li><li>  The FPL starts downloading the firmware that the input port fpga_pgm [2: 0] is pointing it to.  We used two firmware, so this port was served on 1 </li><li>  If an error occurred during the download (this may be, if the image is not completely flooded, “broken” or for another chip / family), then the FPL “switches” to the factory default firmware, which by default is considered to be zero </li><li>  FPL loads a zero image into FPGA.  If everything is not OK with him, then he makes several more attempts and stops </li></ul><br><p>  Let's see what kind of performance we can “squeeze” out of the described configuration with one EPCQ.  For this you need a little idea how the EPCQ works. </p><br><h1>  How EPCQ works </h1><br><p>  EPCQ (advanced version of EPCS) is NOR-flash, which has a SPI interface for most commands and for some commands - QuadSPI.  It is read very quickly, and it is written and erased very slowly. </p><br><p>  Commands (erase, read, write) always arrive in flash using normal SPI, and then the behavior of the flash drive depends on the command.  For example: </p><br><ul><li>  if we write the READ / FAST_READ command, the read will be performed in single-bit mode </li><li>  if FASTDTRD, then in single-bit mode with DDR </li><li>  if 4READ, then in four-bit mode </li><li>  etc. </li></ul><br><p>  See, for example, a <a href="http://www.macronix.com/Lists/Datasheet/Attachments/6636/MX25L6445E,%25203V,%252064Mb,%2520v1.8.pdf">description of flash macronix</a> </p><br><p>  Maximum EPCQ read performance is achieved using all four bits at maximum frequency with DDR.  However, the temporal characteristics vary nonlinearly: </p><br><p><img src="https://habrastorage.org/webt/ul/dx/iy/uldxiyx0mirrgtz_2gfg9c-qh9k.png"></p><br><p>  That is, throughput will be in the cases given in the example above as follows: </p><br><ul><li>  READ - 104 Mbps </li><li>  FASTDTRD - 100 Mbps </li><li>  4READ - 280 Mbps </li><li>  4DTREAD - 400 Mbps </li></ul><br><p>  There are flash drives and more brightly, for example <a href="http://www.cypress.com/file/326426/download">S25FL064L</a> , in them the frequency does not fall with an increase in the reading capacity.  Therefore, for "squeezing maximum speed" it is better to focus on them. </p><br><p>  If you recalculate 4READ / 4DTREAD modes during the time required to read our firmware for Cyclone IV, you get 78 ms / 55 ms.  Let me remind you that in order to "catch up" with FPP, you need to meet 27 milliseconds (see above). </p><br><p>  It turns out that the bottleneck in our task is the interface for reading the firmware, and not the FPP itself.  And if it was required to get not 100 ms, but significantly less, then we would have to use two EPCQ flash drives.  But for our case, the normal 4READ is enough. </p><br><p>  A list of supported EPCQs is provided in <a href="https://www.altera.com/en_US/pdfs/literature/ug/ug_pfl.pdf">the PFL documentation, section 1.2.1</a> . </p><br><p>  It is curious that Intel / Altera not so long ago refused to release their EPCQ and now officially <a href="https://www.altera.com/support/support-resources/knowledge-base/component/2018/how-do-i-enable-micron-s-mt25q-support-for-eol-of-epcq---256mb--.html%3Fcq_ck%3D1522223941654">support Micron's instead of their own</a> . </p><br><h1>  It's DIY time! </h1><br><p>  In order to combine theory with practice, we took into our hands what was: </p><br><ul><li>  kit Ethond c Cyclone V SoC (5CSEBA4U19C8SN) </li><li>  <a href="https://www.terasic.com.tw/cgi-bin/page/archive.pl%3FLanguage%3DEnglish%26amp%3BCategoryNo%3D183%26amp%3BNo%3D215%26amp%3BPartNo%3D1">ancient kit from Terasic</a> c MAXII EPM2210f324 on board </li><li>  EPCQ Micron <a href="https://www.micron.com/~/media/documents/products/data-sheet/nor-flash/serial-nor/n25q/n25q_256mb_3v.pdf">N25Q256A13EF840</a> </li><li>  soldering iron, wires, "dandy" </li><li>  man with golden hands, solder and flux </li></ul><br><p>  The chips hooked up as follows: </p><br><p><img src="https://habrastorage.org/webt/gb/7k/_x/gb7k_x87kpe5d3ukzzpdl4u9mz4.jpeg"></p><br><p>  On a blind mount, a QSPI flash drive was soldered and mounted into a layout: </p><br><p><img src="https://habrastorage.org/webt/il/gy/e2/ilgye2psepmuspc90qzbsgxxyyg.jpeg"></p><br><p>  After completing a small quest (see <a href="https://www.altera.com/en_US/pdfs/literature/ug/ug_pfl.pdf">Doc, section 1.4.1</a> ) to create the firmware that is used for uploading to EPCS via PFL (link), we took the measure of “time”.  When creating the firmware, please note that you need to specify CFI-flash as a target, even if EPCQ is used. </p><br><p>  Alas, because of the mounted installation and the "beard", the operating frequency of the FPL turned out to be 6.25 MHz, and the EPCS takes 25 MHz.  We adjusted this clock using the "Ratio between input clock and DCLK" option by setting the value to 8 (input clock = 50 MHz).  Here is the plot of the FPP (blue) and EPCQ (yellow) clots: it is clear that for each FPP clock cycle there are two EPCQ DCLK cycles, because the FPP bit width is twice as high as the EPCQ (8 vs. 4). </p><br><p><img src="https://habrastorage.org/webt/lo/pn/gp/lopngptfdh6a5zemla415ii2rry.jpeg"></p><br><p>  Here is a diagram of the supply voltage (yellow) and the CONF_DONE signal (blue) in the Standard POR mode and without compression: you can see that the total load time is 780 ms. </p><br><p><img src="https://habrastorage.org/webt/ht/yf/pq/htyfpq0pdd8ac_ecb9zc3qbirum.jpeg"></p><br><p>  There is about 100 ms between the appearance of power and the nSTATUS signal, signaling the chip is ready to accept configuration data: </p><br><p><img src="https://habrastorage.org/webt/sc/fz/5e/scfz5ennueil7dmwrhjgrowjc-o.jpeg"></p><br><p>  And if you enable the Fast mode (we change just MSEL, see the table above), then the POR occurs in a matter of milliseconds and the download already takes ~ 680 ms: </p><br><p><img src="https://habrastorage.org/webt/pq/2x/ft/pq2xftfd7u4xiht9ylauzjsiqss.jpeg"></p><br><p>  And the last step - turn on compression.  To do this, tick Quartus when adding a firmware file to PFL and switch MSEL (you don’t need to touch MSEL in Cyclone IV).  And we get a completely different picture: </p><br><p><img src="https://habrastorage.org/webt/jy/nf/el/jynfelymkvi1kd39zybcj7pmjvc.jpeg"></p><br><p>  Compared with the original version without compression and Fast POR, we have a twofold gain of about 400 ms. </p><br><h1>  Combining theory with practice </h1><br><p>  Let's calculate whether the measurements made with the oscilloscope agree with the calculations.  Time tPOR is considered equal to zero, because  use Fast POR.  Therefore, we can only calculate how much the load time of ~ 680 ms converges with the size of the firmware and the FPP DCLK frequency. </p><br><p>  The size of our Cyclone V firmware is ~ 4 megabytes (32 megabytes).  The clock frequency of the FPP DCLK is 6.25 MHz.  Per clock is transmitted 8 bits, that is, 1 byte.  Therefore, the estimated time is 4 / 6.25 = 0.64 seconds.  Woo-la! </p><br><p>  If we proportionally increase the FPP DCLK frequency, for example, 8 times - up to 50 MHz, then we will get a time of 80 ms.  And if we also include compression, it is even less. </p><br><h1>  findings </h1><br><p>  Theoretically, the FPGA can load in tens of milliseconds, according to our calculations for Cyclone IV - in about 30 ms.  However, it must be borne in mind that for this, a host that loads data into FPGA, like Flash, from which data is loaded, must match the bandwidth. </p><br><p>  In the more recent FPGA chips, the EPCQ flash drive can be connected directly and use active mode, and if the design does not allow switching to a new family, then you can install an external loader and use passive mode.  For this, we use the Flash Parallel Loader, which we used in our layout. </p><br><p>  With the described approach with FPL and one EPCQ, it is quite realistic to bring the FPGA load time to 50 ms. </p><br><p>  Anyone who read to the end <s>can put a monument</s> thank you very much! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/358638/">https://habr.com/ru/post/358638/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../358626/index.html">5 differences analyst work in projects and product development</a></li>
+<li><a href="../358630/index.html">RDP Three letter game</a></li>
+<li><a href="../358632/index.html">JS DevDay. Record of reports</a></li>
+<li><a href="../358634/index.html">Changing the voice menu of a portable speaker</a></li>
+<li><a href="../358636/index.html">Fujitsu ETERNUS Storage Lineup Update</a></li>
+<li><a href="../358640/index.html">Telegram: block cannot be canceled</a></li>
+<li><a href="../358642/index.html">Redesign with a capital letter: we are studying the restart of Smashing Magazine in 2017</a></li>
+<li><a href="../358644/index.html">Custdev from Support</a></li>
+<li><a href="../358646/index.html">Security Week 17: Rise of the Machines</a></li>
+<li><a href="../358648/index.html">How we invented the OTDR</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

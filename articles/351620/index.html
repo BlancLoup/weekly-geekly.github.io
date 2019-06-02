@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>JS ↔ DOM tracing, or back and forth</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Finding memory leaks in Chrome 66 has become much more convenient. DevTools can now trace, snapshot DOM objects from C ++, display all available DOM o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>JS ↔ DOM tracing, or back and forth</h1><div class="post__text post__text-html js-mediator-article"><p>  Finding memory leaks in Chrome 66 has become much more convenient.  DevTools can now trace, snapshot DOM objects from C ++, display all available DOM objects from JavaScript, along with links to them.  The appearance of these features was the result of a new C ++ tracing mechanism in the V8 garbage collector. </p><br><p>  Let me remind you that stable Chrome now (03/20/2018) has version 65, so to marvel at the feature, you will have to install <a href="https://www.chromium.org/getting-involved/dev-channel">one of the unstable assemblies</a> (for example, Beta has version 66, and Dev and Canary - 67). </p><a name="habracut"></a><br><h1 id="osnovy">  The basics </h1><br><p>  Memory leaks in garbage collection occur when an unnecessary object is no longer collected due to unintentionally added references from other objects.  Memory leaks in web pages often occur when JS objects and DOM elements interact. </p><br><p>  Let's look at a toy example that shows a leak that occurs when a programmer forgets to remove an event handler.  The handler references objects, and they can no longer be deleted.  In particular, the iframe window flows. </p><br><pre><code class="hljs pgsql">// Main <span class="hljs-keyword"><span class="hljs-keyword">window</span></span>: const iframe = document.createElement(<span class="hljs-string"><span class="hljs-string">'iframe'</span></span>); iframe.src = <span class="hljs-string"><span class="hljs-string">'iframe.html'</span></span>; document.body.appendChild(iframe); iframe.addEventListener(<span class="hljs-string"><span class="hljs-string">'load'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">function</span></span>() { const local_variable = iframe.contentWindow; <span class="hljs-keyword"><span class="hljs-keyword">function</span></span> leakingListener() { // <span class="hljs-keyword"><span class="hljs-keyword">Do</span></span> something <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> `local_variable`. <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (local_variable) {} } document.body.addEventListener(<span class="hljs-string"><span class="hljs-string">'my-debug-event'</span></span>, leakingListener); document.body.removeChild(iframe); // BUG: forgot <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> unregister `leakingListener`. });</code> </pre> <br><p>  Worse, the leaked iframe keeps all its JS objects alive. </p><br><pre> <code class="hljs pgsql">// iframe.html: <span class="hljs-keyword"><span class="hljs-keyword">class</span></span> Leak {}; <span class="hljs-keyword"><span class="hljs-keyword">window</span></span>.global_variable = <span class="hljs-built_in"><span class="hljs-built_in">new</span></span> Leak();</code> </pre> <br><p>  To find the cause of a leak, it is important to understand the concept of a suspended path (retaining path).  A hanging path is a chain of objects that interfere with the assembly of a leaking object.  The chain starts from some root object, like a global object of the main window.  The chain ends with a leaking object.  All intermediate objects have a direct link to the next object in the chain.  For example, the suspended path of the <code>Leak</code> object and this iframe looks like this: </p><br><p></p><div style="text-align:center;"><img width="400" src="https://habrastorage.org/webt/i0/fs/kq/i0fskqwmofp_mkfvgwsaiiwctza.png"></div><br><br><p>  Notice that the path hangs through the border between JavaScript and DOM (they are marked in green and red, respectively) two times.  JS objects live on the V8 heap, and DOM objects are C ++ objects in Chrome. </p><br><h1 id="devtools-heap-snapshot">  DevTools heap snapshot </h1><br><p>  Now we can study the suspended path of any selected object using the heapshot snapshot.  At the same time, all objects in the V8 heap will be saved exactly.  Most recently, only very approximate data about C ++ DOM objects was stored there.  For example, Chrome 65 shows an incomplete hanging path for a <code>Leak</code> object from the previous toy example: </p><br><p></p><div style="text-align:center;"><img width="800" src="https://habrastorage.org/webt/45/x0/ov/45x0ovyqtp0knmhhfpjsfmn1xe0.png"></div><br><br><p>  Only the first line is fairly accurate: the <code>Leak</code> object is actually stored in <code>global_variable</code> in the frame window.  All other lines are trying to approximate the real path, and this makes debugging memory leaks very difficult. </p><br><p>  Starting in Chrome 66, DevTools traces C ++ DOM objects, and precisely captures objects and links between them.  This feature is based on a powerful new mechanism for tracing C ++ objects, which was created for cross-component garbage collection.  As a result, the paths in DevTools became correct! </p><br><p><img src="https://habrastorage.org/webt/wt/ef/g6/wtefg6rf31crpdeuv_qx6fxvjgi.png"><br></p><br><h1 id="rukovodstvo-k-deystviyu">  Guide to action </h1><br><iframe width="560" height="315" src="https://www.youtube.com/embed/ixadA7DFCx8" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><p>  File for experiments: <a href="https://ulan.github.io/misc/leak.html"></a>  <a href="https://ulan.github.io/misc/leak.html">https://ulan.github.io/misc/leak.html</a> </p><br><h1 id="pod-kapotom-kross-komponentnaya-trassirovka">  Under the hood: cross component tracing </h1><br><p>  DOM objects are controlled by Blink, the rendering engine used in Chrome, which is responsible for translating DOM into real text and images on the screen.  Blink and its internal implementation of DOM are written in C ++ - and this means that the DOM cannot be directly reflected in JavaScript.  Instead, the objects in the DOM are divided into two parts: the wrapper object accessible from JS, and C ++ the object representing the node representation from the DOM.  These objects contain direct links to each other.  Determining the lifetime and area of ​​ownership of components that cross the boundaries of several systems, in this case Blink and V8, is a rather difficult task because it involves parties who need to agree in advance which components are still alive and which ones should be disposed of. </p><br><p>  In Chrome 56 and older versions (for example, until March 2017), Chrome used a mechanism called object grouping.  Objects are linked into one group if they belong to the same document.  The group, and all its objects, are kept alive as long as there is at least one living object at the end of another suspended path.  This makes sense in the context of DOM nodes, which are always associated with the documents containing them, forming the so-called DOM trees.  But this abstraction loses all the real hanging paths, which used to make debugging very difficult.  As soon as the objects ceased to fit the above scenario (for example, closures in JavaScript used as event handlers), it became difficult to implement this approach and led to bugs in which JS wrappers were assembled ahead of time, which in turn led to their replacement with empty ones. JS-wrappers with the complete loss of all properties. </p><br><p>  Beginning with Chrome 57, this approach has been replaced by "cross-component tracing" - a mechanism that determines the vividness of objects, tracing them from JavaScript to the C + + implementation in the DOM, and the same way back.  On the C ++ side, incremental tracing is implemented, which creates write barriers in order not to slip into the stop-the-world.  Cross-component testing not only improves latency, but also better approximates the vibrancy of objects at the component boundary, and repairs several frequently occurring scenarios that used to lead to leaks.  In addition, because of this, DevTools were able to do snapshots that truly reflect the state of the DOM. </p><br><blockquote>  Minute advertising.  As you probably know, we do conferences.  The nearest JavaScript conference is <a href="https://holyjs-piter.ru/">HolyJS 2018 Piter</a> , which will be held May 19-20, 2018 in St. Petersburg.  You can come there, listen to the reports (what reports are there - described in <a href="https://holyjs-piter.ru/">the conference program</a> ), talk live with practicing experts from JavaScript and the frontend, developers of various modern technologies.  In short, come in, we are waiting for you! </blockquote></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/351620/">https://habr.com/ru/post/351620/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../351602/index.html">The book “Node.js in action. 2nd edition »</a></li>
+<li><a href="../351610/index.html">We are looking for patterns on the stock exchange</a></li>
+<li><a href="../351614/index.html">TP-Link T2600G-28MPS: work with PoE, LLDP and Voice VLAN</a></li>
+<li><a href="../351616/index.html">Overview of the first day of Data Science Weekend 2018. Machine learning practice, a new approach to competition and much more</a></li>
+<li><a href="../351618/index.html">Mosdroid # 6 - Report</a></li>
+<li><a href="../351622/index.html">Quantum computing and Q # language for beginners</a></li>
+<li><a href="../351624/index.html">Introduction to quantum computing</a></li>
+<li><a href="../351626/index.html">PVS-Studio - additional insurance for medical software</a></li>
+<li><a href="../351628/index.html">Quantum circuits and valves - introductory course</a></li>
+<li><a href="../351630/index.html">Fundamentals of quantum computing: pure and mixed states</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

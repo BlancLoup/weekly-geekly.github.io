@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>We write a simple cache manager in memory on Go</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the process of working on small projects, it is often necessary to cache data and it happens that it is not possible to use Redis or Memcache. In s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>We write a simple cache manager in memory on Go</h1><div class="post__text post__text-html js-mediator-article"><p>  In the process of working on small projects, it is often necessary to cache data and it happens that it is not possible to use Redis or Memcache.  In such situations, a simple and fairly effective way is suitable without the use of additional tools - caching in RAM. <br>  In this article I will tell you where to start, to write the cache manager in memory on Go. </p><a name="habracut"></a><br><p>  <em>Attention!</em>  <em>This article is intended for novice developers solely for academic purposes and is not considered such tools as Redis, Memcache, etc.</em> <em><br></em>  <em>In addition, we will not go into the problem of memory allocation.</em> </p><br><p> For simplicity, we restrict ourselves to three main methods: setting a <code>Set</code> , getting a <code>Get</code> and deleting <code>Delete</code> . </p><br><p>  Data will be stored in key / value format. </p><br><h2 id="struktura">  Structure </h2><br><p>  The first thing to do is create a structure describing our storage container: </p><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">type</span></span> Cache <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> { sync.RWMutex defaultExpiration time.Duration cleanupInterval time.Duration items <span class="hljs-keyword"><span class="hljs-keyword">map</span></span>[<span class="hljs-keyword"><span class="hljs-keyword">string</span></span>]Item }</code> </pre> <br><ul><li>  <code>sync.RWMutex</code> - for secure data access during read / write (more about mutexes <a href="https://gobyexample.com/mutexes">https://gobyexample.com/mutexes</a> ), </li><li>  <code>defaultExpiration</code> - default cache lifetime (this parameter can be redefined for each item) </li><li>  <code>cleanupInterval</code> - the interval at which the cache cleaning mechanism is started (Garbage Collector, hereinafter referred to as GC) </li><li>  <code>items</code> - cache items (in key / value format) </li></ul><br><p>  Now we describe the structure for the element: </p><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">type</span></span> Item <span class="hljs-keyword"><span class="hljs-keyword">struct</span></span> { Value <span class="hljs-keyword"><span class="hljs-keyword">interface</span></span>{} Created time.Time Expiration <span class="hljs-keyword"><span class="hljs-keyword">int64</span></span> }</code> </pre> <br><ul><li>  <code>Value</code> - the value.  Since it can be any (number / line / array, etc.), you must specify <code>interface{}</code> as the type </li><li>  <code>Created</code> - cache creation time, </li><li>  <code>Expiration</code> - expiration time (in UnixNano) - by it we will check the relevance of the cache </li></ul><br><h2 id="inicializaciya-hranilischa">  Initialization of storage </h2><br><p>  Start by initializing a new storage container: </p><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">New</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(defaultExpiration, cleanupInterval time.Duration)</span></span></span><span class="hljs-function"> *</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Cache</span></span></span></span> { <span class="hljs-comment"><span class="hljs-comment">//  (map)   (string)/(Item) items := make(map[string]Item) cache := Cache{ items: items, defaultExpiration: defaultExpiration, cleanupInterval: cleanupInterval, } //     0,  GC (  ) if cleanupInterval &gt; 0 { cache.StartGC() //     } return &amp;cache }</span></span></code> </pre> <br><p>  Initializing a new cache instance takes two arguments: <code>defaultExpiration</code> and <code>cleanupInterval</code> </p><br><ul><li>  <code>defaultExpiration</code> - the default cache lifetime, if set to less than or equal to 0, the cache lifetime is indefinite. </li><li>  <code>cleanupInterval</code> - the interval between deleting expired cache.  If the value is set to be less than or equal to 0, cleaning and deletion of expired cache does not occur. </li></ul><br><p>  At the output we get a container with the structure <code>Cache</code> </p><br><p>  Be careful when setting these parameters, too small or too large values ​​can lead to undesirable consequences, for example, if you set <code>cleanupInterval = 1 * time.Second</code> search for expired keys will occur every second, which will negatively affect the performance of your program.  Conversely, setting <code>cleanupInterval = 168 * time.Hour</code> - unused elements will accumulate in the memory. </p><br><h2 id="ustanovka-znacheniy">  Setting values </h2><br><p>  After the container is created, it would be good to be able to write data to it, for this we will write the implementation of the <code>Set</code> method. </p><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(c *Cache)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Set</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(key </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">, value </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{}, duration time.Duration)</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> expiration <span class="hljs-keyword"><span class="hljs-keyword">int64</span></span> <span class="hljs-comment"><span class="hljs-comment">//     0 -   - if duration == 0 { duration = c.defaultExpiration } //     if duration &gt; 0 { expiration = time.Now().Add(duration).UnixNano() } c.Lock() defer c.Unlock() c.items[key] = Item{ Value: value, Expiration: expiration, Created: time.Now(), } }</span></span></code> </pre> <br><p>  <code>Set</code> adds a new item to the cache or replaces an existing one.  In this case, the test for the existence of keys does not occur.  It takes as arguments: a key-identifier in the form of a string <code>key</code> , a <code>value</code> and a cache lifetime; <code>duration</code> . </p><br><h2 id="poluchenie-znacheniy">  Getting values </h2><br><p>  Using <code>Set</code> we recorded data in the repository, now we implement a method for getting them <code>Get</code> </p><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(c *Cache)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Get</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(key </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{}, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">bool</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span> { c.RLock() <span class="hljs-keyword"><span class="hljs-keyword">defer</span></span> c.RUnlock() item, found := c.items[key] <span class="hljs-comment"><span class="hljs-comment">//    if !found { return nil, false } //     ,      if item.Expiration &gt; 0 { //        nil if time.Now().UnixNano() &gt; item.Expiration { return nil, false } } return item.Value, true }</span></span></code> </pre> <br><p>  <code>Get</code> returns a value (or <code>nil</code> ) and the second <code>bool</code> parameter is <code>true</code> if the key is found and <code>false</code> if the key is not found or the cache is outdated. </p><br><h2 id="udalenie-kesha">  Deleting cache </h2><br><p>  Now that we have an install and a get, you need to be able to delete the cache (if we don’t need it anymore) for this we write the <code>Delete</code> method </p><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(c *Cache)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Delete</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(key </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">error</span></span></span></span> { c.Lock() <span class="hljs-keyword"><span class="hljs-keyword">defer</span></span> c.Unlock() <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> _, found := c.items[key]; !found { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> errors.New(<span class="hljs-string"><span class="hljs-string">"Key not found"</span></span>) } <span class="hljs-built_in"><span class="hljs-built_in">delete</span></span>(c.items, key) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">nil</span></span> }</code> </pre> <br><p>  <code>Delete</code> deletes the item by key, if the key does not exist returns an error. </p><br><h2 id="sborka-musora">  Garbage collection </h2><br><p>  We have add, get and delete.  It remains to implement the search for expired keys, followed by cleaning (GC) <br>  To do this, we write the <code>StartGC</code> method, which starts when a new instance of the <code>New</code> cache is initialized and runs until the program is completed. </p><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(c *Cache)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">StartGC</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">go</span></span> c.GC() } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(c *Cache)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GC</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> { <span class="hljs-comment"><span class="hljs-comment">//     cleanupInterval &lt;-time.After(c.cleanupInterval) if c.items == nil { return } //           if keys := c.expiredKeys(); len(keys) != 0 { c.clearItems(keys) } } } // expiredKeys   ""  func (c *Cache) expiredKeys() (keys []string) { c.RLock() defer c.RUnlock() for k, i := range c.items { if time.Now().UnixNano() &gt; i.Expiration &amp;&amp; i.Expiration &gt; 0 { keys = append(keys, k) } } return } // clearItems     ,    "" func (c *Cache) clearItems(keys []string) { c.Lock() defer c.Unlock() for _, k := range keys { delete(c.items, k) } }</span></span></code> </pre> <br><h2 id="primer-ispolzovaniya">  Usage example </h2><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> ( memorycache <span class="hljs-string"><span class="hljs-string">"github.com/maxchagin/go-memorycache-example"</span></span> ) <span class="hljs-comment"><span class="hljs-comment">//      -  5       10  cache := memorycache.New(5 * time.Minute, 10 * time.Minute) //     "myKey"    5  cache.Set("myKey", "My value", 5 * time.Minute) //     "myKey" i := cache.Get("myKey")</span></span></code> </pre> <br><h2 id="chto-dalshe">  What's next? </h2><br><p>  Now we have a cache manager with minimal functionality, it will be enough for the simplest tasks.  If this is not enough (and in 95% of cases it is), as the next step, you can independently implement the methods: </p><br><p>  Count - getting the number of items in the cache <br>  GetItem - getting item cache <br>  Rename - rename key <br>  Copy - copy item <br>  Increment - increment <br>  Decrement - decrement <br>  Exist - check item for existence <br>  Expire - cache check for expiration <br>  FlushAll - clear all data <br>  SaveFile - save data to file <br>  LoadFile - load data from file </p><br><p>  This is not a complete list, but for the basic functionality is likely enough. </p><br><p>  <a href="https://github.com/maxchagin/go-memorycache-example">Sources c example on github</a> </p><br><p>  If you need a ready-made cache manager in memory, I recommend to pay attention to the following projects: <br>  <a href="https://github.com/patrickmn/go-cache">The patrickmn go-cache implementation</a> <br>  <a href="https://github.com/astaxie/beego/tree/master/cache">Beego memorycache</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/359078/">https://habr.com/ru/post/359078/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../359068/index.html">Systems thinking as the main driver of growth: the concept of Growth System</a></li>
+<li><a href="../359070/index.html">ETL: quality data for management decisions</a></li>
+<li><a href="../359072/index.html">The book "Head First. Programming for Android. 2nd ed »</a></li>
+<li><a href="../359074/index.html">GeekUniversity opens a set of information security faculty</a></li>
+<li><a href="../359076/index.html">Pure Storage ActiveCluster in conjunction with VMware: review and testing</a></li>
+<li><a href="../359080/index.html">"This is not a hoax": Wall Street investment banks are starting to believe in Bitcoin under the pressure of customers</a></li>
+<li><a href="../359082/index.html">JetBrains Open Day Moscow: results and video</a></li>
+<li><a href="../359084/index.html">Is XMPP so bad as it is painted? How Jabber has become today</a></li>
+<li><a href="../359086/index.html">Not Delisamokat one: how small usability errors create big problems with a real example</a></li>
+<li><a href="../359088/index.html">Information systems with conceptual models. Part two</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

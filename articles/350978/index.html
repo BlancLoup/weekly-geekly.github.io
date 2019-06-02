@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Drupal 8 + Varnish: Cache HTML correctly</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Drupal 8 is the latest CMS Drupal release. Varnish is an HTTP reverse proxy cache, a web application add-in that allows you to cache HTTP responses in...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Drupal 8 + Varnish: Cache HTML correctly</h1><div class="post__text post__text-html js-mediator-article">  Drupal 8 is the latest CMS Drupal release.  Varnish is an HTTP reverse proxy cache, a web application add-in that allows you to cache HTTP responses in server RAM. <br><br>  When we put Varnish in front of Drupal (or any other web application), the processing scheme of the incoming HTTP request is transformed as follows. <br><br><img src="https://habrastorage.org/webt/v8/cf/rz/v8cfrzxielydi_135s6owk1iagw.png" alt="image">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Back in the days of Drupal 6 and 7, using Varnish, it was very convenient to cache static resources (images, CSS, JavaScript files).  But there were problems with caching HTML pages - there was no convenient mechanism for selective invalidation of the cache.  It remained only to either deliberately give away the outdated cache, or completely clear the cache in Varnish with any changes in Drupal.  Both approaches had their drawbacks. <br><a name="habracut"></a><br>  If, during any change in Drupal, you did not invalidate the Varnish cache, then it was necessary to set a relatively small TTL in order for the Varnish cache to quickly become outdated and Varnish update its cache with new data from Drupal. <br><br>  On the other hand, if you cleaned the Varnish cache on “every sneeze” in Drupal, then these measures were often redundant.  Some user could write an innocuous comment under the obscure page, and this led to the invalidation of the entire varnish cache (including the very visited pages, which actually did not change due to the added comment). <br><br><h3>  Drupal 8 Cache API </h3><br>  Fortunately, things are much better in Drupal 8, where a flexible caching system via meta information was added.  I highly recommend curious to read the <a href="https://www.drupal.org/docs/8/api/cache-api/cache-api">official documentation</a> .  In short, this system allows Drupal to keep track of what (nodes, comments, configs, etc.) the generated page depends on.  Each page is associated with a set of cache tags (cache-tags).  Then, in any state change, Drupal recognizes which cache tags must be disabled.  This in turn allows Drupal to invalidate only the minimally necessary set of cached pages when something (node, comment, config) has changed.  This approach is used in the core of Drupal to disable the internal cache.  With the help of a pair of clever movements, you can achieve similar “minimally necessary” disability in Varnish's cache. <br><br><h3>  Extending the Cache API to Varnish </h3><br>  This tutorial assumes that you have already successfully installed and configured Varnish for static resources (graphics, css, javascript).  To cover the cache and more anonymous HTML pages we need 3 steps: <br><ol><li>  Explain to Varnish what page depends on which cache tags.  Drupal already has this knowledge, it just needs to be passed to Varnish. </li><li>  At the moment when some cache tag is invalidated in Drupal, you should also disable all pages in the Varnish cache that depend on this cache tag. </li><li>  Prepare Varnish for all these innovations. </li></ol><br>  All these things are already implemented as modules in the Drupal ecosystem.  We will need: <br><ul><li>  <a href="https://www.drupal.org/project/purge">Purge</a> is a kind of framework for disabling external HTTP caches (Varnish, CDN, Nginx) </li><li>  <a href="https://www.drupal.org/project/varnish_purge">Varnish Purger</a> - implementation of this framework under Varnish. </li></ul><br>  If you use composer, then: <br><pre><code class="bash hljs">composer require <span class="hljs-string"><span class="hljs-string">"drupal/purge:^3.0"</span></span> composer require <span class="hljs-string"><span class="hljs-string">"drupal/varnish_purge:^1.0"</span></span></code> </pre> <br>  Include the following modules: <br><ul><li>  Purge (purge) </li><li>  Purge Drush (purge_drush) </li><li>  Purge Tokens (purge_tokens) </li><li>  Purge UI (purge_ui) </li><li>  Cron processor (purge_processor_cron) or Late runtime processor (purge_processor_lateruntime).  About the difference between these 2 modules a bit later. </li><li>  Core tags queuer (purge_queuer_coretags) </li><li>  Varnish Purger (varnish_purger) </li><li>  Varnish Purger Tags (varnish_purge_tags) </li></ul><br><br><h3>  Drupal 8 setup </h3><br>  You need to explain to Drupal where Varnish is located and how to partially invalidate his cache.  After installing the above modules, go to <code>/admin/config/development/performance/purge</code> .  Add <i>Varnish purger</i> , specify the correct path to the host where Varnish is located. <br>  In <i>Type,</i> specify the <i>Tag</i> , because  we use Drupal's cache tags for invalidation.  In the <i>Request method,</i> specify <i>Ban</i> , because  The corresponding part of the Varnish configs is waiting for just such an HTTP request method. <br><img src="https://habrastorage.org/webt/8e/oq/ad/8eoqad3gy1zbn8_hlyre_ej_s6u.png" alt="image"><br><br>  On the <i>Headers</i> tab: <br><img src="https://habrastorage.org/webt/wl/5d/j0/wl5dj0hl0z4pypnvwo5ndemor3c.png" alt="image"><br><br>  Add a <i>Cache-Tags</i> header with <i>[invalidation: expression]</i> content.  This tokenized expression will be replaced by the value of the invalid cache tag module Token. <br><br>  The rest can (and should) be configured to suit your taste and specific situation.  Now Drupal will include the <i>Cache-Tags</i> header in all of its responses, where it will enter the list of cache tags that participated in the generation of the generated page.  Varnish will store these headers as part of its cache and will use them to invalidate the cache. <br><br>  In this place, make sure that your Drupal, when requested directly (bypassing Varnish), does indeed contain a <i>Cache-Tags</i> header.  In my case, it looks like this for the first page: <div class="spoiler">  <b class="spoiler_title">spoiler</b> <div class="spoiler_text"> <code>Cache-Tags: block_view config:block.block.seven_breadcrumbs config:block.block.seven_content config:block.block.seven_help config:block.block.seven_local_actions config:block.block.seven_login config:block.block.seven_messages config:block.block.seven_page_title config:block.block.seven_primary_local_tasks config:block.block.seven_secondary_local_tasks config:block_list config:coffee.configuration config:shortcut.set.default config:system.menu.admin config:user.role.administrator config:user.role.authenticated http_response rendered user:1</code> <br> </div></div><br>  By default, Drupal responds with <code>Cache-Control: private, no-cache</code> (i.e., prohibits caching) for all HTML resources it generates.  This means that Varnish will not cache them.  You need to enable external caching in the Drupal settings.  Go to <code>/admin/config/development/performance</code> and select a non-zero value for <i>Page cache maximum age</i> . <br><img src="https://habrastorage.org/webt/oy/hg/tu/oyhgtuhtat5r0_jfm-jd1rn6zfa.png" alt="image"><br><br>  I recommend starting with some innocuous 5-minute cache, and only when everything is debugged and successfully run in, go to full-scale values ​​that are either hours or days long. <br><br>  Again, double-check - when requesting an Drupal page by an anonymous user, you should see in the answer: <code>Cache-Control: public, max-age=[   ]</code> .  And when requested on behalf of an authorized user, <code>Cache-Control: private, no-cache</code> should arrive in response <code>Cache-Control: private, no-cache</code> .  So we allowed Varnish to cache anonymous and only anonymous HTML pages. <br><br><h3>  Varnish setting </h3><br>  We now turn to the preparation of Varnish'a.  The following should be added to your VCL. <br><br>  First, Drupal will now send HTTP Ban requests to your Varnish.  First of all, we must restrict access to the processing of this request, otherwise anyone will be able to clean the Varnish cache.  To do this, we introduce the acl group: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  ,    Ban . acl purge { "127.0.0.1"; }</span></span></code> </pre> <br>  It is necessary to add the processing of Ban requests.  In your <i>vcl_recv</i> enter at the very beginning: <br><pre> <code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (req.method == <span class="hljs-string"><span class="hljs-string">"BAN"</span></span>) { <span class="hljs-comment"><span class="hljs-comment">#    . if (!client.ip ~ purge) { return (synth(403, "Not allowed.")); } #    “Cache-Tags” . if (req.http.Cache-Tags) { ban("obj.http.Cache-Tags ~ " + req.http.Cache-Tags); } else { return (synth(403, "Cache-Tags header missing.")); } #     . return (synth(200, "Ban added.")); }</span></span></code> </pre> <br>  Also, by default, Varnish will re-translate the <i>Cache-Tags</i> and <i>Cache-Control</i> headers that he receives from Drupal in response to the final client (browser). <br><br>  In the case of <i>Cache-Tags</i> - this is trivial garbage that you will drive across the network and an extra source of information about the internal structure of your infrastructure.  And in the case of <i>Cache-Control: public</i> is a rather undesirable behavior, since  Drupal allowed caching for Varnish, but it would be incorrect to cache the pages in the browsers of your visitors (after all, they will be late with the updated content and our entire clever scheme about disabling the cache will be used).  Therefore, in <i>vcl_deliver</i> you need to add: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#     . unset resp.http.Cache-Tags; #       . if (resp.http.Content-Type ~ "text/html") { set resp.http.Cache-Control = "private,no-cache"; }</span></span></code> </pre> <br>  At this stage, you can cross over and restart Varnish on a live server.  Now Varnish can selectively clean its cache using HTTP Ban requests that Drupal will send it.  It will also cleverly cache HTML resources (those that Drupal will allow it to do), but will not allow browsers to cache them.  This is where its name comes from, as a class — reverse HTTP proxy cache — we cache it on an HTTP proxy, not on the client. <br><br><h2>  Buns, candy wrappers and cookies </h2><br>  Recheck the entire configuration.  Finding out about this will be much more painful from the client at 2 am than immediately after making the changes.  Believe my <s>experience of</s> intuition. <br><br><h3>  Cron processor and Late runtime processor modules </h3><br>  I mentioned that we need one of these 2 modules.  Disabling Varnish's cache is done on a queuing basis — during the processing of a request, Drupal inserts certain cache tags into a queue, and then someone must process this queue by sending the appropriate HTTP Ban requests to Varnish.  Both modules solve the problem of processing the queue, but they do it in different ways. <br><br>  The cron processor processes the queue when the cron of Drupal starts.  This means that cron becomes strategically important (it should be considered as such before).  Also, it follows from this model that there is a delay up to <i>X</i> (where <i>X</i> is the launch frequency of cron), when Varnish can render cached and already outdated HTML content.  In some cases this is acceptable. <br><br>  An alternative (and therefore more aggressive) queue handler is the Late runtime processor.  It processes the tag cache queue at the end of processing each incoming HTTP request, i.e.  in real time. <br><br>  Choose one of the two handlers for your taste and requirements submitted to the website.  I got the impression that most Drupal 8 websites use the Cron processor.  However, problems and overt bugs with the Late runtime processor are also not registered. <br><br><h3>  Drupal communication channel → Varnish </h3><br>  From the host where Drupal is located, make <code>curl -X BAN --header 'Cache-Tags: dummy-cache-tag' http://varnish-server.com</code> <br>  Make sure Varnish responded with 200 HTTP OK.  This means that you have correctly configured Varnish, and it is ready to process requests for disabilities that Drupal will send. <br><br><h3>  Debugging info in Drupal watchdog </h3><br>  On the <code>/admin/config/development/performance/purge</code> page, you can configure the required logging level in Drupal's watchdog.  Very useful when you need to identify a problem. <br><br><h3>  Disable queue size </h3><br>  There is some current status on the <code>/admin/config/development/performance/purge</code> page.  In particular, pay attention to the counter <i>Queue size</i> .  It shows the current queue length for invalidation of tag cache - this is the number of cache tags that have already been invalidated in Drupal, but have not yet been invalidated in Varnish. <br><br>  If you use invalidation through cron, make sure that this number drops to zero after running cron. <br><br>  If you use the “Late runtime processor”, then you should expect non-zero values ​​only periodically.  Too high a number, or not falling for a long time to 0 will be a sign of some problems. <br><br><h3>  Cache hit in Varnish </h3><br>  No need to believe the theory.  After the work done, it is better to double-check in practice the fact that Varnish correctly caches anonymous HTML pages!  If your Varnish does not initially insert cache hit headers into its responses, then it is enough to add to <i>vcl_deliver</i> : <br><br><pre> <code class="bash hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (obj.hits &gt; 0) { <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> resp.http.X-Varnish-Cache = <span class="hljs-string"><span class="hljs-string">"HIT"</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> resp.http.X-Varnish-Cache = <span class="hljs-string"><span class="hljs-string">"MISS"</span></span>; }</code> </pre> <br>  Make sure in practice that when requesting a page from an anonymous user, Varnish cached it (the second time, it should reply with the <code>X-Varnish-Cache: HIT</code> header).  At this point, provoke the invalidation of the page under study in Drupal - clean the Drupal cache or resave the node (if you are analyzing a page of a node), etc.  Do not forget to run cron Drupal'a, if he is responsible for the invalidation of the cache in Varnish'e. <br><br>  Repeat request for the page under study.  The first answer should contain the <code>X-Varnish-Cache: MISS</code> header - this way you confirm that Drupal successfully notified Varnish of the invalidation of the required tag cache, and the latter successfully processed the received invalidation request. <br><br><h3>  HTTP response header length </h3><br>  Sites on Drupal 8 can often be cumbersome.  In particular, this could result in a long list of tag caches associated with a particular HTML page.  Many web servers and generally Webserver + PHP stack in different implementations may have a limit on the maximum length of the response headers.  On this, you can really stumble.  Moreover, if the test environment has a test (truncated) data set, then the problem will appear only on the live environment.  It is necessary to treat the problem depending on how your stack is deployed. <br><br>  <i>Update:</i> It turned out that there is not so simple with the length of the response headers.  Here is an issue on drupal.org where I downloaded the patch.  Patch does a pretty good job of reducing the length of the headers <a href="https://www.drupal.org/project/purge/issues/2952277">www.drupal.org/project/purge/issues/2952277</a> <br><br><h3>  Once again about Cache API in Drupal 8 </h3><br>  Described in the article is only a small part of how the cache API is used in Drupal 8. I personally consider the Cache API as the main innovation compared to Drupal 7. If readers have an interest, then I can write the following article, where I will look more deeply at issues of internal design. cache API;  how caching is intertwined with rendering in Drupal 8. </div><p>Source: <a href="https://habr.com/ru/post/350978/">https://habr.com/ru/post/350978/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../350966/index.html">Choosing Web Fonts: A Beginner's Guide</a></li>
+<li><a href="../350968/index.html">Yandex opens Alice for all developers. Yandex.Dialogy Platform (beta)</a></li>
+<li><a href="../350972/index.html">Organization of information systems production processes. Part 1. Starting point</a></li>
+<li><a href="../350974/index.html">Slingshot APT: Advanced virus found - it went unnoticed for 6 years</a></li>
+<li><a href="../350976/index.html">Guide to SEO javascript sites. Part 1. The Internet through the eyes of Google</a></li>
+<li><a href="../350982/index.html">6 myths about Service Fabric</a></li>
+<li><a href="../350984/index.html">First steps in machine learning</a></li>
+<li><a href="../350986/index.html">Centralized continuous deployment for the year vol 2</a></li>
+<li><a href="../350988/index.html">Recruitment: play, hitting the target</a></li>
+<li><a href="../350990/index.html">“We'll have to write by ourselves. They sat down and wrote ": the life of the developers of the laboratory cluster of super-arrays in Sbertech</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

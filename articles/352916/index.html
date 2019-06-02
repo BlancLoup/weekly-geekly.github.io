@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Apache Ignite 2.4 BaselineTopology Concept</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="At the time of the appearance of the Ignite project in the Apache Software Foundation, it was positioned as a pure in-memory-solution: a distributed c...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Apache Ignite 2.4 BaselineTopology Concept</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://habrastorage.org/webt/ta/ao/dv/taaodvwq9pjcstqz02_wgeqfyce.jpeg" alt="image"></p><br><p>  At the time of the appearance of the Ignite project in the Apache Software Foundation, it was positioned as a pure in-memory-solution: a distributed cache that picks up data from a traditional DBMS in memory in order to gain access time.  But already in release 2.1, a module of built-in persistence ( <a href="https://habrahabr.ru/company/gridgain/blog/335294/">Native Persistence</a> ) appeared, which allows to classify Ignite as a full-fledged distributed database.  Since then, Ignite has ceased to depend on external systems for ensuring persistent data storage, and the <a href="https://ignite.apache.org/use-cases/caching/database-caching.html">configuration and administration</a> rake bundling, which users have repeatedly attacked, has disappeared. </p><br><p>  However, the persistent mode raises its scripts and new questions.  How to prevent intractable data conflicts in a split-brain situation?  Can we refuse to rebalance the partitions, if the node output now does not mean that the data on it is lost?  How to automate additional actions like <a href="https://apacheignite.readme.io/docs/cluster-activation">cluster activation</a> ?  BaselineTopology to help us. </p><a name="habracut"></a><br><h3 id="baselinetopology-pervoe-znakomstvo">  BaselineTopology: first acquaintance </h3><br><p>  Conceptually, a cluster in in-memory-mode is simple: there are no dedicated nodes, everyone has equal rights, you can assign a cache partition to each, send a computational task, or deploy a service.  If the node leaves the topology, then user requests will be serviced by other nodes, and the data of the output node will no longer be available. </p><br><div class="spoiler">  <b class="spoiler_title">In fact, you can also set groups in in-memory mode.</b> <div class="spoiler_text"><p>  With the help of cluster groups and user attributes, the user can, based on the selected attributes, distribute the nodes into classes.  However, restarting any node causes it to “forget” what was happening to it before restarting.  The cache data will be re-queried in the cluster, the computational tasks will be re-executed, and the services will be re-deployed.  Once the nodes do not store states, they are completely interchangeable. </p></div></div><br><p>  In the persistence mode, the nodes retain their state even after a restart: during the start process, the node data is read from the disk, and its state is restored.  Therefore, rebooting a node does not lead to the need to completely copy data from other nodes of the cluster (a process known as rebalancing): the data will be restored from the local disk at the time of the fall.  This opens up opportunities for very attractive network interaction optimizations, and as a result, the performance of the entire cluster will increase.  So, we need to somehow distinguish the set of nodes that are able to maintain their state after the restart, from all the others.  This task serves BaselineTopology. </p><br><p>  It is worth noting that the user can use persistent-caches simultaneously with in-memory-caches.  The latter will continue to live the same life as before: consider all nodes equal and interchangeable, begin the redistribution of partitions when the nodes exit to maintain the number of copies of data - BaselineTopology will regulate only the behavior of persistent caches. </p><br><p>  BaselineTopology (further BLT) at the topmost level is simply a collection of node identifiers that have been configured to store data.  How to create a BLT in a cluster and manage it, we will understand a little later, but now let's see what is the use of this concept in real life. </p><br><h3 id="persisted-dannye-razezd-zapreschen">  Persisted data: no entry allowed </h3><br><p>  The problem of distributed systems, known as the split brain, is already complicated when using persistence becomes even more insidious. </p><br><p>  A simple example: we have a cluster and a replicated cache. </p><br><div class="spoiler">  <b class="spoiler_title">Replicated and partitioned caches</b> <div class="spoiler_text"><p>  The standard approach to ensuring fault tolerance is to maintain the redundancy of a resource.  Ignite uses this approach to ensure reliable data storage: depending on the configuration, the cache can store more than one copy of the key on different nodes of the cluster.  Replicated cache stores one copy on each node, partitioned - a fixed number of copies. <br>  More details about this feature can be found in the <a href="https://apacheignite.readme.io/docs/cache-modes">documentation</a> . </p></div></div><br><p>  We will perform simple manipulations on it in the following sequence: </p><br><ol><li>  Stop the cluster and start the node group A. </li><li>  Update any keys in the cache. </li><li>  Stop group A and run group B. </li><li>  Apply other updates for the same keys. </li></ol><br><p><img src="https://habrastorage.org/webt/pg/xe/ra/pgxera1nc9orct79r46lob76aay.png" alt="image"></p><br><p>  Once Ignite is working in database mode, then when the nodes of the second group of updates are stopped, they will not be lost: they will be available as soon as we start the second group again.  So after restoring the original cluster state, different nodes may have different values ​​for the same key. </p><br><p>  Without much folly, just stopping and starting nodes, we were able to bring the data in a cluster into an indefinite state, which is automatically impossible to resolve. </p><br><p>  Preventing this situation is one of the tasks of the BLT. </p><br><p>  The idea is that in the persistence mode, the launch of the cluster goes through an additional stage, activation. </p><br><p>  At the very first activation, the first BaselineTopology is created and stored on the disk, which contains information about all the nodes present in the cluster at the time of activation. </p><br><p>  This information also includes a hash calculated on the basis of online site identifiers.  If, upon subsequent activation, some nodes are missing in the topology (for example, the cluster rebooted and one node was brought up for maintenance), then the hash is recalculated, and the previous value is stored in the activation history within the same BLT. </p><br><p>  Thus, BaselineTopology supports a chain of hashes that describe the composition of the cluster at the time of each activation. </p><br><p>  At stages 1 and 3, after starting the node groups, the user will have to explicitly activate the incomplete cluster, and each online node will update the BLT locally, adding a new hash to it.  All nodes of each group will be able to calculate the same hashes, but they will be different in different groups. </p><br><p>  You could already guess what happens next.  If a node tries to join a “foreign” group, it will be determined that the node is activated independently of the nodes of this group, and it will be denied access. </p><br><p>  It is worth noting that this validation mechanism does not provide complete protection against conflicts in a Split-Brain situation.  If the cluster is divided into two halves in such a way that at least one copy of the partition remains in each half, and the halves are not reactivated, the situation will occur when half of the conflicting changes in the same data occur.  BLT does not refute the <a href="https://en.wikipedia.org/wiki/CAP_theorem">CAP-theorem</a> , but protects against conflicts with obvious administrative errors. </p><br><h3 id="plyushki">  Buns </h3><br><p>  In addition to preventing data conflicts, BLT allows you to implement a couple of optional, but pleasant options. </p><br><p>  <strong>Bun №1</strong> - minus one manual action.  The activation already mentioned above had to be performed manually after each cluster reboot;  out-of-the-box automation tools were missing.  If there is a BLT, the cluster can independently decide on activation. </p><br><p>  Although the Ignite cluster is an elastic system, and nodes can be added and displayed dynamically, BTL comes from the concept that in database mode, the user maintains a stable cluster composition. </p><br><p><img src="https://habrastorage.org/webt/db/kh/2e/dbkh2ea1b13ainyod46hpndrzmm.png" alt="image"></p><br><p>  When the cluster is first activated, the newly created BaselineTopology remembers which nodes should be present in the topology.  After a reboot, each node checks the status of the other BLT nodes.  Once all the nodes are online, the cluster is automatically activated. </p><br><p>  <strong>Bun number 2</strong> - savings on network interaction.  The idea, again, is based on the assumption that the topology will remain stable for a long time.  Previously, leaving a node from the topology even for 10 minutes led to the launch of rebalancing of cache partitions to maintain the number of backups.  But why waste network resources and slow down the cluster if problems with a node are resolved in a matter of minutes, and it will be online again.  BaselineTopology optimizes this behavior. </p><br><p>  Now the cluster by default assumes that the problem node will soon be back in operation.  Part of the caches during this time will work with fewer backups, but it will not lead to interruption or slowdown of the service. </p><br><h3 id="upravlenie-baselinetopology">  Managing BaselineTopology </h3><br><p>  Well, we already know one way: BaselineTopology is automatically created when the cluster is first activated.  In this case, all server nodes that were online at the time of activation will be included in BLT. </p><br><p>  Manual BLT administration is performed using the control-script from the Ignite distribution, more about which can be found on <a href="https://apacheignite.readme.io/docs/cluster-activation">the documentation page</a> on cluster activation. </p><br><p>  The script provides a very simple API and supports only three operations: adding a node, deleting a node and installing a new BaselineTopology. </p><br><p>  Moreover, if adding nodes is a fairly simple operation without any special implications, then removing the active node from the BLT is a more subtle task.  Its performance under the load is fraught with races, in the worst case - the hang of the entire cluster.  Therefore, deletion is accompanied by an additional condition: the node to be deleted must be offline.  If you try to delete an online node, the control script will return an error and the operation will not start. </p><br><p>  Therefore, when deleting a node from the BLT, one manual operation is still required: stop the node.  However, this usage scenario is clearly not the main one, so the additional labor costs are not too large. </p><br><p>  The Java interface for managing BLT is even simpler and provides just one method to set BaselineTopology from the list of nodes. </p><br><p>  An example of changing BaselineTopology using the Java API: </p><br><pre><code class="java hljs">Ignite ignite = <span class="hljs-comment"><span class="hljs-comment">/* ... */</span></span>; IgniteCluster cluster = ignite.cluster(); <span class="hljs-comment"><span class="hljs-comment">//  BaselineTopology. Collection&lt;BaselineNode&gt; curBaselineTop = cluster.baselineTopology(); for (ClusterNode node : cluster.topology(cluster.currentTopologyVersion())) { //   ,      BaselineTopology // (shouldAdd(ClusterNode) -  ) if (shouldAdd(node) curTop.add(node); } //  BaselineTopology cluster.setBaselineTopology(curTop);</span></span></code> </pre> <br><h3 id="zaklyuchenie">  Conclusion </h3><br><p>  Ensuring data integrity is the most important task that any data warehouse should solve.  In the case of distributed DBMS, to which Apache Ignite belongs, the solution of this problem becomes significantly more difficult. </p><br><p>  The concept of BaselineTopology allows you to close the part of real-world scenarios in which the integrity of the data can be broken. </p><br><p>  Another priority Ignite is performance, and here BLT also saves resources and improves the response time of the system. </p><br><p>  The functionality of Native Persistence appeared in the project quite recently, and, no doubt, it will develop, become more reliable, more productive and more convenient to use.  And along with it, the concept of BaselineTopology will develop. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/352916/">https://habr.com/ru/post/352916/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../352906/index.html">Tamed floating point numbers. Is it possible to debug shaders for mobile devices on a PC?</a></li>
+<li><a href="../352908/index.html">SEO article optimization: actual plan</a></li>
+<li><a href="../352910/index.html">Hosting: exit poll</a></li>
+<li><a href="../352912/index.html">What we read in March: five necessary books for infrastructure engineers</a></li>
+<li><a href="../352914/index.html">Universal links: the palace of pitfalls</a></li>
+<li><a href="../352918/index.html">How to test SkyNet? (if it is written in js)</a></li>
+<li><a href="../352922/index.html">The path of the IT-manager (part # 1)</a></li>
+<li><a href="../352924/index.html">5 lessons we learned by spending 100500 RK on Facebook</a></li>
+<li><a href="../352928/index.html">RISC-V core generation and testing</a></li>
+<li><a href="../352930/index.html">What will happen if you combine ArrayList and LinkedList?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

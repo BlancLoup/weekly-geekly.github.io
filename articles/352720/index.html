@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Centralized update of Let's Encrypt certificates</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! 
+
+
+ In this article I will describe how we solved the problem of centralized updating of certificates of Let's Encrypt and infrastructure manag...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Centralized update of Let's Encrypt certificates</h1><div class="post__text post__text-html js-mediator-article"><p><img src="https://image.ibb.co/kCZsFS/letsencrypt_server.png" alt="letsencrupt server"></p><br><p>  Hello! </p><br><p>  In this article I will describe how we solved the problem of centralized updating of certificates of Let's Encrypt and infrastructure management using ansible. </p><br><p>  In our solution we will use: </p><br><ul><li>  ansible </li><li>  rsync, rsyncd </li><li>  inotify, incron </li><li>  certbot </li><li>  nginx </li></ul><a name="habracut"></a><br><p>  I will offer two options for the architecture, in which our solution can be useful.  In turn, you can offer your options in the comments. </p><br><p> Option 1: You have several frontend servers with public ip (for example 3) serving several domains.  These domains can be added / deleted.  In order not to monitor each of the frontend servers - it is more convenient to do it on one <code>letsencrypt server</code> 'e: </p><br><p><img src="https://image.ibb.co/eN1WaS/example1.png" alt="Example 1"></p><br><p>  Option 2: You have only one server with public ip, and you need certificates on servers within the network: </p><br><p><img src="https://image.ibb.co/c4eCh7/example2.png" alt="Example 2"></p><br><h2>  Description of roles ansible </h2><br><p>  The repository with roles available on the <a href="https://github.com/asteny/letsencrypt-server">link</a> . </p><br><p>  There are 4 roles in the repository: </p><br><ul><li>  nginx-simple <br>  Installs <code>nginx</code> on all hosts and copies base configs.  By itself, the role does not start from the playbook.  It runs on meta dependencies from other roles. </li><li>  letsencrypt-server <br>  Configures <code>rsyncd</code> on the <code>letsencrypt server</code> host.  In meta dependencies, it has the role <code>nginx-simple</code> .  Accordingly, <code>nginx</code> will be installed first, and then the role of <code>letsencrypt server</code> will play. </li><li>  incron <br>  Installs the necessary packages for <code>incron</code> and copies the base config.  The role also does not run directly as <code>nginx-simple</code> . </li><li>  front <br>  In meta dependencies it has <code>incron</code> and <code>nginx-simple</code> roles.  After them, the <code>front</code> role copies the <code>nginx</code> configs needed for example.com, adds a task to <code>cron</code> to pick up new certificates from the <code>letsencrypt server</code> and the task to <code>incron</code> to check file changes and execute the <code>nginx -s reload</code> hook <code>nginx -s reload</code> </li></ul><br><p>  Let's go to practice: </p><br><h2>  Initial configuration </h2><br><p>  Initially we have: </p><br><ul><li>  1 server for centralized writing of SSL certificate ( <code>letsencrypt server</code> ) </li><li>  1 or more publicly accessible servers with nginx ( <code>front</code> ) </li></ul><br><p>  Ubuntu 16.04 is installed on all servers. </p><br><h2>  Install and configure nginx </h2><br><p>  To begin with, we will install nginx on a common role of <code>nginx-simple</code> on all hosts and scatter nginx configs common for all hosts (nginx.conf, ssl parameters, certificate paths, etc). </p><br><p>  For letsencrypt server in the template <code>.../site-available/default.conf</code> <code>.well_known</code> folder will be in <code>/var/www/</code> : </p><br><pre> <code class="hljs django"><span class="xml"></span><span class="hljs-template-tag"><span class="xml"></span><span class="hljs-template-tag">{% </span><span class="hljs-name"><span class="hljs-name"><span class="hljs-template-tag"><span class="hljs-name"><span class="hljs-name">if</span></span></span></span></span><span class="hljs-template-tag"> letsencrypt_server %}</span></span><span class="xml"><span class="xml"> location /.well-known { root /var/www/; }</span></span></code> </pre> <br><p>  For the server / servers of the <code>front</code> group, since the <code>.well_known</code> folder <code>.well_known</code> used not only for obtaining certificates, but also for other software, we import into the config <code>example.conf</code> <code>letsencrypt-proxy.conf</code> and nginx will search the folder locally on the front server using the try_file <code>try_file</code> : </p><br><pre> <code class="hljs django"><span class="xml"></span><span class="hljs-template-tag"><span class="xml"></span><span class="hljs-template-tag">{% </span><span class="hljs-name"><span class="hljs-name"><span class="hljs-template-tag"><span class="hljs-name"><span class="hljs-name">if</span></span></span></span></span><span class="hljs-template-tag"> nginx_proxy_well_known %}</span></span><span class="xml"><span class="xml"> try_files $uri $uri/ @letsencrypt; </span></span><span class="hljs-template-tag"><span class="hljs-template-tag">{% </span><span class="hljs-name"><span class="hljs-name"><span class="hljs-template-tag"><span class="hljs-name"><span class="hljs-name">endif</span></span></span></span></span><span class="hljs-template-tag"> %}</span></span><span class="xml"></span><span class="xml"></span></code> </pre> <br><p>  Configs for the domain will be filled depending on the variables from inventory.  In the repository is the domain example.com </p><br><p>  Also, depending on the <code>letsencrypt_server</code> variable, the <code>nginx-simple</code> role will install certbot on the letsencrypt server and add the cron task to update the certificates. </p><br><h2>  Getting a certificate </h2><br><p>  Since we solved this problem before the wildcard certificate from Let's Encrypt appeared, we will consider both options for obtaining a certificate. </p><br><p>  On the letsencrypt server server we execute: </p><br><pre> <code class="hljs swift">certbot certonly --agree-tos -d example.ru --webroot -w /<span class="hljs-keyword"><span class="hljs-keyword">var</span></span>/www/</code> </pre> <br><p>  If there are more than one domains, we add the following ones using the <code>-d</code> key. </p><br><p>  To obtain a wildcard certificate, we will need to add records to the DNS TXT.  Currently, this is the only way to obtain such a certificate: </p><br><pre> <code class="hljs axapta">certbot certonly --agree-tos -d example.ru -d *.example.ru --preferred-challenges dns --manual --<span class="hljs-keyword"><span class="hljs-keyword">server</span></span> https:<span class="hljs-comment"><span class="hljs-comment">//acme-v02.api.letsencrypt.org/directory</span></span></code> </pre> <br><p>  Certbot will write what TXT records you need to add. </p><br><h2>  Certificate renewal </h2><br><p>  We received the certificates, it remains to set up copying them to the front server / server.  To do this, we will configure <code>rsyncd</code> on the letsencrypt read-only server for a limited list of ip addresses: </p><br><pre> <code class="hljs perl">hosts allow = {{ hosts_allow }} hosts deny = * list = true <span class="hljs-keyword"><span class="hljs-keyword">use</span></span> <span class="hljs-keyword"><span class="hljs-keyword">chroot</span></span> = <span class="hljs-keyword"><span class="hljs-keyword">no</span></span> [cert] path = <span class="hljs-regexp"><span class="hljs-regexp">/etc/letsencrypt</span></span><span class="hljs-regexp"><span class="hljs-regexp">/live/</span></span> uid = root gid = root <span class="hljs-keyword"><span class="hljs-keyword">read</span></span> only = true</code> </pre> <br><p>  Every 5 minutes the cron task from the front servers will check if the certificates have been updated and take them.  Since  certificates are rotated, <code>/etc/letsencrypt/live/{{ domain }}</code> are located in the <code>/etc/letsencrypt/live/{{ domain }}</code> folder.  Add the <code>-L</code> switch to pull out the original files: </p><br><pre> <code class="hljs perl">/usr/bin/rsync -zavL --<span class="hljs-keyword"><span class="hljs-keyword">chmod</span></span>=D075<span class="hljs-number"><span class="hljs-number">0</span></span>,F64<span class="hljs-number"><span class="hljs-number">0</span></span> --<span class="hljs-keyword"><span class="hljs-keyword">delete</span></span> rsync:<span class="hljs-regexp"><span class="hljs-regexp">//</span></span>{{ hostvars[<span class="hljs-string"><span class="hljs-string">'letsencrypt-server'</span></span>].ansible_eth<span class="hljs-number"><span class="hljs-number">0</span></span>.ipv4.address }}/cert /etc/letsencrypt/live/</code> </pre> <br><h2>  Hook for nginx </h2><br><p>  We set up nginx, received certificates, took them to the front server.  It remains to determine that the files in the <code>/etc/letsencrypt/live/{{ domain }}</code> folder have changed and execute the <code>nginx -s reload</code> hook <code>nginx -s reload</code> </p><br><p>  The linux <code>inotify</code> kernel subsystem and the <code>incron</code> daemon will help us in this.  Read more about them <a href="https://habrahabr.ru/post/66569/">here</a> . </p><br><p>  The <code>incron</code> role <code>incron</code> necessary packages, and from the <code>front</code> role template a task will be added to monitor the certificates and the necessary hook: </p><br><pre> <code class="hljs django"><span class="xml"><span class="xml">/etc/letsencrypt/live/</span></span><span class="hljs-template-variable"><span class="hljs-template-variable">{{ domain }}</span></span><span class="xml"><span class="xml">/ IN_CREATE,IN_DELETE,IN_MODIFY,IN_MOVED_TO nginx -s reload</span></span></code> </pre> <br><h2>  Finally </h2><br><p>  We tried to describe in detail the whole process of installation and configuration, and since  everything is described in ansible playbooks - the article was very compact.  As they often like to say - "a little more than 100 lines of code."  Questions, criticism and comments will be happy to answer in the comments. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/352720/">https://habr.com/ru/post/352720/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../352708/index.html">Basic Business Instinct: The Edge of Corporate Security</a></li>
+<li><a href="../352712/index.html">How to start working with lambda expressions in java</a></li>
+<li><a href="../352714/index.html">Daily meetings in Agile development: 15 minutes, without which there is no release</a></li>
+<li><a href="../352716/index.html">New C # 7.2. Span <T> and Memory <T></a></li>
+<li><a href="../352718/index.html">Where better to live programmer. Compare 9 countries</a></li>
+<li><a href="../352722/index.html">How to issue a self-signed SSL certificate and make your browser trust it</a></li>
+<li><a href="../352724/index.html">What will be Web 3.0: blockchain-marketplace for machine learning</a></li>
+<li><a href="../352726/index.html">Enough automation - it's time to draw an owl on PowerShell and teach the console to speak</a></li>
+<li><a href="../352728/index.html">Standoff on the web</a></li>
+<li><a href="../352730/index.html">To steal in 1100 seconds - the strangest bug that I saw</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

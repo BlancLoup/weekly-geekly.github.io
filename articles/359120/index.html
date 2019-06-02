@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Experiments with kube-proxy and node unavailability in Kubernetes</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Note trans. : This article, written by a technical consultant and a certified Kubernetes administrator from the UK - Daniele Polencic, clearly shows a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Experiments with kube-proxy and node unavailability in Kubernetes</h1><div class="post__text post__text-html js-mediator-article"> <i><b>Note</b></i>  <i><b>trans.</b></i>  <i>: This article, written by a technical consultant and a certified Kubernetes administrator from the UK - Daniele Polencic, clearly shows and tells what role kube-proxy plays in delivering user requests to the subs and when problems occur in one of the cluster nodes .</i> <br><br>  The code for applications deployed in Kubernetes runs on one or more work nodes.  A node can be located either on a physical or virtual machine, or in AWS EC2 or Google Compute Engine, and the presence of many such sites means the ability to effectively launch and scale the application.  For example, if a cluster consists of three nodes and you decide to scale the application into four replicas, Kubernetes will evenly distribute them among the nodes as follows: <br><br><img src="https://habrastorage.org/webt/pk/wt/b7/pkwtb7xs5bktrwq1brnp_1ruygs.png"><a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Such architecture copes well with falls.  If one node is not available, the application will continue to work on the other two.  Meanwhile, Kubernetes will reassign the fourth replica to another (available) node. <br><br><img src="https://habrastorage.org/webt/cz/8b/pg/cz8bpg83d7kt5a1n2r_enzprxjs.png"><br><br>  Moreover, even if all nodes are isolated, they can still serve requests.  For example, reduce the number of application replicas to two: <br><br><img src="https://habrastorage.org/webt/9h/qm/ql/9hqmqln6iaiz1cvj48yqmrawewm.png"><br><br>  Since each node can serve the application, how does the third <i>(Node 3)</i> find out that the application is not running on it and it should redirect traffic to one of the other nodes? <br><br><img src="https://habrastorage.org/webt/pa/ft/ou/paftoukl84ijb9a2ob_avufqr5c.png"><br><br>  Kubernetes has a <code>kube-proxy</code> binary that runs on each node and is responsible for routing traffic to a specific one.  It can be compared with the hotel receptionist sitting at the reception.  <code>Kube-proxy</code> accepts all traffic coming to the site and forwards to the correct one. <br><br><h3>  But how <code>kube-proxy</code> know where all the pods are located? </h3><br>  He does not know. <br><br>  But he knows <i>about everything the</i> main (master) node, which is responsible for creating a list of all the routing rules.  And <code>kube-proxy</code> checks these rules and puts them into action.  In the simple scenario described above, the list of rules is as follows: <br><br><ul><li>  The first replica of the application is available on node 1 <i>(Node 1)</i> . </li><li>  The second replica of the application is available on node 2 <i>(Node 2)</i> . </li></ul><br>  It does not matter at all from which node the traffic comes: <code>kube-proxy</code> knows <i>where</i> it is necessary to redirect traffic in accordance with this list of rules. <br><br><img src="https://habrastorage.org/webt/zd/vi/rn/zdvirn11p7q1t0ffnop2yy95qji.png"><br><br><h2>  But what happens when kube-proxy crashes? </h2><br><h3>  And what if the list of rules disappears? </h3><br><h3>  What happens when there are no rules where to send traffic? </h3><br>  Manabu Sakai <a href="https://blog.manabusakai.com/2018/02/fault-tolerance-of-kubernetes/">had the</a> same questions.  And he decided to find out. <br><br>  Suppose you have a cluster of two nodes in GCP: <br><br><pre> <code class="bash hljs">$ kubectl get nodes NAME STATUS ROLES AGE VERSION node1 Ready &lt;none&gt; 17h v1.8.8-gke.0 node2 Ready &lt;none&gt; 18h v1.8.8-gke.0</code> </pre> <br>  And you deploy the Manabu app: <br><br><pre> <code class="plaintext hljs">$ kubectl create -f https://raw.githubusercontent.com/manabusakai/k8s-hello-world/master/kubernetes/deployment.yml $ kubectl create -f https://raw.githubusercontent.com/manabusakai/k8s-hello-world/master/kubernetes/service.yml</code> </pre> <br>  This is a simple application that displays on the web page the host name of the current hearth. <br><br><img src="https://habrastorage.org/webt/lk/q0/kd/lkq0kdcyael_dyj51sw0bkoewwo.png"><br><br>  Scale it ( <i>Deployment</i> ) to ten replicas: <br><br><pre> <code class="bash hljs">$ kubectl scale --replicas 10 deployment/k8s-hello-world</code> </pre> <br>  Ten replicas are evenly distributed over two nodes ( <i>node1</i> and <i>node2</i> ): <br><br><pre> <code class="bash hljs">$ kubectl get pods NAME READY STATUS NODE k8s-hello-world-55f48f8c94-7shq5 1/1 Running node1 k8s-hello-world-55f48f8c94-9w5tj 1/1 Running node1 k8s-hello-world-55f48f8c94-cdc64 1/1 Running node2 k8s-hello-world-55f48f8c94-lkdvj 1/1 Running node2 k8s-hello-world-55f48f8c94-npkn6 1/1 Running node1 k8s-hello-world-55f48f8c94-ppsqk 1/1 Running node2 k8s-hello-world-55f48f8c94-sc9pf 1/1 Running node1 k8s-hello-world-55f48f8c94-tjg4n 1/1 Running node2 k8s-hello-world-55f48f8c94-vrkr9 1/1 Running node1 k8s-hello-world-55f48f8c94-xzvlc 1/1 Running node2</code> </pre> <br><img src="https://habrastorage.org/webt/ve/g0/ss/veg0ssq65d3zsf8tdy3tz25jdys.png"><br><br>  <i>Service</i> is created to load balance requests from ten replicas: <br><br><pre> <code class="bash hljs">$ kubectl get services NAME TYPE CLUSTER-IP EXTERNAL-IP PORT(S) AGE k8s-hello-world NodePort 100.69.211.31 &lt;none&gt; 8080:30000/TCP 3h kubernetes ClusterIP 100.64.0.1 &lt;none&gt; 443/TCP 18h</code> </pre> <br>  It is forwarded to the outside world through <code>NodePort</code> and is available on port 30000. In other words, each node opens port 30000 to the external Internet and starts to accept incoming traffic. <br><br><img src="https://habrastorage.org/webt/vl/kd/j-/vlkdj-l3qdqkwiqjj7oby4fplny.png"><br><br><h3>  But how is traffic routed from port 30,000 to pod? </h3><br>  <code>kube-proxy</code> is responsible for setting the rules for incoming traffic from port 30,000 to one of ten pods. <br><br>  Try sending a request to port 30,000 of one of the nodes: <br><br><pre> <code class="bash hljs">$ curl &lt;node ip&gt;:30000</code> </pre> <br>  <i><b>Note</b> : The node's IP address can be obtained with the command <code>kubectl get nodes -o wide</code> .</i> <br><br>  The application responds with “Hello world!” And the host name of the container on which it runs: <code>Hello world! via &lt;hostname&gt;</code>  <code>Hello world! via &lt;hostname&gt;</code> . <br><br>  If you re-request the same URL, sometimes the same answer will appear, and sometimes it will change.  The reason - <code>kube-proxy</code> works as a load balancer, checks the routing and distributes traffic to ten traffic. <br><br>  What is interesting, it makes no difference to which node you are accessing: the answer will come from any hearth - even from those that are located on other nodes (not the ones you turned to). <br><br>  The final configuration will require an external load balancer that distributes traffic across the nodes (on port 30000).  This is how the final request flow diagram is obtained: <br><br><img src="https://habrastorage.org/webt/lg/y6/kh/lgy6khumqfrtcnudlyhkoitt8yc.png"><br><br>  That is, the load balancer redirects incoming traffic from the Internet to one of two nodes.  We clarify all this scheme - we summarize the principle of its work: <br><br><ol><li>  Coming from the Internet traffic is sent to the main load balancer. </li><li>  This balancer directs traffic to port 30,000 of one of the two nodes. </li><li>  The rules established by <code>kube-proxy</code> , redirect traffic from the site to under. </li><li>  Traffic hits on under. </li></ol><br>  That's the whole scheme! <br><br><h2>  It's time to break everything </h2><br>  Now that we know how everything interacts, let's go back to the original question.  What happens if we change the routing rules?  Will the cluster still work?  Will they serve requests? <br><br>  Let's delete the routing rules, and in a separate terminal, monitor the application for the duration of the responses and the missed requests.  For the latter, it is enough to write a cycle that will display the current time every second and make a request to the application: <br><br><pre> <code class="bash hljs">$ <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> sleep 1; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> date +%X; curl -sS http://&lt;your load balancer ip&gt;/ | grep ^Hello; <span class="hljs-keyword"><span class="hljs-keyword">done</span></span></code> </pre> <br>  At the output we will get columns with the time and text of the response from the submission: <br><br><pre> <code class="bash hljs">10:14:41 Hello world! via k8s-hello-world-55f48f8c94-vrkr9 10:14:43 Hello world! via k8s-hello-world-55f48f8c94-tjg4n</code> </pre> <br>  So let's remove the routing rules from the site, but first we will figure out how to do this. <br><br>  <code>kube-proxy</code> can work in three modes: <i>userspace</i> , <i>iptables</i> and <i>ipvs</i> .  The default mode since Kubernetes 1.2 is <i>iptables</i> .  <i>( <b>Note</b> : the latest mode, <i>ipvs</i> , appeared in the release of <a href="https://habr.com/company/flant/blog/338230/">K8s 1.8</a> and received beta status in <a href="https://habr.com/company/flant/blog/344220/">1.9</a> .)</i> <br><br>  In <i>iptables</i> mode, the <code>kube-proxy</code> lists the routing rules on a node using iptables rules.  Thus, you can go to any node and delete these rules with the command <code>iptables -F</code> . <br><br>  <i><b>Note</b> : Note that the <code>iptables -F</code> call can break the SSH connection.</i> <br><br>  If everything went according to plan, you'll see something like this: <br><br><pre> <code class="bash hljs">10:14:41 Hello world! via k8s-hello-world-55f48f8c94-xzvlc 10:14:43 Hello world! via k8s-hello-world-55f48f8c94-tjg4n <span class="hljs-comment"><span class="hljs-comment">#      `iptables -F` 10:15:10 Hello world! via k8s-hello-world-55f48f8c94-vrkr9 10:15:11 Hello world! via k8s-hello-world-55f48f8c94-vrkr9</span></span></code> </pre> <br>  As it is easy to see, from the moment of dropping the iptables rules to the next answer, it took about 27 seconds (from 10:14:43 to 10:15:10). <br><br>  What happened during this time?  Why did everything get well again after 27 seconds?  Maybe this is just a coincidence? <br><br>  Let's reset the rules again: <br><br><pre> <code class="bash hljs">11:29:55 Hello world! via k8s-hello-world-55f48f8c94-xzvlc 11:29:56 Hello world! via k8s-hello-world-55f48f8c94-tjg4n <span class="hljs-comment"><span class="hljs-comment">#      `iptables -F` 11:30:25 Hello world! via k8s-hello-world-55f48f8c94-npkn6 11:30:27 Hello world! via k8s-hello-world-55f48f8c94-vrkr9</span></span></code> </pre> <br><br>  Now there is a pause of 29 seconds, from 11:29:56 to 11:30:25.  But the cluster is back to work. <br><br>  Why does it take 30 seconds to answer?  Are requests coming to the node even without a routing table? <br><br>  You can look at what is happening on the node during these 30 seconds.  In another terminal, start a loop that makes requests to the application every second, but this time - contact the node, not the load balancer. <br><br><pre> <code class="bash hljs">$ <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> sleep 1; <span class="hljs-built_in"><span class="hljs-built_in">printf</span></span> %<span class="hljs-string"><span class="hljs-string">"s\n"</span></span> $(curl -sS http://&lt;ip of the node&gt;:30000); <span class="hljs-keyword"><span class="hljs-keyword">done</span></span></code> </pre> <br>  Again, reset the iptables rules.  Such log will turn out: <br><br><pre> <code class="bash hljs">Hello world! via k8s-hello-world-55f48f8c94-xzvlc Hello world! via k8s-hello-world-55f48f8c94-tjg4n <span class="hljs-comment"><span class="hljs-comment">#      `iptables -F` curl: (28) Connection timed out after 10003 milliseconds curl: (28) Connection timed out after 10004 milliseconds Hello world! via k8s-hello-world-55f48f8c94-npkn6 Hello world! via k8s-hello-world-55f48f8c94-vrkr9</span></span></code> </pre> <br>  It is not surprising that connections to the node end with a timeout after resetting the rules.  But it's interesting that <code>curl</code> is waiting for a response for 10 seconds. <br><br>  But what if in the previous example the load balancer is waiting for new connections?  This would explain the 30-second delay, however, it remains unclear why the node is ready to accept connections after a long enough wait. <br><br>  So why is the traffic going again in 30 seconds?  Who restores iptables rules? <br><br>  Before resetting the iptables rules, you can view them: <br><br><pre> <code class="bash hljs">$ iptables -L</code> </pre> <br>  Reset the rules and continue to execute this command - you will see that the rules are restored in a few seconds. <br><br>  Is that you, <code>kube-proxy</code> ?  Yes!  In the official documentation of kube-proxy <a href="https://kubernetes.io/docs/reference/generated/kube-proxy/">you can find</a> two interesting flags: <br><br><ul><li>  <code>--iptables-sync-period</code> - the maximum interval for which the iptables rules will be updated (for example: '5s', '1m', '2h22m').  Must be greater than 0. The default is 30s; </li><li>  <code>--iptables-min-sync-period</code> - minimum interval for which iptables rules must be updated when changes occur in <i>endpoints</i> and <i>services</i> (for example: '5s', '1m', '2h22m').  The default is 10s. </li></ul><br>  That is: <code>kube-proxy</code> updates the iptables rules every 10-30 seconds.  If we reset the iptables rules, it will take up to 30 seconds for <code>kube-proxy</code> to realize this and restore them. <br><br>  That's why it took about 30 seconds to make the node work again!  It also explains how routing tables get from a master node to a worker.  Their regular synchronization is handled by <code>kube-proxy</code> .  In other words, each time you add or remove a pod, the main node rewrites the route list, and <code>kube-proxy</code> regularly synchronizes the rules with the current node. <br><br>  So, we summarize how Kubernetes and <code>kube-proxy</code> restored if someone <code>kube-proxy</code> iptables rules on a node: <br><br><ol><li>  The iptables rules have been removed from the site. </li><li>  The request is sent to the load balancer and routed to the node. </li><li>  The node does not accept incoming requests, so the balancer is waiting. </li><li>  After 30 seconds, <code>kube-proxy</code> restores iptables rules. </li><li>  The node can receive traffic again.  The iptables rules redirect the balancer request to the under. </li><li>  Sub responds to the load balancer with a total delay of 30 seconds. </li></ol><br>  A wait of 30 seconds may be invalid for the application.  In this case, you should think about changing the standard update interval in the <code>kube-proxy</code> .  Where are these settings and how to change them? <br><br>  There is an agent on the node - <i>kubelet</i> , - and it is he who is responsible for starting <code>kube-proxy</code> as a static hearth on each node.  Documentation for static submissions assumes that kubelet checks the contents of a specific directory and creates all the resources from it. <br><br>  If you look at the kubelet process running on a node, you can see that it is running with the <code>--pod-manifest-path=/etc/kubernetes/manifests</code> .  Elementary <code>ls</code> opens the veil of secrecy: <br><br><pre> <code class="bash hljs">$ ls -l /etc/kubernetes/manifests total 4 -rw-r--r-- 1 root root 1398 Feb 24 08:08 kube-proxy.manifest</code> </pre> <br>  What does this <code>kube-proxy.manifest</code> ? <br><br><pre> <code class="plaintext hljs">apiVersion: v1 kind: Pod metadata: name: kube-proxy spec: hostNetwork: true containers: - name: kube-proxy image: gcr.io/google_containers/kube-proxy:v1.8.7-gke.1 command: - /bin/sh - -c -&gt; echo -998 &gt; /proc/$$$/oom_score_adj &amp;&amp; exec kube-proxy --master=https://35.190.207.197 --kubeconfig=/var/lib/kube-proxy/kubeconfig --cluster-cidr=10.4.0.0/14 --resource-container="" --v=2 --feature-gates=ExperimentalCriticalPodAnnotation=true --iptables-sync-period=30s 1&gt;&gt;/var/log/kube-proxy.log 2&gt;&amp;1</code> </pre> <br>  <i><b>Note</b> : For the sake of simplicity, the incomplete file contents are shown here.</i> <br><br>  The mystery is solved!  As you can see, the option <code>--iptables-sync-period=30s</code> used to update iptables rules every 30 seconds.  Here you can also change the minimum and maximum update time of rules on a specific node. <br><br><h2>  findings </h2><br>  Resetting iptables rules is equivalent to making the node inaccessible.  The traffic is still sent to the site, but it is not able to forward it further (i.e., under).  Kubernetes can recover from this problem by tracking the routing rules and updating them if necessary. <br><br>  A big thanks to <a href="https://twitter.com/manabusakai">Manabu Sakai</a> for posting to a blog, which inspired this text in many ways, and also to <a href="https://twitter.com/Valentin_NC">Valentin Ouvrard</a> for studying the issue of forwarding iptables rules from the wizard to other nodes. <br><br><h2>  PS from translator </h2><br>  Read also in our blog: <br><br><ul><li>  “ <a href="https://habr.com/company/flant/blog/346304/">An Illustrated Network Guide for Kubernetes</a> ”; </li><li>  " <a href="https://habr.com/company/flant/blog/427283/">How to ensure high availability in Kubernetes</a> "; </li><li>  " <a href="https://habr.com/company/flant/blog/326062/">Improving the reliability of Kubernetes: how to quickly notice that the node has fallen</a> "; </li><li>  “What happens in Kubernetes when starting the kubectl run?”: <a href="https://habr.com/company/flant/blog/342658/">Part 1</a> and <a href="https://habr.com/company/flant/blog/342822/">part 2</a> ; </li><li>  “ <a href="https://habr.com/company/flant/blog/335552/">How does the Kubernetes scheduler actually work?</a>  "; </li><li>  " <a href="https://habr.com/company/flant/blog/331188/">Our experience with Kubernetes in small projects</a> " <i>(video of the report, which includes an introduction to the technical device Kubernetes)</i> ; </li><li>  " <a href="https://habr.com/company/flant/blog/329830/">Container Networking Interface (CNI) - network interface and standard for Linux-containers</a> ." </li></ul></div><p>Source: <a href="https://habr.com/ru/post/359120/">https://habr.com/ru/post/359120/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../359108/index.html">How do we hire using the bootcamp. Experience of the department of search interfaces</a></li>
+<li><a href="../359110/index.html">New attack technique based on Meltdown. Using speculative instructions for detecting virtualization</a></li>
+<li><a href="../359114/index.html">What is business: a conversation on concepts</a></li>
+<li><a href="../359116/index.html">Reverse engineering of the device firmware on the example of a flashing "rhino". Part 1</a></li>
+<li><a href="../359118/index.html">It's time to grow up for IT communities: why do we gather activists at RHS?</a></li>
+<li><a href="../359122/index.html">A bunch of different ways to read bits</a></li>
+<li><a href="../359124/index.html">TOTAL 3 months: Alternative to paid shutdown of advertising in the free Android application</a></li>
+<li><a href="../359130/index.html">How we made a highload ++ game with voxel graphics and VR</a></li>
+<li><a href="../359132/index.html">Go 1.11: AVX-512 with Go</a></li>
+<li><a href="../359134/index.html">How to write a decentralized multiblockchein exchange in a day</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

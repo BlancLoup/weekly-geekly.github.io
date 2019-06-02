@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Interesting surprises ConcurrentDictionary (+ analysis of the problem with DotNext 2017 Moscow)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello everyone who writes code for .NET, especially multi-threaded. You rarely see thread-safe code without thread-safe collections, which means you n...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Interesting surprises ConcurrentDictionary (+ analysis of the problem with DotNext 2017 Moscow)</h1><div class="post__text post__text-html js-mediator-article"><p>  Hello everyone who writes code for .NET, especially multi-threaded.  You rarely see thread-safe code without thread-safe collections, which means you need to be able to use them.  I will tell about the most popular of them - ConcurrentDictionary.  There are surprisingly many interesting surprises hidden in it: both pleasant and not so much. </p><br><p>  First we will analyze the ConcurrentDictionary device and the computational complexity of operations with it, and then we will talk about convenient tricks and pitfalls associated with memory traffic and garbage collection. </p><br><p><img src="https://habrastorage.org/webt/v8/o5/1u/v8o51uevmpdf0t6ewb8f7hxie9i.png"></p><a name="habracut"></a><br><h1 id="oblast-primenimosti">  Field of applicability </h1><br><p>  All the observations from this article are checked for the latest version of the .NET Framework (4.7.1) at the time of publication.  They are probably valid in .NET Core, but the verification of this statement remains an exercise for the reader. </p><br><h1 id="kratko-ob-ustroystve">  Briefly about the device </h1><br><p>  Under the hood, ConcurrentDictionary has a familiar hash table implementation.  It is based on an array of so-called buckets, each of which corresponds to a specific set of hash function values.  Inside each bucket, there is a simply linked list of elements: in the event of a collision, a linear key search is performed in it. </p><br><p>  Thread safety is provided by a technique called <a href="https://github.com/google/guava/wiki/StripedExplained">striped locking</a> .  There is a small array of ordinary locks, and each of them is responsible for a whole range of buckets (hence the stripe in the name).  In order to write something into an arbitrary bucket, you need to capture the corresponding lock.  Usually, locks are much smaller than buckets. </p><br><p><img src="https://habrastorage.org/webt/np/dv/lx/npdvlxu4qcnhhc22dphghpgkqvy.png"></p><br><p> And this is how these concepts correlate with the parameters of the <code>ConcurrentDictionary(int concurrencyLevel, int capacity)</code> constructor <code>ConcurrentDictionary(int concurrencyLevel, int capacity)</code> : </p><br><ul><li>  <code>capacity</code> - the number of buckets.  The default is 31. </li><li>  <code>concurrencyLevel</code> - the number of locks.  The default is 4 × number of cores. </li></ul><br><p>  The implementation tries to keep the size of buckets small, increasing their number as needed.  When expanding, the following occurs: </p><br><ul><li>  Capacity approximately doubles.  Approximately, because the value is chosen so that it is not divided by 2, 3, 5 and 7 ( <a href="http://srinvis.blogspot.ru/2006/07/hash-table-lengths-and-prime-numbers.html">it is useful</a> to make the capacity simple or poorly factorizable). </li><li>  The number of locks is doubled if <code>concurrencyLevel</code> not explicitly set.  Otherwise, it remains the same. </li></ul><br><h1 id="slozhnost-operaciy">  Complexity of operations </h1><br><p>  Summary plate for a dictionary with N elements and K locks: </p><br><p><img src="https://habrastorage.org/webt/3d/sk/df/3dskdff43-dehudpr6dupzbe5zw.png"></p><br><p>  The remaining operations are derived from these: </p><br><ul><li>  <code>GetOrAdd</code> = <code>TryGetValue</code> + <code>TryAdd</code> </li><li>  <code>AddOrUpdate</code> = <code>TryGetValue</code> + <code>TryAdd</code> + <code>TryUpdate</code> </li><li>  <code>Indexer(get)</code> = <code>TryGetValue</code> </li><li>  <code>Indexer(set)</code> = <code>TryAdd</code> with overwriting </li></ul><br><h1 id="plohie-novosti">  The bad news </h1><br><p>  The Count and IsEmpty properties cunningly <strong>capture all lok</strong> in the dictionary.  It is better to refrain from frequently invoking these properties from multiple threads. </p><br><p>  The Keys and Values ​​properties are even more insidious: they not only take all locks, but also <strong>completely copy all keys and values ​​into a separate List</strong> .  Unlike traditional Dictionary, whose properties of the same name return thin wrappers, here you need to be ready for large memory allocations. </p><br><p>  Such a blatant inefficiency is caused by the desire to provide the semantics of a snepshot: to return some consistent state that existed at a certain point in time. </p><br><h1 id="horoshie-novosti">  Good news </h1><br><p>  Not so bad.  First: the most common enumeration (working through GetEnumerator) is non-blocking and works without unnecessary copying of data.  This has to be paid for by the lack of snapshot semantics: as a result of the transfer, the recording operations performed in parallel can be reflected in the result. </p><br><p>  The second good news: most often this behavior is either permissible or desirable, and this can be used.  For example, it is effective to list keys or values: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> keys = dictionary.Select(pair =&gt; pair.Key); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> values = dictionary.Select(pair =&gt; pair.Value);</code> </pre> <br><h1 id="tips-and-tricks">  Tips and tricks </h1><br><p>  Unlike the usual Dictionary, you can insert into or delete from the ConcurrentDictionary directly during the listing!  This, for example, allows you to conveniently clean obsolete items from the dictionary cache with a lifetime: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> pair <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> cache) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (IsStale(pair.Value)) { cache.TryRemove(pair.Key, <span class="hljs-keyword"><span class="hljs-keyword">out</span></span> _); } }</code> </pre> <br><p>  You can delete elements not only by key, but also by exact match key + value, and atomically!  This is an undocumented feature hidden behind the explicit implementation of the ICollection interface.  It allows you to safely clear such a cache, even in race conditions with updating values: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> collection = cache <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> ICollection&lt;KeyValuePair&lt;MyKey, MyValue&gt;&gt; <span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> pair <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> cache) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (IsStale(pair.Value)) { <span class="hljs-comment"><span class="hljs-comment">// Remove() will return false in case of race with value update var removed = collection.Remove(pair); } }</span></span></code> </pre> <br><p>  Everyone knows this, but I remind you: in a competitive access environment, GetOrAdd can call a delegate factory for one key much more than once.  If it is impossible or expensive to do this, it’s enough to wrap the value in Lazy: </p><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> dictionary = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ConcurrentDictionary&lt;MyKey, Lazy&lt;MyValue&gt;&gt;(); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> lazyMode = LazyThreadSafetyMode.ExecutionAndPublication; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> <span class="hljs-keyword"><span class="hljs-keyword">value</span></span> = dictionary .GetOrAdd(key, _ =&gt; <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Lazy&lt;MyValue&gt;(() =&gt; <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> MyValue(), lazyMode)) .Value;</code> </pre> <br><h1 id="gc-overhead">  Gc overhead </h1><br><p>  When using large dictionaries (starting from tens of thousands of elements), you need to remember that, unlike the usual Dictionary, the ConcurrentDictionary creates an additional object on the heap for each element.  Resident ConcurrentDictionary with tens of millions of elements can easily provide second pauses when collecting second-generation garbage. </p><br><pre> <code class="cs hljs"><span class="hljs-comment"><span class="hljs-comment">// Only a handful of objects in final dictionary. // Value types dominate in its internals. Dictionary&lt;int, int&gt; ordinary = Enumerable .Range(0, 10 * 1000 * 1000) .ToDictionary(i =&gt; i, i =&gt; i); // ~10kk objects in concurrent version (due to linked lists). var concurrent = new ConcurrentDictionary&lt;int, int&gt;(ordinary);</span></span></code> </pre> <br><p>  When overwriting an existing value, a new object may also be allocated, generating memory traffic.  This happens when the standard language does not guarantee the atomicity of the value type entry.  For example: </p><br><ul><li>  If the value is an int or reference type, its entry is atomic.  Then overwriting is done in-place, without selecting a new object. </li><li>  If the value is Guid or another “wide” value type, its entry is not atomic.  Here the implementation has to create a new internal object. </li></ul><br><h1 id="zadacha-na-dotnext-2017-moscowhttpsdotnext-moscowru">  Task for <a href="https://dotnext-moscow.ru/">DotNext 2017 Moscow</a> </h1><br><p>  I first published this article in the fall of 2017 in the internal social network.  And <a href="https://habrahabr.ru/users/green_hippo/">colleagues</a> , who were at the DotNext conference in Moscow last November, did a task based on the article that could be solved at the Kontur stand. </p><br><p>  There was a code snippet: </p><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">TestIteration</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">ConcurrentDictionary&lt;</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">&gt; dictionary</span></span></span><span class="hljs-function">)</span></span> { Parallel.For(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">1000</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ParallelOptions { MaxDegreeOfParallelism = <span class="hljs-number"><span class="hljs-number">8</span></span> }, (i) =&gt; { <span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> keyValuePair <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> dictionary) { dictionary.AddOrUpdate(keyValuePair.Key, (key) =&gt; i, (key, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>) =&gt; i); } }); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">TestKeysProperty</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">ConcurrentDictionary&lt;</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">&gt; dictionary</span></span></span><span class="hljs-function">)</span></span> { Parallel.For(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">1000</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ParallelOptions { MaxDegreeOfParallelism = <span class="hljs-number"><span class="hljs-number">8</span></span> }, (i) =&gt; { <span class="hljs-keyword"><span class="hljs-keyword">foreach</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> key <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> dictionary.Keys) { dictionary.AddOrUpdate(key, (k) =&gt; i, (k, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>) =&gt; i); } }); }</code> </pre> <br><p>  And three questions - it was necessary to compare the effectiveness of the TestIteration and TestKeysProperty methods by the number of operations, by memory and by runtime.  If you carefully read the article, it should be clear that in all three cases, TestIteration is more efficient. </p><br><h1 id="vyvody">  findings </h1><br><p>  Concurrent programming tools are full of unobtrusive subtleties when it comes to performance: if you carelessly use ConcurrentDictionary, for example, you may encounter global locks and linear cost in memory.  I hope this cheat sheet will help you not to step on the rake when writing the next cache or index in your application. </p><br><p>  All good and effective code! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/348508/">https://habr.com/ru/post/348508/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../348496/index.html">Social engineering as an attack method</a></li>
+<li><a href="../348498/index.html">Neurogress: a platform of neural control systems from Blue Brain project participants</a></li>
+<li><a href="../348500/index.html">Modern CSS for dinosaurs</a></li>
+<li><a href="../348502/index.html">We are looking for hover support on css</a></li>
+<li><a href="../348506/index.html">Kickstarter and games in 2017</a></li>
+<li><a href="../348510/index.html">We build a distributed reactive application and solve consistency problems.</a></li>
+<li><a href="../348512/index.html">The transition from AngularJS to Angular: problems and solutions of the hybrid mode (2/3)</a></li>
+<li><a href="../348516/index.html">Create a concept game without programming skills: how we conducted the first PixJam in the company</a></li>
+<li><a href="../348518/index.html">The fall of the cryptocurrency market: causes and prospects</a></li>
+<li><a href="../348520/index.html">Your Composer package is broken: update your license ID</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

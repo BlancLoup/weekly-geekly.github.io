@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Lightning Network In Depth, part 2: HTLC And Payment Routing</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the last article, we discussed in detail the work of payment channels, as well as several different methods to ensure the security of payments pass...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Lightning Network In Depth, part 2: HTLC And Payment Routing</h1><div class="post__text post__text-html js-mediator-article"><p>  In the <a href="https://habrahabr.ru/post/350554/">last article,</a> we discussed in detail the work of payment channels, as well as several different methods to ensure the security of payments passing through them, but this is still not enough to build a working <em>network of</em> channels: even if we are sure that everyone plays within each channel honestly, we can not guarantee the delivery of funds through the chain through a number of channels.  And here we come to the aid of smart contracts, called HTLC (hash-time-lock-contracts).  In this article we will examine the principle of their work, and discuss how the payment goes through the Lightning network. </p><br><p><img src="https://habrastorage.org/webt/v5/fg/cm/v5fgcmwge0u5lgqnts8ahqaelrg.png" alt="Lightning network"></p><a name="habracut"></a><br><h2 id="table-of-contents">  Table of contents </h2><br><ul><li>  HTLC </li><li>  Lightning network example </li><li>  Clearing out failure </li><li>  Transport protocol </li><li>  Benefits and use cases </li><li>  Conclusion </li><li>  Links </li></ul><br><h2 id="hash-time-lock-contracts-htlc">  Hash time lock contracts (HTLC) </h2><br><p>  HTLC contracts are an uncomplicated, but at the same time very effective, design that allows you to create payments with a specific "shelf life".  As you probably already guessed, the htlc-contract consists of 2 parts: checking the hash and checking the expiration of a certain time. </p><br><p>  Let's start the analysis with the hash.  To create an HTLC payment, the <em>secret</em> R must first be created and then its hash calculated.  Anything can act as a secret - a number or a word, in any case it is just a set of bytes. </p><br><pre><code class="hljs lisp">H = Hash(<span class="hljs-name"><span class="hljs-name">R</span></span>)</code> </pre> <br><p>  This H hash will be included in the locking script.  Thus, only those who know the secret whose hashing has been obtained by H can use the payment. The secret R is also called the preimage. </p><br><p>  The second part of the htlc contract is to check the expiration of the payment blocking time.  If the secret was not revealed on time and the payment was not used, the sender can return all funds to himself. </p><br><p>  Consider the example of a HTLC payment intended for a specific person: </p><br><pre> <code class="hljs pgsql"># <span class="hljs-keyword"><span class="hljs-keyword">check</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> secret R <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> preimage <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> H HASH160 &lt;H&gt; EQUAL <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span> # <span class="hljs-keyword"><span class="hljs-keyword">check</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> person, who revealed secret <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> intended payee &lt;Payee <span class="hljs-built_in"><span class="hljs-built_in">Public</span></span> key&gt; CHECKSIG <span class="hljs-keyword"><span class="hljs-keyword">ELSE</span></span> # <span class="hljs-keyword"><span class="hljs-keyword">check</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-type"><span class="hljs-type">time</span></span>-<span class="hljs-keyword"><span class="hljs-keyword">lock</span></span> <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> ended &lt;locktime&gt; CHECKLOCKTIMEVERIFY # <span class="hljs-keyword"><span class="hljs-keyword">check</span></span> that person that requested refund <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> original payer &lt;Payer <span class="hljs-built_in"><span class="hljs-built_in">Public</span></span> Key&gt; CHECKSIG ENDIF</code> </pre> <br><p>  By providing the right secret R, which is a prototype of the H hash, we get into the flow of IF, where the next check is: is the person who has found the secret of R really the one to whom the payment is intended?  To spend this payment, the recipient needs to provide a fairly simple unlocking script: </p><br><pre> <code class="hljs xml"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">sig</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">secret</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">R</span></span></span><span class="hljs-tag">&gt;</span></span></code> </pre> <br><p>  If the provided secret R is incorrect, we get into the ELSE stream, where it is first checked whether the allotted amount of time has passed, and if so, the return payment can return all funds.  The unlocking script for a refund is no different, except for the fact that we have to specifically provide the wrong secret in order to get into the ELSE stream: </p><br><pre> <code class="hljs xml"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">sig</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">wrong</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">secret</span></span></span><span class="hljs-tag">&gt;</span></span></code> </pre> <br><p>  Of course, this is a very basic implementation of the HTLC contract, which is a regular time-lock payment.  You can add as many different conditions to the script: by removing, for example, checking the public key in the IF stream, we can make the payment available to anyone who knows the secret or, instead of a single signature, require several, like in multisige and so on. </p><br><p>  Ps Here we used the opcode <strong>CHECKLOCKTIMEVERIFY</strong> , which uses an absolute value to set the blocking time, for example, "This output cannot be spent until # 546212 block".  In Lightning Network, in addition to it, another, more “flexible” version is <strong>used</strong> - <strong>CHECKSEQUENCEVERIFY</strong> , it sets the blocking time relatively, that is, the following option is possible: "This output cannot be spent until 1000 blocks have passed since the transaction was sent to the network. "  . </p><br><h2 id="lightning-network-example">  Lightning Network Example </h2><br><p>  Now that we have finally disassembled all the components, we can take a look at the whole picture, namely, how the Lightning Network still works.  In this example, we will have 5 participants: Alice, Bob, Carol, Diana and Eric, who have open payment channels between each other with a balance of 2 bitcoins each on each channel where they are one of the parties.  Thus, having a chain of channels, we will try to make a payment from Alice to Eric. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/f87/f0d/da1/f87f0dda184464bf653eb5bb558f4751.png" alt="A series of bi-directional payment channels"></p><br><p>  Suppose Alice wants to translate Eric 1 Bitcoin.  However, as we see, they are not directly connected by a channel, and the opening of a new channel requires time and money.  Fortunately, Alice is connected to the Lightning network and can make a payment indirectly using a series of HTLC contracts.  Consider the steps as it happens. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/d2f/0e8/443/d2f0e8443d9b1770ed8a3bdd1a686ca4.png" alt="Step-by-step payment routing through a Lightning Network"></p><br><ol><li>  Erik creates a secret R and tells it to Alice hash (he doesn’t reveal the secret to anyone yet). </li><li>  Alice creates this HTLC hash with blocking 10 blocks ahead for a total of 1.003.  An additional 0.003 will be used as a reward for intermediate participants for participating in the chain.  Thus, Alice locks up her 1.003 BTC balance at the HTLC, with the following rule: "Alice will pay Bob 1.003 Bitcoin if he learns the <em>secret</em> <em>R</em> within 10 blocks, otherwise the funds will return to Alice.".  The channel balance was changed by a commit transaction and now represents the following: 2 BTC at Bob, 0.997 at Alice, and 1.003 locked in HTLC. </li><li>  Bob, having Alice's commit transaction (HTLC sent to the channel between them), in turn also creates HTLC on the channel between him and Carol in the amount of 1.002 BTC with the lock already 9 blocks ahead.  In doing so, it uses the same hash that Alice used.  Bob knows that Carol will need to find the secret R to unlock the HTLC sent to them, and as soon as she does, he will also recognize him, which means he can unlock the 1.003 BTC sent to him by Alice.  If Carol cannot find R, the means of Bob and Alice will simply return to them after the locks expire.  Also note that the amount sent by Bob is 0.001 less than what he received - this is the commission he took for participating in the chain.  The channel balance between Bob and Carol is now: 2 BTC at Carol, 0.998 BTC at Bob, and 1.002 BTC locked in HTLC. </li><li>  Carol, after receiving a Bob commit-transaction, creates an HTLC (using the hash used by Bob) on the channel with Diana for the sum of 1.001 BTC and blocking for 8 blocks.  If Diana can find the secret R within 8 blocks and unlock the HTLC to get 1.001 BTC, Carol also learns the secret, which means she can unlock the 1.002 BTC sent by Bob to her and thus earn 0.001 BTC.  The balance of the channel between Carol and Diana is now: 2 BTC at Diana, 0.999 BTC at Carol and 1.001 BTC locked in HTLC. </li><li>  Finally, Diana sends HTLC (all with the same hash) to her channel with Eric in the amount of 1 BTC and with blocking for 7 blocks.  The balance of their channel is now: 2 BTC at Eric, 1 BTC at Diana and 1 BTC locked in the HTLC. </li><li>  Now, we have reached the end of our chain.  Eric, having a secret R, the hash of which was used in all HTLC commit transactions, can unblock the HTLC sent to him by Diana and receive 1 BTC.  Once Eric uses the secret to get the funds, he will also open it to Diana.  The balance of the channel between Eric and Diana is now: 3 BTC for Eric and 1 BTC for Diana. </li><li>  Diana, having received the secret, unlocks 1.001 BTC, sent by Carol and thereby opens the secret to her.  The balance of the channel between them is now: 3.001 BTC for Diana and 0.999 BTC for Carol. </li><li>  Carol, having received the secret, unlocks 1.002 BTC, sent by Bob and opens the secret to him.  The channel balance between them is now: 3.002 BTC at Carol and 0.998 at Bob. </li><li>  In the final step, Bob, using a secret, gets 1.003 BTC on the channel between him and Alice.  The balance of their channel is now: 3.003 BTC for Bob, 0.997 for Alice. </li></ol><br><p>  Thus, Alice paid Eric 1 BTC without opening a new channel between them.  None of the participants in the chain was obliged to trust each other, and for providing their services as "intermediaries", they earned a commission of 0.001 BTC.  In the event that someone from the chain could not fulfill his part, no one would lose his money, but only temporarily (for the time of blocking) he froze them. </p><br><h2 id="clearing-out-failure">  Clearing out failure </h2><br><p>  In our example, everything went smoothly, but in real life everything is subject to Murphy's law, and if something can break, then it will do just that, so let's take a look at the work of the “protection” mechanisms of the Lightning Network. </p><br><p>  Obviously, the longer the chain through which the funds are delivered, the higher the likelihood that the funds will not reach the end - one of the participants may close the channel, and someone may simply disconnect the Internet.  Consider 2 options for events where something went wrong. </p><br><h4 id="broken-channel">  Broken channel </h4><br><p>  In the first case, let us imagine that the funds successfully reached the end of the chain, but on the reverse path (when the secret should return to the very beginning) the problem arose - one of the participants refused or could not cooperate - in our example it is Bob. </p><br><p><img src="https://habrastorage.org/webt/o5/jt/d_/o5jtd_wtv6aoqzgzqtpazeo9i_y.png" alt="Lightning network. Failure in funds delivery."></p><br><p>  Diana, as soon as the chain reached her, immediately withdraws her money using a secret, revealing Carol along the way.  Carol also wants to get her money from Bob, but he doesn’t respond, so in order not to risk, she closes the channel, sending the last channel commit transaction (HTLC contract sent by Bob earlier) to the blockchain, and using a secret, takes the money .  In this case, Bob still has 3 days to get in touch and take her money from Alice (since the transaction went to the blockchain, he can safely find her and see R), otherwise after this period she will be able to return everything own funds. </p><br><p>  As you can see, in this case, if one of the participants in the chain for any reason fails, he is the only one who can lose money, all the rest are safe. </p><br><h4 id="rerouting">  Rerouting </h4><br><p>  In the second case, consider the situation where the funds did not reach the end of the chain, again due to the inoperability of one of the participants.  Now it is Carol. </p><br><p>  The first and most obvious way is to simply wait until the blockade of HTLC contracts expires and you can return the funds back to send a new payment. </p><br><p><img src="https://habrastorage.org/webt/m1/ml/0f/m1ml0fopguabk9imf3f54g53ehu.png" alt="Lightning network. One of the nodes in the payment route is unresponsive."></p><br><p>  But what if Alice is in a hurry?  Of course, you can not wait until the funds return and just send another 1 payment already in a different chain, but if Carol suddenly returns, will she contact Bob and finish the chain?  In this case, Alice will send double the amount of money. </p><br><p><img src="https://habrastorage.org/webt/0u/k3/sp/0uk3spzjkh3z1coma1kymz2ero4.png" alt="Lightning network. Alice have built another payment route."></p><br><p>  So really, every time we fail, we have to wait before sending a new one?  Fortunately, in order not to wait until the end of the blocking, we can "reset" the previous payment.  To do this, Diana (the recipient of funds) must send a payment of an equivalent amount to Alice, using the same hash as the first time, and the chain should not be the same at all.  Now, if Carol returns and completes her part of the job, the money will simply go around the circle.  Thus, a failed payment can be considered canceled and calmly send a new payment through another chain. </p><br><p><img src="https://habrastorage.org/webt/yx/5y/wt/yx5ywto4upribir3qfcgyab1rcm.png" alt="Lightning network. Alice “canceled”."></p><br><h4 id="payment-amount">  Payment amount </h4><br><p>  I think you noticed that even though Alice "canceled" the first payment and can now send a new one, this does not change the fact that the funds are still frozen there and she may simply not have enough money to repeat the operation, therefore in Lightning Network it is preferable to send small amount for one htlc.  Since commit transactions do not “hit” the blockchain, you can divide the amount into extremely small parts.  Thus, as soon as the chain stops working, only a small part of the payment sent last remains frozen. </p><br><h2 id="transport-protocol">  Transport protocol </h2><br><p>  Also here it is worth mentioning a very important property of the Lightning Network - all information about the payment chain is completely anonymous.  This means that each member of the chain knows only about his “plot”: for Carol, for example, the payment looks like a transfer of funds from Bob to Diana, she does not know that Bob in turn received money from Alice, or that Diana should further transfer Erik's money. </p><br><p>  Lightning uses the <a href="https://cypherpunks.ca/~iang/pubs/Sphinx_Oakland09.pdf">Sphinx</a> multilayer message encryption protocol for packaging such messages.  Using it, Alice wraps each section of the chain in an encryption layer, starting at the end of the chain.  She encrypts the message for Eric using his public key.  This message is included in the message for Diana, which in turn will also be encrypted with her key, and the message for Diana will be included in the message for Carol, again encrypted with the appropriate key and so on until the very beginning of the chain.  Thus, Bob will be able to decipher only the topmost layer of the message, which is addressed to him and forwards the message to Carol, etc. .. At each stage, only the necessary information is revealed: the number of funds that must be sent, the amount of commission, the time of blocking, and so on. </p><br><p>  Also, so that it was impossible to guess the length of the chain by the weight of the message, it always has a fixed size, as if 20 people were involved in the chain.  Each participant, except the last, sees a message of the same size and thinks that there are 20 more participants ahead. </p><br><h2 id="benefits-and-use-cases">  Benefits and use cases </h2><br><p>  Of course, the advantages of the Lightning Network are not limited to bitcoin scaling, as many people think.  Consider some of the opportunities that Lightning opens up for us. </p><br><ul><li>  <strong>Instant transactions</strong> .  Using Lighting, transactions take place almost instantly.  With it, paying for coffee using Bitcoin becomes possible. </li><li>  <strong>Arbitrage</strong>  At the moment, a quick transfer of money from one exchange to another is not possible, since it takes 3-6 blocks to confirm a transaction.  If the exchanges will use lightning, users will be able to transfer funds instantly, which will allow for arbitration transactions.  Also, the exchanges will not need to keep 'cold' purses for storing funds, which greatly reduces the likelihood of theft. </li><li>  <strong>Micropayments</strong> .  The commission for a transaction in Bitcoin is too large to make micropayments.  Hardly anyone wants to pay 0.001 in order to translate as much or even less.  With Lightning, you will be able to transfer instantly any amounts, so that you can, for example, pay for Internet by megabyte. </li><li>  <strong>Financial smart contracts and deals</strong> .  Financial contracts are particularly time sensitive and often require a lot of calculations.  Moving most of them outward, we get the ability to create extremely complex transactions and contracts without writing them to the blockchain. </li><li>  <strong>Cross-chain payments</strong> .  If there are similar hash functions in blockchains with different consensus rules, it is possible to conduct transactions between them.  Participants will not need to trust each other or use an intermediary. </li><li>  <strong>Privacy</strong>  The transactions in Lightning are much more anonymous than in the Bitcoin blockchain, since participants in the chains through which the payment is made cannot see the sender or the recipient. </li></ul><br><h2 id="conclusion">  Conclusion </h2><br><p>  This concludes our analysis of the Lightning Network.  In the following articles, we will tell you how to cross-chain atomic swap between bitcoin and lightcoin using HTLC contracts. </p><br><h2 id="links">  Links </h2><br><ul><li>  <a href="https://habrahabr.ru/post/350554/">Lightning network part 1: payment channels</a> </li><li>  <a href="https://bitcoinbook.info/">"Mastering bitcoin" - Andreas M. Antonopoulos</a> </li><li>  <a href="https://lightning.network/lightning-network-paper.pdf">Lightning network whitepaper</a> </li><li>  <a href="https://habrahabr.ru/post/349812/">Segregated witness for dummies</a> </li></ul></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/350790/">https://habr.com/ru/post/350790/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../350778/index.html">How do you work with Laravel?</a></li>
+<li><a href="../350780/index.html">Thin diskless client based on Ubuntu that does not require mounting the file system over the network</a></li>
+<li><a href="../350782/index.html">Learn OpenGL. Lesson 4.9 - Geometric Shader</a></li>
+<li><a href="../350786/index.html">Do not deny yourself anything: giving carte blanche to uncensored reviews of our events in our blog</a></li>
+<li><a href="../350788/index.html">Issue # 14: IT training - current issues and challenges from leading companies</a></li>
+<li><a href="../350792/index.html">Goldman Sachs lured away Google’s lead engineer to develop an API for his services</a></li>
+<li><a href="../350794/index.html">Hessian-Free Optimization with TensorFlow</a></li>
+<li><a href="../350796/index.html">Compact varint - uniqueness and great values ​​for the same value.</a></li>
+<li><a href="../350798/index.html">FastTrack Training. "Network Basics". "The value of Cisco routers." Eddie Martin December 2012</a></li>
+<li><a href="../350800/index.html">Analysis of performance tasks with JBreak (part 1)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Low-level code optimization on the Elbrus platform: vector addition uint16_t using intrinsics</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article we will tell about lower-level optimizations that can be done on Elbrus processors. 
+
+ In principle, optimization of this level is not...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Low-level code optimization on the Elbrus platform: vector addition uint16_t using intrinsics</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/dn/nw/tg/dnnwtg8xf_tvh3md0nbmrgw7kxs.jpeg"><br><br>  In this article we will tell about lower-level optimizations that can be done on Elbrus processors. <br><br>  <em>In principle, optimization of this level is not a necessary stage of development for Elbrus.</em>  <em>For most computational operations requiring high performance, you can and should use functions from the EML library.</em> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      However, in the current version of EML, we did not find some functions that are interesting to us, so we decided to write them ourselves. <a name="habracut"></a><br><p>  For this we used intrinsiki.  Intrinsics are constructs that look like normal functions to a programmer, but their calls are replaced by the in-place compiler with high-performance code.  Most often intrinsics are needed when you want to use vector processor extensions that allow you to perform the same operation on a register containing several data elements at once.  Even an optimizing compiler cannot always guess that such a construction will speed up your code.  In such cases, earlier, if there was no suitable optimized library, it was necessary to use an assembler.  But the speed of the assembly code essentially depends on the efficiency of using registers, taking into account ALU delays and other wonderful things.  And Elbrus also has a VLIW architecture, which means that if we want to write in assembler, we will have to independently monitor the formation of broad command words.  On the other hand, optimizing compilers are created for such subtleties.  The transition to intrinsiki allows you to intelligently distribute the work between the person and the program.  Code using intrinsiki can be easily transferred between systems that support all involved intrinsiki.  That is, in our situation intrinsiki are obviously the best solution. </p><br><p>  The Elbrus-4C and Elbrus-8C microprocessors support vector operations with a 64-bit register.  Using this register, you can simultaneously process two 32-bit numbers, four 16-bit integers or eight 8-bit integers.  The Elbrus microprocessor intrinsic set includes operations for data conversion, initialization of vector elements, arithmetic operations, bitwise logical operations, permutation of vector elements and, it seemed to us, quite similar to the x86 SSE / SSE2 instruction set. </p><br><p>  So, we will start optimization.  Take a piece of code to add two arrays of type uint16_t with writing the result to the third array (there is no such operation in EML yet): </p><br><pre><code class="objectivec hljs"><span class="hljs-comment"><span class="hljs-comment">//  0 // eml_16u *src1 -       // eml_16u *src2 -       // eml_16u *dst -     // len -   for (size_t i = 0; i &lt; len; ++i) dst[i] = src1[i] + src2[i];</span></span></code> </pre> <br><p>  Now rewrite it using intrinsikov.  For simplicity, we assume that the length of the <code>len</code> arrays is divided by 4, and the remaining elements of the arrays are processed separately.  Then get something like this: </p><br><pre> <code class="objectivec hljs"><span class="hljs-comment"><span class="hljs-comment">//  1 // eml_16u *src1 -       // eml_16u *src2 -       // eml_16u *dst -     // len -   static const size_t block_size = sizeof(eml_64u) / sizeof(eml_16u); for (size_t i = 0; i &lt; len; i += block_size, src1 += block_size, src2 += block_size, dst += block_size) *(__di*)dst = __builtin_e2k_paddh(*(__di*)src1, *(__di*)src2);</span></span></code> </pre> <br><p>  Here <code>__di</code> is the 64-bit data type, and <code>__builtin_e2k_paddh</code> is the intrinsic performing 16-bit unsigned addition. </p><br><p>  However, this code is not optimal, since to load an unaligned 64-bit number <code>r</code> at address <code>p</code> processor needs to perform the following elementary operations: </p><br><ol><li><p>  Determine the offset <code>s</code> address <code>p</code> from the alignment boundary to 64 bits (see Fig. 1).  The address of the aligned 64-bit number containing the beginning of <code>r</code> will be equal to <code>p - s</code> .  The address of the next aligned 64-bit number containing the end of <code>r</code> will be equal to <code>p - s + 8</code> . </p><br></li><li><p>  Load from memory 2 64-bit numbers r <sub>1</sub> , r <sub>2</sub> , containing <code>r</code> , by aligned addresses. </p><br></li><li>  Find the number <code>r</code> , knowing r <sub>1</sub> , r <sub>2</sub> , <code>s</code> . </li></ol><br><img src="https://habrastorage.org/webt/9h/u9/do/9hu9dog-im0kbfu3xidxcptrdb8.png"><br><p>  <em>Fig.</em>  <em>1. Scheme of unaligned loading of 64-bit data from memory.</em> </p><br><p>  For further optimization, we write this explicitly using Elbrus macros: </p><br><pre> <code class="objectivec hljs">__di s = E2K_BYTES_FROM_ALIGN(p, <span class="hljs-number"><span class="hljs-number">8</span></span>); __di tmp; E2K_PREPARE_ALIGN(s, tmp); <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> __di *p_aligned = (__di *)E2K_ALIGN_PTR_BACK(p, <span class="hljs-number"><span class="hljs-number">8</span></span>); __di r1 = *p_aligned; __di r2 = *(p_aligned + <span class="hljs-number"><span class="hljs-number">1</span></span>); __di r; E2K_ALIGN_DATA(r1, r2, r, tmp);</code> </pre> <br><p>  This code will perform 6 memory hits at each iteration of the loop, as well as the original version with unaligned loading.  However, explicit addressing by aligned addresses makes it possible to use a special array swap buffer available in the Elbrus architecture to increase the efficiency of memory access (by the way, this buffer was also used in the code without intrinsics). </p><br><p>  You can easily reduce the number of memory hits on each iteration to 3, while maintaining the values ​​loaded on the previous iteration of the loop.  In addition, we will use only the aligned record in the result array, processing the initial part of the arrays separately.  Thanks to this, both reading and writing to memory will be more efficient. </p><br><pre> <code class="objectivec hljs"><span class="hljs-comment"><span class="hljs-comment">//  2 // eml_16u *src1 -       // eml_16u *src2 -       // eml_16u *dst -     // len -   size_t i = 0; //        64-  dst    size_t offset = E2K_BYTES_TO_ALIGN(dst, sizeof(eml_64u)) / sizeof(eml_16u); for (; i &lt; offset; ++i) dst[i] = src1[i] + src2[i]; //     __di spec0, spec1; __di tmp0, tmp1; __di align1 = E2K_BYTES_FROM_ALIGN(src1 + offset, sizeof(eml_64u)); E2K_PREPARE_ALIGN(align1, spec0); __di align2 = E2K_BYTES_FROM_ALIGN(src2 + offset, sizeof(eml_64u)); E2K_PREPARE_ALIGN(align2, spec1); const __di *v1 = (__di *)E2K_ALIGN_PTR_BACK(src1 + offset, 8); const __di *v2 = (__di *)E2K_ALIGN_PTR_BACK(src2 + offset, 8); __di *v3 = (__di*)(dst + offset); __di d01, d11; __di d00 = *v1; __di d10 = *v2; ++v1; ++v2; static const size_t block_size = sizeof(eml_64u) / sizeof(eml_16u); size_t effective_len = offset + ((len - offset) &amp; ~(block_size - 1)); for (; i &lt; effective_len; i += block_size, ++v1, ++v2, ++v3) { d01 = *v1; d11 = *v2; E2K_ALIGN_DATA(d00, d01, tmp0, spec0); E2K_ALIGN_DATA(d10, d11, tmp1, spec1); *v3 = __builtin_e2k_paddh(tmp0, tmp1); d00 = d01; d10 = d11; } //    ,   </span></span></code> </pre> <br><p>  It would seem that you can still do? </p><br><p>  However, as we remember, on modern Elbrus there are 6 execution channels in which up to 24 instructions can be placed, and they will be executed in 1 clock cycle.  Of these instructions, only 6 can be arithmetic for integers, since there is only one vector ALU for each channel (other instructions could relate to real arithmetic, load / write, etc.) In addition, there is one more subtlety: these 6 ALUs are different, and each arithmetic command can be executed only in certain channels.  For the unsaturated addition, only channels 0 and 3 are suitable. Therefore, in 1 measure we can perform no more than 2 additions.  To tell a careful compiler that these two additions are independent (i.e., the result of the first is not used in the second), turn the loop.  This can be done manually or by using the compiler directive: </p><br><p> <code>#pragma unroll(2)</code> </p> <br><p>  In addition, you can tell the compiler the number of expected iterations of the cycle, for example, a number about 1024 is suitable for a cycle on an image line (this is quite a reasonable estimate of the linear dimensions of recognizable images, and colleagues from the MCST recommended this size; the general idea is that the number should be large enough for the compiler to consider using special cyclic optimizations): </p><br><p> <code>#pragma loop count(1024)</code> </p> <br><p>  Of course, in obviously short cycles the compiler should be left with the opposite hint (see below). </p><br><pre> <code class="objectivec hljs"><span class="hljs-comment"><span class="hljs-comment">//  3 // eml_16u *src1 -       // eml_16u *src2 -       // eml_16u *dst -     // len -   size_t i = 0; //        64-  dst    size_t offset = E2K_BYTES_TO_ALIGN(dst, sizeof(eml_64u)) / sizeof(eml_16u); #pragma loop count(3) for (; i &lt; offset; ++i) { dst[i] = src1[i] + src2[i]; } //     __di spec1, spec2; __di tmp0, tmp1; __di align1 = E2K_BYTES_FROM_ALIGN(src1 + offset, sizeof(eml_64u)); E2K_PREPARE_ALIGN(align1, spec1); __di align2 = E2K_BYTES_FROM_ALIGN(src2 + offset, sizeof(eml_64u)); E2K_PREPARE_ALIGN(align2, spec2); const __di *v1 = (__di *)E2K_ALIGN_PTR_BACK(src1 + offset, sizeof(eml_64u)); const __di *v2 = (__di *)E2K_ALIGN_PTR_BACK(src2 + offset, sizeof(eml_64u)); __di *v3 = (__di*)(dst + offset); __di d01, d11, d02, d12; __di d00 = *v1; __di d10 = *v2; ++v1; ++v2; size_t effective_len = offset + ((len - offset) &amp; ~0x03); #pragma unroll(2) #pragma loop count(1024) for (; i &lt; effective_len; i += 4, ++v1, ++v2, ++v3) { d01 = *v1; d11 = *v2; E2K_ALIGN_DATA(d00, d01, tmp0, spec0); E2K_ALIGN_DATA(d10, d11, tmp1, spec1); *v3 = __builtin_e2k_paddh(tmp0, tmp1); d00 = d01; d10 = d11; } //    ,   </span></span></code> </pre> <br><p>  Now we give the results of measurements.  To do this, we measured the time of addition of two arrays of length 105. The average time over 105 iterations is given in the table. </p><br><table><thead><tr><th>  Option </th><th>  The average time of addition of arrays, µs </th></tr></thead><tbody><tr><td>  0 </td><td>  219.0 </td></tr><tr><td>  one </td><td>  250.7 </td></tr><tr><td>  2 </td><td>  62.6 </td></tr><tr><td>  3 </td><td>  31.4 </td></tr></tbody></table><br><p>  Our optimization allowed us to speed up the addition 7 times!  We see that by setting ourselves the goal of maximizing productivity and spending some time studying the features of Elbrus, one can achieve significant results. </p><br><p>  <strong><em>Many thanks to the staff of the MCST, who repeatedly advised us on writing this material!</em></strong> </p></div><p>Source: <a href="https://habr.com/ru/post/351134/">https://habr.com/ru/post/351134/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../351122/index.html">Dimnie: from geeks with github to corporate accountants</a></li>
+<li><a href="../351126/index.html">FastTrack Training. "Network Basics". "The value of Cisco in data centers." Eddie Martin December 2012</a></li>
+<li><a href="../351128/index.html">“Black Holes” Revealed at macOS High Sierra</a></li>
+<li><a href="../351130/index.html">Font (more) Awesome - patterned invention</a></li>
+<li><a href="../351132/index.html">Thymeleaf Tutorial: Chapter 6. Iterations</a></li>
+<li><a href="../351136/index.html">10 nuances that you need to pay attention to when choosing a VPS hosting</a></li>
+<li><a href="../351138/index.html">How to optimize DevOps using machine learning</a></li>
+<li><a href="../351140/index.html">Battery change: UPS on Li-Ion technology</a></li>
+<li><a href="../351142/index.html">What makes an owl in ZeroNights 2017 Crackme # 3?</a></li>
+<li><a href="../351144/index.html">About life, freedom and the pursuit of happiness user API</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

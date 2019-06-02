@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Asynchronous work with PostgreSQL in C</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Today I wanted to write a small note about asynchronous work with PostgreSQL in C. The motives are simple: for a small utility, there was a need to im...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Asynchronous work with PostgreSQL in C</h1><div class="post__text post__text-html js-mediator-article">  Today I wanted to write a small note about asynchronous work with PostgreSQL in C. The motives are simple: for a small utility, there was a need to implement such functionality, Google on the topic of clear and working examples was treacherously silent (there was only an example in pqxx for C ++ - there is an asynchronous connection method and pipeline is a class for queries), and the official documentation on this issue, although very detailed, but not very structured, and the algorithm for working with the libpq library in asynchronous mode has many pitfalls.  Therefore, having understood the question I would like to share the results with the public, in case if it will be useful to someone. <br><a name="habracut"></a><br>  So, we will assume that no one needs to tell what PostgreSQL is, and how the synchronous (blocking) mode of operation differs from asynchronous readers too.  By the way, besides the first and obvious advantage of asynchronous calls (they do not block input-output and thread execution, which frees from the need to create additional threads, synchronize them, etc.), in the case of Postgre there is another plus: the usual PQexec method allows you to get the result of executing only one SQL query at a time, and the asynchronous libpq functions do not have this restriction. <br><br>  As I said before, libpq has quite a few pitfalls in asynchronous mode.  There are libraries where the asynchronous mode is implemented beautifully and completely (the developer calls absolutely any asynchronous method, assigning a callback to it, and after that it’s enough just to “rotate” the library's event loop (endlessly or by timer to call the method), and then the library will take care of processing commands in the right sequence, catching events and calling callbacks), then PostgreSQL has a different work model. <br><br>  There are a large number of commands for asynchronous connections and requests that must be called in a strictly defined sequence depending on the current state and the result of the previous operation, plus you must manually check the readiness of the sockets.  It is enough to make a mistake in some place and call the function at the wrong time or not to call it, or try to access the busy socket, and this can lead to blocking the flow (in the worst case, infinite, that is, freeze).  And the library in the asynchronous mode has almost no control over the timeout of operations - everything will need to be taken care of by ourselves. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In the official documentation, most of the information on working in asynchronous mode is given in the following two sections: <a href="https://www.postgresql.org/docs/current/static/libpq-async.html">one</a> and <a href="https://www.postgresql.org/docs/current/static/libpq-connect.html">two</a> . <br><br>  Well, we get right to the point. <br><br>  To establish a connection with the database in asynchronous mode, the procedure should be approximately as follows: <br><br>  1. Allocate memory for the connection structure and start the connection using the PQconnectStart () method <br><br>  2. Remember the current time so that you can further control the timeout of the operation. <br><br>  3. Check the connection success by calling PQstatus ().  If the result is CONNECTION_BAD, then the initialization was not successful (for example, an error in the connection string or the memory could not be allocated), otherwise you can continue <br><br>  4. Check the current connection status using the PQconnectPoll () method. <br><br>  Possible results: <br><br><pre><code class="hljs 1c">PGRES_POLLING_WRITING -     <span class="hljs-keyword"><span class="hljs-keyword"></span></span>  PGRES_POLLING_READING -     <span class="hljs-keyword"><span class="hljs-keyword"></span></span>  PGRES_POLLING_FAILED -         PGRES_POLLING_OK -   </code> </pre> <br>  5. If the status is PGRES_POLLING_WRITING or PGRES_POLLING_READING, you need to get the connection socket used by the PQsocket () method and select () or poll () system functions to check its availability for writing or reading data until it is free, then repeat step 4 until you reach OK or FAILED, or until the timeout expires (do not forget, the timeout must be checked manually). <br><br>  If the next PQconnectPoll () call will _do_ release the socket, the thread is blocked, and this must be borne in mind. <br><br>  After all this, if everything went well, we get an established connection to the database.  The procedure for executing SQL queries will look something like this: <br><br>  1. Prepare a request for sending to the server using the PQsendQuery () command. <br><br>  2. Set a non-blocking mode for sending a request using the PQsetnonblocking () method, because by default libPq only reads asynchronously, not writes to the socket. <br><br>  3. Run PQflush () until it gives 0 (the request was sent successfully) or -1 (error). <br><br>  4. Get the active socket and check it for readability through select () or poll () until it is ready for operation. <br><br>  5. Run PQconsumeInput ().  If the function returned 0, then an error occurred. <br><br>  6. Run PQisBusy ().  If the function returns 1, it means that the processing of the request or the reading of the server response has not yet been completed and the algorithm must be repeated from step 4 again. <br>  Well, do not forget to control timeouts, of course. <br><br>  After performing all the above operations, you can work with the results of the query as usual - PQgetResult (), PQgetvalue (), etc. <br><br>  And now for the practice.  The code is in C, but if you want to wrap it in a class for use in a C ++ program, then as you wish, everything is very simple. <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">//   - : gcc pgtest4.c -I/usr/include/postgresql -lpq #include &lt;libpq-fe.h&gt; //&lt;     PostgreSQL #include &lt;sys/socket.h&gt; //&lt; setsockopt()    #include &lt;sys/select.h&gt; //&lt; select() #include &lt;sys/time.h&gt; //&lt; gettimeoftheday() #include &lt;unistd.h&gt; //&lt; usleep()    #define SOCK_POLL_TIMEOUT 100 //     (      ?)   typedef enum { DISCONNECTED = 0, CONN_POLLING, CONN_READING, CONN_WRITING, READY, QUERY_SENT, QUERY_FLUSHING, QUERY_BUSY, QUERY_READING, CLOSING, ERROR } pq_state; typedef enum { NO_ERROR = 0, ALLOCATION_FAIL, POLLING_FAIL, READING_FAIL, WRITING_FAIL, TIMEOUT_FAIL } pq_error; struct pqconn_s{ pq_state state; //&lt;   PGconn* conn; //&lt;        unsigned long start; //&lt;     ( ) long timeout; //&lt;    pq_error error; //&lt;   -  ,     }; /** * @brief    * @return    */ unsigned long time_ms(void) { struct timespec tp; // gettimeoftheday()   ,    clock_gettime(CLOCK_MONOTONIC, &amp;tp); return (tp.tv_sec * 1000 + tp.tv_nsec / 1000000); } /** * @brief   ()   / * @param socket_fd -    * @param rw - 0    , 1    * @return   select(): -1 = , 0 -  (), 1 -  */ int try_socket(int socket_fd, int rw) { fd_set fset; struct timeval sock_timeout; sock_timeout.tv_sec = 0; sock_timeout.tv_usec = SOCK_POLL_TIMEOUT; FD_ZERO(&amp;fset); FD_SET(socket_fd, &amp;fset); setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&amp;sock_timeout, sizeof(struct timeval)); //       SO_SNDTIMEO. . return select(socket_fd + 1, ((!rw) ? &amp;fset : NULL), ((rw) ? &amp;fset : NULL), NULL, &amp;sock_timeout); } /** * @brief       * @param conninfo -     * @param s -    pqconn_s        * @param timeout -     * @return 0 -  (     s-&gt;error), 1 -  */ int pgsql_connection_start(const char* conninfo, struct pqconn_s* s, long timeout) { if (!s) return 0; if (!conninfo) { s-&gt;error = ALLOCATION_FAIL; return 0; } s-&gt;conn = PQconnectStart(conninfo); s-&gt;state = CONN_POLLING; s-&gt;start = time_ms(); s-&gt;timeout = timeout; s-&gt;error = NO_ERROR; ConnStatusType status; status = PQstatus(s-&gt;conn); if (status == CONNECTION_BAD) { s-&gt;state = ERROR; s-&gt;error = POLLING_FAIL; return 0; } return 1; } /** * @brief          * @param command - SQL- * @param s -    pqconn_s        * @param timeout -     * @return 0 - , 1 -  */ int pgsql_send_query(struct pqconn_s* s, const char *command, long timeout) { if (s-&gt;state != READY) { return 0; } if (!PQsendQuery(s-&gt;conn, command)) { return 0; } PQsetnonblocking(s-&gt;conn, 0); s-&gt;state = QUERY_FLUSHING; s-&gt;start = time_ms(); s-&gt;timeout = timeout; s-&gt;error = NO_ERROR; return 1; } /** * @brief  ,     * @param s -    pqconn_s        */ void pgsql_event_loop(struct pqconn_s* s) { if ((s-&gt;state == DISCONNECTED) || (s-&gt;state == READY)) return; if ((time_ms() - s-&gt;start) &gt; s-&gt;timeout) { s-&gt;state = CLOSING; s-&gt;error = TIMEOUT_FAIL; } if (s-&gt;state == CONN_POLLING) { PostgresPollingStatusType poll_result; poll_result = PQconnectPoll(s-&gt;conn); if (poll_result == PGRES_POLLING_WRITING) s-&gt;state = CONN_WRITING; if (poll_result == PGRES_POLLING_READING) s-&gt;state = CONN_READING; if (poll_result == PGRES_POLLING_FAILED) { s-&gt;state = ERROR; s-&gt;error = POLLING_FAIL; } if (poll_result == PGRES_POLLING_OK) s-&gt;state = READY; } if (s-&gt;state == CONN_READING) { int sock_state = try_socket(PQsocket(s-&gt;conn), 0); if (sock_state == -1) { s-&gt;error = READING_FAIL; s-&gt;state = CLOSING; } if (sock_state &gt; 0) s-&gt;state = CONN_POLLING; } if (s-&gt;state == CONN_WRITING) { int sock_state = try_socket(PQsocket(s-&gt;conn), 1); if (sock_state == -1) { s-&gt;error = WRITING_FAIL; s-&gt;state = CLOSING; } if (sock_state &gt; 0) s-&gt;state = CONN_POLLING; } if (s-&gt;state == CLOSING) { PQfinish(s-&gt;conn); s-&gt;state = ERROR; } if (s-&gt;state == QUERY_FLUSHING) { int flush_res = PQflush(s-&gt;conn); if (0 == flush_res) s-&gt;state = QUERY_READING; if (-1 == flush_res) { s-&gt;error = WRITING_FAIL; s-&gt;state = CLOSING; } } if (s-&gt;state == QUERY_READING) { int sock_state = try_socket(PQsocket(s-&gt;conn), 0); if (sock_state == -1) { s-&gt;error = READING_FAIL; s-&gt;state = CLOSING; } if (sock_state &gt; 0) s-&gt;state = QUERY_BUSY; } if (s-&gt;state == QUERY_BUSY) { if (!PQconsumeInput(s-&gt;conn)) { s-&gt;error = READING_FAIL; s-&gt;state = CLOSING; } if (PQisBusy(s-&gt;conn)) s-&gt;state = QUERY_READING; else s-&gt;state = READY; } }</span></span></code> </pre><br>  At the beginning, we describe all the states we need and possible errors, and declare the structure in which the connection data and the action to be performed are stored - a pointer to the PGconn structures, the required library for working with the server, the state of the machine, the error code (if any) and the start time of the current operation (to control the timeout). <br><br>  The two small functions time_ms () and try_socket () are wrappers over the functions of the standard library for getting the current time in milliseconds and checking the socket for busyness, respectively. <br><br>  You can use all of this as something like this: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">pqconn_s</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">s</span></span></span><span class="hljs-class">;</span></span> pgsql_connection_start(<span class="hljs-string"><span class="hljs-string">"dbname=db1 user=user1 password=password1 hostaddr=10.0.0.1 port=5432"</span></span>, &amp;s, <span class="hljs-number"><span class="hljs-number">15000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> ((s.state != ERROR) &amp;&amp; (s.state != READY)) { pgsql_event_loop(&amp;s); } <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (s.state == ERROR) { perror(<span class="hljs-string"><span class="hljs-string">"DB connection failed \n"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>; } pgsql_send_query(&amp;s, <span class="hljs-string"><span class="hljs-string">"SELECT * FROM history;"</span></span>, <span class="hljs-number"><span class="hljs-number">50000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> ((s.state != ERROR) &amp;&amp; (s.state != READY)) { pgsql_event_loop(&amp;s); } <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (s.state == ERROR) { perror(<span class="hljs-string"><span class="hljs-string">"DB query failed \n"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>; } PGresult *res; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> rec_count; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> row; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> col; res = PQgetResult(s.conn); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (PQresultStatus(res) != PGRES_TUPLES_OK) { perror(<span class="hljs-string"><span class="hljs-string">"We did not get any data!\n"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>; } rec_count = PQntuples(res); <span class="hljs-built_in"><span class="hljs-built_in">printf</span></span>(<span class="hljs-string"><span class="hljs-string">"Received %d records.\n"</span></span>, rec_count); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (row=<span class="hljs-number"><span class="hljs-number">0</span></span>; row&lt;rec_count; row++) { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (col=<span class="hljs-number"><span class="hljs-number">0</span></span>; col&lt;<span class="hljs-number"><span class="hljs-number">3</span></span>; col++) { <span class="hljs-built_in"><span class="hljs-built_in">printf</span></span>(<span class="hljs-string"><span class="hljs-string">"%s\t"</span></span>, PQgetvalue(res, row, col)); } <span class="hljs-built_in"><span class="hljs-built_in">puts</span></span>(<span class="hljs-string"><span class="hljs-string">""</span></span>); } PQclear(res); }</code> </pre><br>  It is clear that the above example works after all in the blocking mode (because waiting for the installation of the state field of the structure of the structure to ERROR or READY occurs forcibly), but as you can guess, it remains for the small: you need to add instead to pgsql_event_loop () call callbacks in case of successful connection, data acquisition or an error, and twist the event loop along with the other actions in the main program loop or call it on a timer, and then the work with the database will go really asynchronously. <br><br>  I sincerely hope that the above will be useful to someone. </div><p>Source: <a href="https://habr.com/ru/post/350140/">https://habr.com/ru/post/350140/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../350130/index.html">Open Data Day in Moscow 2018</a></li>
+<li><a href="../350132/index.html">GObject: Inheritance and Interfaces</a></li>
+<li><a href="../350134/index.html">DoctrineSolrBundle - Search by Solct-based Doctrine entity on Symfony2 / 3</a></li>
+<li><a href="../350136/index.html">Random evolutionary strategies in machine learning</a></li>
+<li><a href="../350138/index.html">How to whale eat java application and not choke</a></li>
+<li><a href="../350142/index.html">Development of an external battery on four LiFePO4 batteries</a></li>
+<li><a href="../350144/index.html">Richard Hamming: Chapter 29. You get what you measure</a></li>
+<li><a href="../350148/index.html">Flask Mega-Tutorial, Part XIII: I18n and L10n (Edition 2018)</a></li>
+<li><a href="../350152/index.html">We are testing the array of OceanStor Dorado V3: so ordinary that right at all</a></li>
+<li><a href="../350154/index.html">ViyaDB: analytical database for unsorted data</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

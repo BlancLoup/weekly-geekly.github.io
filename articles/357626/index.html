@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Using GDB when developing for ESP8266</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="TL; DR: we implemented a GDB server for ESP8266, which allows you to view the call stack and perform limited debugging. 
+
+ Friends often ask me: what ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Using GDB when developing for ESP8266</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/geektimes/post_images/207/016/6a8/2070166a89b94ced4f92af7f22636995.jpg" alt="image"><br><br>  TL; DR: we implemented a GDB server for ESP8266, which allows you to view the call stack and perform limited debugging. <br><a name="habracut"></a><br>  Friends often ask me: what is it, develop software for embedded platforms.  Usually, they mean limited resources (the size of the repository of the executable code, the amount of available memory, etc.) and sometimes the fact that such development requires specific skills. <br><br>  However, nowadays, when the perception of embedded platforms has changed under the influence of wearable devices that can easily emulate my first personal computer and still have the resources to play music in the background, it's easy to forget about the problems that the developer faces every day embedded software. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Cesanta is developing a platform that lowers the threshold for entering the “magic” world of embedded programming, but when developing this platform, we are even more confronted with problems that interfere with the rest. <br><br>  Today I would like to talk about the development tools, namely, about the part that is provided by almost any development environment;  what is so easy to take for granted: call stack trace. <br><br>  I'm not a big fan of debuggers.  Moreover, I prefer to use printf for debugging.  In my opinion, in many cases connecting a debugger brings more trouble than practical benefits. <br><br>  For the last decade, I have written and maintained systems in C / C ++ / Python / Java / Scala / Go and I have used the debugger only in very rare cases.  And even then, the debugger was used only as a means to understand the call chain that led to this crash. <br><br>  Since for most languages ​​the call stack is a built-in functionality, such situations mostly happened when debugging C / C ++ programs. <br><br>  Coming back today: start a built-in development, select ESP8266 as a platform, leave me without a debugger and I will be in a difficult position. <br><br>  Suddenly this happened: <br><br><ul><li>  Debug output is too expensive.  The only interface with the device is a serial port connection, which is also used to do something else. </li><li>  The slow cycle of “editing / compiling / flashing / launching” forces one to pray, so that this time the cards would go as it should. </li><li>  The memory simply ends if you write too much logging code. </li></ul><br>  And I realized that if I want to finish something, I need this damn stack. <br><br>  To begin with: why do we even have this problem?  What is the story with ESP8266? <br><br>  <b>ESP8266</b> <br><br>  ESP8266 is a damn cool piece of silicon;  and its coolest part is the price: you can get a fully functional fee for $ 3.60.  And you do not need expensive boards for development, you can use it right with a minimum set of tools. <br><br>  This product began its journey as a WiFi module that understands AT commands via the serial port.  Just connect to the Arduino - and you can start. <br><br>  But using it as a daughterboard is just the beginning of the story.  The board itself has a 32 bit processor, 32Kb IRAM, 80Kb DRAM and 512Kb (or more) flash.  Quickly enough, Espressif began distributing an SDK that allows programs to be written directly to the device.  The capabilities of the device are superior to those of well-known AVRs with comparable energy consumption. <br><br>  How, then, did a little-known Chinese company achieve all this?  I can not judge the quality of the ASIC and radio module, but they seem quite good for my inexperienced look.  But the quality of the SDK and documentation makes one wonder. <br><br>  The core of the ESP8266EX is a very interesting Xtensa processor developed by Tensilica.  Tensilica was bought by Cadence in 2013.  This company is best known for its configurable processor cores. <br><br>  And they provide great tools like compiler, debugger, emulator ... <br><br>  The problem is that Espressif cannot deliver these tools along with its SDK.  Moreover, even if you buy the Xtensa SDK directly from Cadence, the exact parameters used in the production of the ESP8266EX can only be determined by the heap of generated files.  It is difficult to even understand whether it is possible to reverse all this until the trial license of the Xtensa SDK has ended.  And even if it is possible, the game is worth the candle only if ESP8266 is all that interests you. <br><br>  And while Espressif uses Xtensa tools to build its binary libraries, the most appropriate choice for the user is using the GCC port.  The specific architecture used in the ESP8266 is called lx106. <br><br>  The configurable nature of the Xtensa platform implies that the actual set of features (including a set of instructions) of different devices built on the basis of the Xtensa CPU is quite different.  This greatly complicates the reuse of tools and understanding how it all should work. <br><br>  The first feature of lx106 is that this configuration does not use one of the most important Xtensa features: the register window.  This has a major impact on the calling convention used by ESP8266 and, as a result, on all tools. <br><br>  There is an actively developing GCC port supported by Max Filippov, available on the <a href="https://github.com/jcmvbkbc/crosstool-NG/tree/lx106-g%2B%2B">github</a> .  He is still far from perfect, but he is developing by leaps and bounds.  Hats off to Max for his dedication to the community. <br><br>  The existing debugging options for ESP8266 are quite modest. <br><br>  You can try on-chip-debugger (either via xt-ocd from Xtensa or via <a href="https://github.com/projectgus/openocd">openocd</a> , but this requires JTAG connectivity and ESP with enough divorced pins (i.e., this approach will not work on ESP-01). <br><br>  Qemu port is still in its infancy. <br><br>  <b>View call stack</b> <br><br>  If all we need is to be able to trace the stack, then the simplest way would be to implement this functionality directly into the code, i.e.  something like libunwind.  Unfortunately, there is no port of such a library for lx106.  Moreover, given that most of the code is compiled without a frame pointer, the implementation of such a reasonable size library will be ....  let's say, complicated. <br><br>  GDB solves a problem by analyzing the code, instruction by instruction, finding the function prologue, rolling back stack changes, etc.  What if you try to feed GDB the contents of memory and let it do the heavy work? <br><br>  <b>GDB server protocol</b> <br><br>  GDB supports remote debugging using a simple text protocol.  It can work over a network or serial port.  A simple description of the protocol is <a href="https://sourceware.org/gdb/onlinedocs/gdb/Packets.html">here</a> . <br><br>  The two main commands we need to support are: <br><ul><li>  'g' - unload the contents of the registers </li><li>  'm' - read a pack of bytes from memory </li></ul><br>  Thus, all we need to do is write the code that executes if an exception occurs, find out the state of the registers and implement the GDB protocol on the serial port. <br><br>  <b>Get control</b> <br><br>  At first, I tried to directly change the low-level vector of exceptions in the Xtensa CPU, but without success. <br>  Then I noticed that the <i>_xtos_set_exception_handler</i> function is mentioned in the linker script.  XTOS is a very thin layer provided by the Xtensa SDK. <br><br>  It <i>turned</i> out that <i>_xtos_set_exception_handler</i> allows <i>you</i> to register a C-function that will be called if the specified exception occurs. <br><br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">ICACHE_FLASH_ATTR </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">gdb_init</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> causes[] = {EXCCAUSE_ILLEGAL, EXCCAUSE_INSTR_ERROR, EXCCAUSE_LOAD_STORE_ERROR, EXCCAUSE_DIVIDE_BY_ZERO, EXCCAUSE_UNALIGNED, EXCCAUSE_INSTR_PROHIBITED, EXCCAUSE_LOAD_PROHIBITED, EXCCAUSE_STORE_PROHIBITED}; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">sizeof</span></span>(causes); i++) { _xtos_set_exception_handler(causes[i], gdb_exception_handler); } }</code> </pre> <br><br>  The low-level exception handler saves the state of the registers in the structure on the stack and calls the C-handler, passing it the address of this structure as a parameter. <br><br>  Since Xtensa is parameterizable, it’s not so easy to understand in the documentation what is related to what.  The Xtensa documentation is very general and although much can be understood from the code available for other Xtensa configurations, one cannot be sure that this applies to lx106. <br><br>  In the end, I got confused, and decided to just write down certain values ​​in the registers to see where they eventually appear.  I managed to find a2-a16 registers, but a1 (stack pointer) seems to be overwritten by the contents of a0 (return address). <br><br>  Later, I found a couple of links that confirmed my guess and explained the loss of register a1. <br><br><ul><li>  <a href="">Defining a UserFrame structure</a> </li><li>  <a href="">XTOS Exception Handler</a> </li></ul><br><br>  Well, putting it all together: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">xtos_saved_regs</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> pc; <span class="hljs-comment"><span class="hljs-comment">/* instruction causing the trap */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> ps; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> sar; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> vpri; <span class="hljs-comment"><span class="hljs-comment">/* current xtos virtual priority */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> a0; <span class="hljs-comment"><span class="hljs-comment">/* when __XTENSA_CALL0_ABI__ is true */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> a[<span class="hljs-number"><span class="hljs-number">16</span></span>]; <span class="hljs-comment"><span class="hljs-comment">/* a2 - a15 */</span></span> };</code> </pre><br><br>  The LITBASE register is absent, but it seems that the low-level exception handler does not change it and therefore you can simply give GDB its current value. <br><br>  The key feature here is that despite the absence of a stack pointer, it can be calculated at the address of the <i>xtos_saved_regs</i> structure passed to handler C. This is 256 bytes below the stack pointer. <br><br>  Now, we can simply disable interrupts and wait for requests from GDB <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* The user should detach and let gdb do the talkin' */</span></span> <span class="hljs-function"><span class="hljs-function">ICACHE_FLASH_ATTR </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">gdb_server</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-built_in"><span class="hljs-built_in">printf</span></span>(<span class="hljs-string"><span class="hljs-string">"waiting for gdb\n"</span></span>); <span class="hljs-comment"><span class="hljs-comment">/* * polling since we cannot wait for interrupts inside * an interrupt handler of unknown level. * * Interrupts disabled so that the user (or v7 prompt) * uart interrupt handler doesn't interfere. */</span></span> xthal_set_intenable(<span class="hljs-number"><span class="hljs-number">0</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (;;) { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> ch = gdb_read_uart(); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (ch != <span class="hljs-number"><span class="hljs-number">-1</span></span>) gdb_handle_char(ch); } }</code> </pre><br><br>  <b>Communication with GDB</b> <br><br>  Now you need to understand what format the response to the command 'g' expects GDB. <br>  It depends on the specific GDB.  We need to use the port under lx106. <br><br>  Register descriptions can be found in the <i>gdb / regformats / reg-xtensa.dat file</i> <a href="">here</a> . <br><br>  From it we get: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">regfile</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> a[<span class="hljs-number"><span class="hljs-number">16</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> pc; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> sar; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> litbase; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> sr176; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> sr208; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> ps; };</code> </pre><br><br>  There are a couple of less interesting technical subtleties regarding the GDB protocol and secure memory access (part of the memory is not available for byte addressing), but in general this is all. <br><br>  Let's see what happened: <br><br><pre> <code class="diff hljs">#0 0x40242557 in crash (v7=&lt;optimized out&gt;, this_obj=18445899648779419648, args=18446462599806581592) at user/v7_esp.c:371 #1 0x4023c321 in i_eval_call (v7=v7@entry=0x3fff5c28, a=a@entry=0x3fff96f0, pos=pos@entry=0x3ffffe94, scope=&lt;optimized out&gt;, this_object=&lt;error reading variable: can't compute CFA for this frame&gt;, is_constructor=&lt;optimized out&gt;, is_constructor@entry=0) at user/v7.c:9977 #2 0x40239962 in i_eval_expr (v7=0x3fff5c28, v7@entry=&lt;error reading variable: can't compute CFA for this frame&gt;, a=0x3fff96f0, a@entry=&lt;error reading variable: can't compute CFA for this frame&gt;, pos=0x3ffffe94, pos@entry=&lt;error reading variable: can't compute CFA for this frame&gt;,scope=&lt;optimized out&gt;) at user/v7.c:9595 #3 0x4023bcf0 in i_eval_stmt (v7=&lt;error reading variable: can't compute CFA for this frame&gt;, a=&lt;error reading variable: can't compute CFA for this frame&gt;, pos=&lt;error reading variable: can't compute CFA for this frame&gt;, pos@entry=0x3ffffe94, scope=&lt;optimized out&gt;, brk=&lt;optimized out&gt;,brk@entry=0x3ffffe90) at user/v7.c:10487 #4 0x4023bd4a in i_eval_stmts (v7=&lt;error reading variable: can't compute CFA for this frame&gt;, a=&lt;error reading variable: can't compute CFA for this frame&gt;, pos=0x3ffffe94, pos@entry=&lt;error reading variable: can't compute CFA for this frame&gt;, end=15, scope=&lt;optimized out&gt;, brk=&lt;error reading variable: can't compute CFA for this frame&gt;) at user/v7.c:10053 #5 0x4023b104 in i_eval_stmt (v7=&lt;optimized out&gt;, a=a@entry=0x3fff96f0, pos=pos@entry=0x3ffffe94, scope=&lt;optimized out&gt;, brk=&lt;optimized out&gt;, brk@entry=0x3ffffe90) at user/v7.c:10088 #6 0x4024140a in v7_exec_with (v7=&lt;optimized out&gt;, res=res@entry=0x3fffff30, src=&lt;optimized out&gt;, w=&lt;optimized out&gt;) at user/v7.c:10607 #7 0x4024148a in v7_exec (v7=&lt;optimized out&gt;, res=res@entry=0x3fffff30, src=&lt;optimized out&gt;) at user/v7.c:10631 #8 0x402421c4 in process_js (cmd=&lt;optimized out&gt;) at user/v7_cmd.c:66 #9 0x4024234a in process_command (cmd=cmd@entry=0x3ffebc14 &lt;recv_buf$3591&gt; "crash()") at user/v7_cmd.c:128 #10 0x402423f7 in process_prompt_char (symb=&lt;optimized out&gt;) at user/v7_cmd.c:163 #11 0x40244a59 in rx_task (events=&lt;optimized out&gt;) at user/v7_uart.c:151 #12 0x40000f49 in ?? () #13 0x40000f49 in ??</code> </pre><br><br>  This is a stack of code collected with -Og -g3 <br><br>  Working with -Os is not yet possible.  Also note the <i>“error reading variable: can't compute CFA for this frame”</i> .  It seems lx106 GDB requires some improvements (well, or I missed something). <br><br>  Note: The problem with CFA was fixed in gdb 7.9.1, available in the “lx106-g ++ - 1.21.0” branch of <a href="https://github.com/jcmvbkbc/crosstool-NG">this repository</a> .  Thanks to Angus for pointing out that it is worth trying the new gdb.  He, however, does not fix problems with -Os. <br><br>  If I find time, I will continue to work and add the ability to set breakpoints and resume execution after an exception, but the current implementation solves a pressing problem: displaying the call stack.  I hope you find this useful. <br><br>  The source code (GPLv2) is <a href="">here</a> . <br>  And instructions for use <a href="">here</a> . <br><br>  Enjoy. </div><p>Source: <a href="https://habr.com/ru/post/357626/">https://habr.com/ru/post/357626/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../357616/index.html">What will be the programming in 20-30 years?</a></li>
+<li><a href="../357618/index.html">Former programmer Goldman Sachs convicted of stealing code</a></li>
+<li><a href="../357620/index.html">A good example of Easter eggs for programmers in the movie Ex Machina</a></li>
+<li><a href="../357622/index.html">Programming is not hard physical labor, but it still sucks</a></li>
+<li><a href="../357624/index.html">The 8th Underhanded C contest for hacker programmers begins</a></li>
+<li><a href="../357628/index.html">Node.js + Io.js = Node.js 4.0.0</a></li>
+<li><a href="../357630/index.html">Tagsistant: semantic file system</a></li>
+<li><a href="../357632/index.html">Run the application for Android (from personal experience)</a></li>
+<li><a href="../357634/index.html">We launch the application for Android Part 2 - finance, promotion (from personal experience)</a></li>
+<li><a href="../357636/index.html">Android Studio 2.0 development environment released (preview)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

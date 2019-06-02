@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Go 1.11: AVX-512 with Go</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In Go 1.11, the assembler for the x86 platform has been significantly updated. 
+
+
+ Programmers will be able to use the AVX-512 - the latest instructio...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Go 1.11: AVX-512 with Go</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/cd/io/8q/cdio8qky0mrwhnuvsvrx_vkm0t4.png"><br><br><p>  In Go 1.11, the assembler for the x86 platform has been significantly updated. </p><br><p>  Programmers will be able to use the <a href="https://en.wikipedia.org/wiki/AVX-512">AVX-512</a> - the latest instructions available in Intel processors. </p><br><p>  Under the cut: </p><br><ul><li> The most significant updates in <code>cmd/asm</code> ( <code>go tool asm</code> ) </li><li>  How a new instruction set was implemented in Go assembler </li><li>  Using new instructions and special features of the EVEX prefix </li><li>  The level of integration into the toolchain (recipes for circumventing current restrictions) </li></ul><a name="habracut"></a><br><h1 id="chto-novogo">  What's new? </h1><br><p>  From the visible to the programmer: </p><br><ul><li>  AVX-512 </li></ul><br><p>  - New vector registers: <code>X16-X31</code> , <code>Y16-Y31</code> and <code>Z0-Z31</code> <br>  - Added mask registers: <code>K0-K7</code> <br>  - Special features of the EVEX prefix (see below: rounding, zeroing, ...). <br>  - Hundreds of new instructions (379 new opcodes + AVX {1,2} instructions with an EVEX prefix). </p><br><ul><li>  Added 110 missing legacy instructions ( <a href="https://golang.org/cl/97235">CL97235</a> ). </li><li>  <a href="https://golang.org/cl/108895">Up</a> to 25% faster assembly ( <a href="https://golang.org/cl/108895">CL108895</a> ).  Accelerates assembly by about 1.5%. </li></ul><br><p>  Preliminary work was also done to improve error messages ( <a href="https://golang.org/cl/108515">CL108515</a> ), but this will not go into the release of go1.11. </p><br><p>  In addition to the fact of adding new extensions, it is important that in the new assembler all VEX and EVEX tables are generated automatically. </p><br><p>  Now in Go there is an x86 assembler to which you do not need to add new instructions manually. </p><br><h1 id="encoder-v-go-assemblere">  Encoder in go assembler </h1><br><p>  The assembly part responsible for generating the machine code is in the standard <a href="https://github.com/golang/go/tree/master/src/cmd/internal/obj/x86">cmd / internal / obj / x86</a> package. </p><br><p>  Most of the code in it is the <a href="https://bitbucket.org/inferno-os/inferno-os/src/default/utils/6l">x86 assembler</a> source code <a href="https://bitbucket.org/inferno-os/inferno-os/src/default/utils/6l">from plan9</a> translated from C. </p><br><p>  Assembler tables conceptually consist of 3 dimensions: X, Y, and Z. <br>  The specific instruction is generated as <code>encode(X, Y, Z)</code> . <br>  An alternative mental model may be <code>table[X][Y][Z]</code> , but it is less close to implementation details. </p><br><p>  From the space of opcodes (dimension X), the object <code>optab</code> corresponding to the assembled instruction is <code>optab</code> .  Then, the list of available combinations of operands (dimension Y) is <code>ytab</code> object <code>ytab</code> is selected corresponding to the arguments of the instruction.  The final step is to choose a code generation scheme: Z-case. </p><br><p>  It is easy to find constants in the code that have <a href="">Y</a> and <a href="">Z</a> prefixes, but there is nothing with the X prefix. </p><br><div class="spoiler">  <b class="spoiler_title">Funny note</b> <div class="spoiler_text"><p>  There is a hypothesis that initially they were A, B, and C prefixes, then B and C were renamed Y and Z, and opcodes remained with the prefix A. </p><br><p>  What is also funny, the type of A-constants is <code>obj.As</code> , which can be abbreviated from <code>asm</code> (assembler opcode), or simply means the plural of <code>A</code> </p></div></div><br><p>  Previously, instructions in Go x86 assembler were added manually, according to the following scheme: </p><br><ol><li>  Adding a new constant to <a href="">aenum.go</a> . </li><li>  Adding <code>optab</code> to <a href="">global</a> x86 assembly <a href="">table</a> . </li><li>  Selection or addition of the desired <code>ytab</code> list. </li><li>  Adding <a href="https://github.com/golang/go/tree/master/src/cmd/asm/internal/asm/testdata">end2end</a> tests for new instructions. </li></ol><br><p>  If we already have all the necessary A, Y, and Z constants, it remains to generate the encoder tables and tests themselves. </p><br><p>  This process is well automated if we have a source from which to read information about instructions: their encoding, the types of allowed operands, and so on. <br>  Fortunately, we have such a source. </p><br><h1 id="x86avxgen-i-intel-xed">  x86avxgen and Intel XED </h1><br><p>  To generate all the instructions that use <a href="https://en.wikipedia.org/wiki/VEX_prefix">VEX</a> and <a href="https://en.wikipedia.org/wiki/EVEX_prefix">EVEX</a> prefixes, the <a href="https://github.com/golang/arch/tree/master/x86/x86avxgen">x86avxgen</a> utility was written.  This program generates the same <code>optab</code> and <code>ytab</code> objects for the assembler. </p><br><p>  The input data for the program are <a href="https://github.com/intelxed/xed/tree/master/datafiles">XED datafiles</a> , which you can work with from Go using the <a href="https://github.com/golang/arch/tree/master/x86/xeddata">xeddata</a> package. </p><br><p>  The advantage of code generation is that in order to implement new instructions from the <a href="https://en.wikipedia.org/wiki/Advanced_Vector_Extensions">AVX</a> series, it will be enough to restart <code>x86avxgen</code> and add tests. <br>  Test generation is also automated using the <a href="https://github.com/intelxed/xed">Intel XED</a> encoder (XED is primarily a library). </p><br><p>  EVEX has a large amount of free space for opcodes and potential for extensions, so new instructions will definitely appear. <br>  In the near future you can pry using the document <a href="https://software.intel.com/sites/default/files/managed/c5/15/architecture-instruction-set-extensions-programming-reference.pdf">ISA-extensions</a> . </p><br><h1 id="sintaksis">  Syntax </h1><br><p>  In addition to the code generator tables themselves, the parser has been updated. <br>  Now for <code>x86</code> you can use <a href="">register lists</a> and opcode suffixes. </p><br><p>  Register lists are used for multi-source instructions, such as <code>VP4DPWSSD</code> . <br>  The <a href="https://software.intel.com/en-us/articles/intel-sdm">manual</a> uses the notation <code>+n</code> : </p><br><pre> <code class="go hljs">VP4DPWSSD zmm1{k1}{z}, zmm2+<span class="hljs-number"><span class="hljs-number">3</span></span>, m128</code> </pre> <br><p>  In this case, <code>+3</code> means that the second <code>zmm</code> operand describes a range of registers of 4 elements (in the manual, these ranges are referred to as "register block"). </p><br><p>  The range for <code>Z0+3</code> in Go assembly will look like this: </p><br><pre> <code class="go hljs">VP4DPWSSD Z25, [Z0-Z3], (AX)</code> </pre> <br><p>  Using ranges of type <code>[Z0-Z1]</code> , <code>[Z3-Z0]</code> , <code>[AX-DX]</code> is an error <br>  assembly stage. </p><br><p>  Suffixes are used to activate special features of the AVX-512. <br>  For example, take one of the new <code>VADDPD</code> instruction <code>VADDPD</code> : </p><br><pre> <code class="go hljs">VADDPD zmm1 {k1}{z}, zmm2, zmm3/m512/m64bcst{er}</code> </pre> <br><p>  Now we will analyze what all this magic from <code>{k1}</code> , <code>{z}</code> , <code>m64bcst</code> and <code>{er}</code> <code>m64bcst</code> . </p><br><blockquote>  Please note: the order of the operands is completely inverse to the Intel syntax. <br>  Just like in the GNU assembler (AT &amp; T syntax). </blockquote><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">//  , "" VADDPD. VADDPD (AX), Z30, Z10 // {k1} - merging     K . VADDPD (AX), Z30, K5, Z10 //          K , //     merging  zeroing. // {z} -  zeroing-mask (    merging-mask). VADDPD.Z (AX), Z30, Z10 // m64bcst -   embedded broadcasting. //  "bcst"   Microsoft  (MASM). VADDPD.BCST (AX), Z30, Z10 // {er} -  embedded rounding.    memory . //    SAE (. ),     . VADDPD.RU_SAE Z0, Z30, Z10 //   +Inf VADDPD.RD_SAE Z0, Z30, Z10 //   -Inf VADDPD.RZ_SAE Z0, Z30, Z10 //    VADDPD.RN_SAE Z0, Z30, Z10 //   " "</span></span></code> </pre> <br><p>  More interestingly, the <code>Z</code> suffix, if the instruction supports it, can be used in conjunction with other suffixes: </p><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">// SAE -  "surpress all exceptions". //     {sae}. VMAXPD.SAE.Z Z3, Z2, Z1</span></span></code> </pre> <br><p>  For questions like "Why so?"  can answer <a href="https://github.com/golang/go/issues/22779">go # 22779: AVX512 design</a> . <br>  It is also recommended to follow the link to <a href="https://groups.google.com/forum/">golang-dev</a> given there. </p><br><h1 id="sravnenie-s-gnu-assemblerom">  Comparison with GNU assembler </h1><br><p>  The order of the operands is identical to that of the GNU assembler. </p><br><p>  Those who found the "strange" order of the operands in the <code>CMP</code> instructions are waiting for the news: <br>  For AVX instructions, these special rules do not apply (decide whether this is good or bad). </p><br><table><thead><tr><th>  Feature </th><th>  GNU assembler </th><th>  Go assembler </th></tr></thead><tbody><tr><td>  Masking </td><td> <code>VPORD %ZMM0, %ZMM1, %ZMM2{%K2}</code> <br>  <code>{k}</code> always at dst operand </td><td> <code>VPODR Z0, Z1, K2, Z2</code> <br>  <code>{k}</code> always before the dst operand </td></tr><tr><td>  Broadcasting </td><td> <code>VPORD (%RDX){1to16}, %ZMM1, %ZMM2</code> <br>  <code>1toN</code> at memory argument </td><td> <code>VPORD.BCST (DX), Z1, Z2</code> <br>  <code>BCST</code> suffix </td></tr><tr><td>  Zeroing </td><td> <code>VPORD %ZMM0, %ZMM1, %ZMM2{z}</code> <br>  <code>{z}</code> argument at dst operand </td><td> <code>VPORD.Z Z0, Z1, Z2</code> <br>  <code>Z</code> suffix </td></tr><tr><td>  Rounding </td><td> <code>VSQRTPD {ru-sae}, %ZMM0, %ZMM1</code> <br>  Special first argument </td><td> <code>VSQRTPD.RU_SAE Z0, Z1</code> <br>  Suffix </td></tr><tr><td>  SAE </td><td> <code>VUCOMISD {sae}, %XMM0, %XMM1</code> <br>  Similar to rounding </td><td> <code>VUCOMISD.SAE X0, X1</code> <br>  Similar to rounding </td></tr><tr><td>  Multi-source </td><td> <code>V4FMADDPS (%RCX), %ZMM4, %ZMM1</code> <br>  Specifies first register </td><td> <code>V4FMADDPS (CX), [Z4-Z7], Z1</code> <br>  Explicit indication of the range </td></tr></tbody></table><br><p>  Both assemblers use VEX when assembling instructions, where it is possible to apply both VEX and EVEX circuits.  In other words, <code>VADDPD X1, X2, X3</code> will have a VEX prefix. </p><br><p>  In cases where there is an ambiguity of the operand dimension, in the Go assembler, opcodes get additional size suffixes: </p><br><pre> <code class="go hljs">VCVTSS2USIL (AX), DX <span class="hljs-comment"><span class="hljs-comment">// VCVTSS2USI (%RAX), %EDX VCVTSS2USIQ (AX), DX // VCVTSS2USI (%RAX), %RDX</span></span></code> </pre> <br><p>  Where in the Intel syntax you can specify the width of the memory operand, in GNU and Go assemblers use <code>X</code> and <code>Y</code> size suffixes: </p><br><pre> <code class="go hljs">VCVTTPD2DQX (AX), X0 <span class="hljs-comment"><span class="hljs-comment">// VCVTTPD2DQ XMM0, XMMWORD PTR [RAX] VCVTTPD2DQY (AX), X0 // VCVTTPD2DQ XMM0, YMMWORD PTR [RAX]</span></span></code> </pre> <br><p>  A complete list of instructions with size suffixes can be found in the <a href="https://github.com/golang/go/wiki/AVX-512-support-in-Go-assembler">documentation</a> . </p><br><h1 id="dizassemblirovanie-avx-512">  Disassembling the AVX-512 </h1><br><p>  <a href="https://golang.org/cl/113315">CL113315</a> adds support for the AVX-512 to <code>go tool asm</code> , mainly affecting the parser and the <code>obj/x86</code> code generator, but what happens if you compile the <code>.s</code> file and try to explore it with <code>go tool objdump</code> ? </p><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">//  avx.s TEXT avxCheck(SB), 0, $0 VPOR X0, X1, X2 // AVX1 VPOR Y0, Y1, Y2 // AVX2 VPORD.BCST (DX), Z1, K2, Z2 // AVX-512 RET</span></span></code> </pre> <br><p>  You will not see what you expect: </p><br><pre> <code class="bash hljs">$ go tool asm avx.s $ go tool objdump avx.o TEXT avxCheck(SB) gofile..<span class="hljs-variable"><span class="hljs-variable">$GOROOT</span></span>/avx.s avx.s:2 0xb7 c5f1ebd0 JMP 0x8b avx.s:3 0xbb c5f5ebd0 JMP 0x8f avx.s:4 0xbf 62 ? avx.s:4 0xc0 f1 ICEBP avx.s:4 0xc1 755a JNE 0x11d avx.s:4 0xc3 eb12 JMP 0xd7 avx.s:5 0xc5 c3 RET</code> </pre> <br><p>  Using <code>objdump</code> on Go object files does not work: </p><br><pre> <code class="bash hljs">$ objdump -D avx.o objdump: avx.o: File format not recognized</code> </pre> <br><p>  But it can be used on executable files. <br>  If the assembler code is included in the main package, the system <code>objdump</code> will cope with the task. </p><br><p>  A simpler way to get machine code is to pass the <code>-S</code> argument: </p><br><pre> <code class="bash hljs">$ go tool asm -S avx.s avxCheck STEXT nosplit size=15 args=0xffffffff80000000 locals=0x0 0x0000 00000 (avx.s:1) TEXT avxCheck(SB), NOSPLIT, <span class="hljs-variable"><span class="hljs-variable">$0</span></span> 0x0000 00000 (avx.s:2) VPOR X0, X1, X2 0x0004 00004 (avx.s:3) VPOR Y0, Y1, Y2 0x0008 00008 (avx.s:4) VPORD.BCST (DX), Z1, K2, Z2 0x000e 00014 (avx.s:5) RET 0x0000 c5 f1 eb d0 c5 f5 eb d0 62 f1 75 5a eb 12 c3 ........b.uZ... go.info.avxCheck SDWARFINFO size=34 0x0000 02 61 76 78 43 68 65 63 6b 00 00 00 00 00 00 00 .avxCheck....... 0x0010 00 00 00 00 00 00 00 00 00 00 01 9c 00 00 00 00 ................ 0x0020 01 00</code> </pre> <br><p>  Octets of interest to us: <code>c5 f1 eb d0 c5 f5 eb d0 62 f1 75 5a eb 12 c3</code> . <br>  Copy them and we will do the reverse through the system <code>objdump</code> : </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># 1.        xxd. # 2.  objdump  binary . # :  Intel    "i386"  "i386:intel". $ echo 'c5 f1 eb d0 c5 f5 eb d0 62 f1 75 5a eb 12 c3' | xxd -r -p &gt; shellcode.bin &amp;&amp; objdump -b binary -m i386 -D shellcode.bin Disassembly of section .data: 00000000 &lt;.data&gt;: 0: c5 f1 eb d0 vpor %xmm0,%xmm1,%xmm2 4: c5 f5 eb d0 vpor %ymm0,%ymm1,%ymm2 8: 62 f1 75 5a eb 12 vpord (%edx){1to16},%zmm1,%zmm2{%k2} e: c3 ret</span></span></code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Disassembling with XED</b> <div class="spoiler_text"><p>  XED also provides several useful utilities, one of which allows <br>  use encoder / decoder via command line. </p><br><pre> <code class="bash hljs">$ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'c5 f1 eb d0 c5 f5 eb d0 62 f1 75 5a eb 12 c3'</span></span> &gt; data.txt &amp;&amp; xed -64 -A -ih data.txt &amp;&amp; rm data.txt 00 LOGICAL AVX C5F1EBD0 vpor %xmm0, %xmm1, %xmm2 04 LOGICAL AVX2 C5F5EBD0 vpor %ymm0, %ymm1, %ymm2 08 LOGICAL AVX512EVEX 62F1755AEB12 vpordl (%rdx){1to16}, %zmm1, %zmm2{%k2} 0e RET BASE C3 retq</code> </pre> <br><p>  The <code>-A</code> flag selects AT &amp; T syntax, <code>-64</code> selects 64-bit mode. </p><br><p>  The <code>xed-ex4</code> shows detailed information about the instruction: </p><br><pre> <code class="bash hljs">$ xed-ex4 -64 C5 F1 EB D0 PARSING BYTES: c5 f1 eb d0 VPOR VPOR_XMMdq_XMMdq_XMMdq EASZ:3, EOSZ:2, HAS_MODRM:1, LZCNT, MAP:1, MAX_BYTES:4, MOD:3, MODE:2, MODRM_BYTE:208, NOMINAL_OPCODE:235, OUTREG:XMM0, P4, POS_MODRM:3, POS_NOMINAL_OPCODE:2, REG:2, REG0:XMM2, REG1:XMM1, REG2:XMM0, SMODE:2, TZCNT, VEXDEST210:6, VEXDEST3, VEXVALID:1, VEX_PREFIX:1 0 REG0/W/DQ/EXPLICIT/NT_LOOKUP_FN/XMM_R 1 REG1/R/DQ/EXPLICIT/NT_LOOKUP_FN/XMM_N 2 REG2/R/DQ/EXPLICIT/NT_LOOKUP_FN/XMM_B YDIS: vpor xmm2, xmm1, xmm0 ATT syntax: vpor %xmm0, %xmm1, %xmm2 INTEL syntax: vpor xmm2, xmm1, xmm0</code> </pre> </div></div><br><p>  <code>go tool objdump</code> based on <a href="">x86.csv</a> , which does not contain many new instructions and has inaccuracies. </p><br><p>  The csv file itself is created by the <a href="https://godoc.org/golang.org/x/arch/x86/x86spec">x86spec</a> utility based on the conversion from the Intel manual (PDF). <br>  The next step is to create <code>x86.csv</code> from <code>x86.csv</code> tables, which will re-generate the tables for the decoder. </p><br><h1 id="primenenie-avx-512">  AVX-512 Application </h1><br><p>  One of the major AVX-512 users in the Go world is <a href="https://github.com/minio">minio</a> . <br>  Before 1.11, they had to use the <a href="https://github.com/minio/asm2plan9s">asm2plan9s</a> utility. </p><br><p>  Here, for example, their <a href="https://github.com/minio/sha256-simd">results for sha256</a> : </p><br><pre> <code class="bash hljs">Processor SIMD Speed (MB/s) 3.0 GHz Intel Xeon Platinum 8124M AVX512 3498 1.2 GHz ARM Cortex-A53 ARM64 638 3.0 GHz Intel Xeon Platinum 8124M AVX2 449 3.1 GHz Intel Core i7 AVX 362 3.1 GHz Intel Core i7 SSE 299</code> </pre> <br><p>  In order to start to get acquainted with the new extension, you can try to use the instructions already familiar to you from AVX1 and AVX2 (without <code>Z</code> registers).  This way you can experiment with new features, such as merging / zeroing masks, without the risk of getting into a completely new “features” space. </p><br><p>  The most important thing - measure, before you draw final conclusions.  In doing so, check both the performance of the function itself and the application as a whole. </p><br><p>  I also recommend that you familiarize yourself with <a href="https://github.com/golang/go/wiki/AVX-512-support-in-Go-assembler">golang.org/wiki/AVX-512-support-in-Go-assembler</a> . </p><br><p>  In more detail, the topic of effective use of the AVX-512 will be discussed in a separate article. </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/359132/">https://habr.com/ru/post/359132/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../359118/index.html">It's time to grow up for IT communities: why do we gather activists at RHS?</a></li>
+<li><a href="../359120/index.html">Experiments with kube-proxy and node unavailability in Kubernetes</a></li>
+<li><a href="../359122/index.html">A bunch of different ways to read bits</a></li>
+<li><a href="../359124/index.html">TOTAL 3 months: Alternative to paid shutdown of advertising in the free Android application</a></li>
+<li><a href="../359130/index.html">How we made a highload ++ game with voxel graphics and VR</a></li>
+<li><a href="../359134/index.html">How to write a decentralized multiblockchein exchange in a day</a></li>
+<li><a href="../359136/index.html">Machine learning and a polypropylene extruder: history 3 places on the hakatone Sibur</a></li>
+<li><a href="../359142/index.html">Internet ombudsman invited the Prosecutor General’s Office to check Roskomnadzor, millions of Amazon addresses are still blocked</a></li>
+<li><a href="../359144/index.html">The insides of the SDR chip AD9361 - when microelectronics is more profitable than drug trafficking</a></li>
+<li><a href="../359146/index.html">Simple and efficient calculation of Modbus CRC16 in PLC and MK without bitwise shift and tables</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

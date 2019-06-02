@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Description of the prototype of my game multiplayer server</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, Habr. I am glad to present my first article: a description of the prototype game multiplayer server. 
+
+ → Source code (under Apache 2.0 license) 
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Description of the prototype of my game multiplayer server</h1><div class="post__text post__text-html js-mediator-article">  Hi, Habr.  I am glad to present my first article: a description of the prototype game multiplayer server. <br><br>  → <a href="https://github.com/n-demidov/fruit-bounty-game-server">Source code (under Apache 2.0 license)</a> <br><br>  Content: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  Inbound Processing Architecture </li><li>  Brief description of other moments <br><ul><li>  Modules and interactions of the main classes </li><li>  Different types of tests </li><li>  Caching when working with the database </li></ul></li></ul><br><h3>  User Inbound Processing Architecture </h3><br>  The entry point is a websocket controller that accepts all sorts of requests from users: from login and game requests to game moves and writing chat messages.  This controller serves thread-pool (about 20 threads). <br><br>  One of the most important things in the game is the fast processing of game actions (priority business case).  That is, ideally, the game should instantly respond to user actions and not “hang”.  While for many other non-game actions, such as authentication, writing messages in a chat or matching players (for playing together), a longer or a smaller delay is quite acceptable for the user. <br><br>  Therefore, I tried to design the architecture in accordance with this requirement as well (see picture): <br><a name="habracut"></a><br><img src="https://habrastorage.org/getpro/habr/post_images/f8c/d32/620/f8cd326208ea45e68c941341f9da9746.png" alt="image"><br><br><h4>  Authentication Requests (# 1 in the picture) </h4><br>  Incoming authentication requests are queued in a special thread-pool.  After that, the thread is immediately released and again ready to take user action. <br><br>  The authentication process itself will be already in asynchronous mode.  It includes: <br><br>  - authentication on Facebook; <br>  - create or update user data in the database; <br>  - sending information to the client in case of a successful login. <br><br>  The size of this thread-pool can be adjusted already depending on the server load. <br><br><h4>  Requests for the game (№2 in the picture) </h4><br>  When a player requests to create a game request, the solution to the forehead would immediately be to call a functional (function / method) that matches the players.  And for the purpose of thread safety, add some variant of blocking a shared resource (in our case, this is a list of applications for the game).  That is, we take a lock, then we match the players, then we create a game between them and send notifications to customers.  If these operations take a relatively long time, then all other threads awaiting the removal of the lock will be wasted.  As a consequence, the server may potentially not accept inbound game actions that must enter the Game Loop immediately. <br><br>  This option is also potentially poorly scalable: with an increase in the number of threads, they can all get up (block each other) when accessing this shared resource.  From here there will be little benefit when scaling up and increasing the number of threads.  Therefore, I came up with another option (by the way, if this approach has a name - write in a comment): <br><br>  In the new version, game requests are added to the Concurrent Map, where key is the user and value is the application for the game. <br>  All - after that the incoming stream is immediately released. <br>  Streams will not even always block each other (when writing to it), since ConcurrentMap does not patch the whole map, but a segment. <br><br>  Every n seconds, exactly 1 thread is called to process incoming game requests (Matching players).  He calmly and handles this map.  This ensures flow safety without blocking and quick release of incoming flows. <br><br>  This solution has another advantage - it allows you to “fill up” the applications and then match them in a more appropriate way.  The logic and implementation became simpler. <br><br><h4>  Processing game action (number 3 in the picture) </h4><br>  Here is a bit more complicated: <br><br>  1) Incoming game actions (moves) simply add up to a special queue (each game has its own queue).  This queue simply stores the actions performed by the players.  After that, the stream is traditionally released. <br><br>  2) As usual, we have a GameLoop (game cycle).  It bypasses the list of all games.  Next, for each game, he pulls a queue associated with it.  And already from this queue gets the moves made by the players.  It then processes each action sequentially.  It's simple. <br><br>  In principle, it is also possible to parallelize the processing of different games on a thread pool.  This is possible, since the games are not related to each other.  This functionality can also be made non-blocking: it is enough, for example, to use non-blocking locks from the java.util.concurrent library.  Or, if we have a distributed solution, use Hazelcast as a distributed cache with the ability to lock the keys in a map ... However, this functionality is not required, since the processing of game actions is too fast.  Therefore, GameLoop runs in one thread. <br><br>  3) There is one more thing - if the game has changed, then you need to send notifications to clients and, if necessary, update the data in the database.  This is also done in asynchronous mode (No. 4 in the picture), so as not to slow GameLoop. <br><br>  <b>Summarizing</b> <br><br>  The architecture is designed to: <br><br>  - Requests with game actions had the highest priority over other types of requests (for example, before login, or application for a game). <br><br>  That there were no such that 100 requests for authentication came and "hammered" thread-pool (serving user requests).  At the same time, incoming game actions would stand in a queue, and all games would “slow down” at once for a few seconds. <br><br>  - Everywhere was non-blocking multithreading. <br><br>  This approach supports vertical scaling and an increase in the number of threads.  <a href="https://www.ibm.com/developerworks/ru/library/j-jtp07233/index.html">An article on the topic, see the section "Scalability Issues"</a> <br><br><h4>  Brief description of other moments </h4><br>  One of the low-priority tasks was to make a <b>weak binding between the server module and the game module</b> .  In other words, so that you can easily “pull out” the game itself and attach it to the Desktop-UI.  Or put another game of the desktop type to a multiplayer server. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/c64/849/bca/c64849bca048d62affaa34febf7c0184.png" alt="image"><br><br>  This is achieved by defining the areas of responsibility.  The project is divided into three modules: server, game API and game implementation. <br><br>  All game logic is “sewn up” in the game module.  The server simply redirects the game actions to the game controller via the code API (Java code).  Answers from the game come either immediately or postponed - through a subscription (Subscriber template). <br><br>  The game module knows nothing about who will call it via the java API and subscribe to events.  For a better understanding of the interaction between the server and the game, a separate module is highlighted - the game API is a set of contracts (interfaces).  The server only calls them.  A game module provides an implementation. <br><br>  <b>There are both unit and integration tests.</b> <br><br>  In general, tests are used where there are difficult / long / tedious test cases. <br><br>  For example, these may be different disconnect options: let's say if the user has connected from a new device, then the old connection needs to be closed.  Or, for example, this is a disconnection check, if the user was inactive for 15 minutes (so as not to wait that long - many parameters are put into environment variables and “locked” for a few milliseconds for a quick test run). <br><br>  There is also a chat check: that different users see each other's messages. <br>  There are checks for game requests and game creation. <br><br>  Under the aforementioned cases, integration tests well suited up the server and the IoC context (external systems are locked). <br><br>  Unit tests are also used.  For example, where there is no need to raise the context;  or where you need to check many variations of input parameters. <br><br>  For example, unit tests are used to cover game rules.  Each game wheel is implemented by a separate class with a single public method.  It is a pure function and is easily covered with dough. <br>  And further - from these rudder functions business logic is already composed in a separate class.  So much easier to read and understand the code. <br><br>  In general, when choosing the type and methods of writing tests, I liked this report: <a href="https://www.youtube.com/watch%3Fv%3DDqOnfQ4Ad5s">“Hexlet - Testing and TDD”</a> . <br><br>  It is similar to the fast processing of game requests - it is also calculated with <b>caching of calls to the database</b> .  During authentication, the user’s data is read into the cache (if there is no cache yet).  After that, all the rare requests for this data come from the cache.  At the end of the game (which happens not often) there is an entry in the database with the update of information in the cache. <br><br>  It is better not to look at the client’s code and functionality: for the prototype, very little functionality was needed there, so it was written in a quick way.  All functional extension points, the generalized code is laid on the backend. <br><br>  Not all moments are disclosed in the article.  In particular, about the management of connections and disconnects (for example, in the case of opening a session of a new device).  The game also has a ranking system and the top 100 players on the main table.  There is not only multiplayer, but also a game with bots.  Embedded functional expansion points for various aspects of both the server and the game. <br><br>  The game is written in Java.  With the active use of the Spring Framework, which out of the box gives you work with Websockets (Spring WebSocket), integration tests (Spring Boot Test) and a bunch of other buns (DI, for example). <br><br>  Horizontal scaling for websockets is not so easy to do.  Therefore, in order to speed for the prototype, it was decided not to do it. <br><br><h4>  A couple of funny moments </h4><br>  The server is hosted on a free account on Heroku.  According to this free tariff, the server is cut down if there were no requests for it within 30 minutes.  An elegant solution was found - I just registered on the monitoring site, who periodically ping the server.  As a bonus - getting additional information on monitoring. <br><br>  There is also a free Postgre with a 10k line limit.  Because of this, you have to periodically run the deletion of irrelevant accounts. </div><p>Source: <a href="https://habr.com/ru/post/351738/">https://habr.com/ru/post/351738/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../351726/index.html">Design system. Concept definition</a></li>
+<li><a href="../351730/index.html">Why inheritance has always been meaningless</a></li>
+<li><a href="../351732/index.html">Intelligent Word Processing</a></li>
+<li><a href="../351734/index.html">Erlang, rebar3 and installation of service under Windows</a></li>
+<li><a href="../351736/index.html">Bagodilnya - marathon for killing the elderly bugs</a></li>
+<li><a href="../351740/index.html">Looking for the causes of database brakes using sys schema in MySQL 5.7</a></li>
+<li><a href="../351744/index.html">Amazon Lambda with Golang</a></li>
+<li><a href="../351746/index.html">Tutu PHP Meetup # 1</a></li>
+<li><a href="../351748/index.html">Create iOS stopwatch on React-Native (subtitles)</a></li>
+<li><a href="../351750/index.html">Angular. Recursive component</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
