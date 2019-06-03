@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL feature highlight: the rapid transformation of the old master in the stand-by with pg_rewind</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Anyone who had to deal with the failover procedure when working with streaming replication in PostgreSQL, was probably puzzled by the question: “How c...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL feature highlight: the rapid transformation of the old master in the stand-by with pg_rewind</h1><div class="post__text post__text-html js-mediator-article">  Anyone who had to deal with the failover procedure when working with streaming replication in PostgreSQL, was probably puzzled by the question: “How can I not copy anything again, but get the old master to work as a stand-by?”  So unfortunately, the built-in functionality in PostgreSQL, alas, no.  Yes, it is impossible so easy to take and connect the old master to the new and to make it work.  To do this, repeat the process of setting up streaming replication again, i.e.  copy the entire cluster and run postgres in hot-standby mode. <br>  Fortunately, work in this direction is underway, and the results are not bad enough.  The project is called <a href="https://github.com/vmware/pg_rewind">pg_rewind</a> . <br>  Immediately I warn you this is not yet production-ready and the post has the character of how-to + technology preview. <br><a name="habracut"></a><br>  Known limitations: <br><ul><li>  Currently, pg_rewind only supports version 9.4 and part 9.3.  Why partly because the cluster must be necessarily initialized with support for checksums ( <i>initdb -k</i> ).  With version 9.4 simpler, it needs either support for checksums, or the presence of the parameter <i>wal_log_hints</i> set to on. </li><li>  Another significant limitation, the master must be turned off normally.  That is, if the master was turned off abnormally, then the rewind will not be performed.  But, developers are working in this direction. </li><li>  While tablespaces are not supported and work with WAL archives is not implemented (the missing archives should be copied manually). </li></ul><br>  A little more theory and let's move on to practice ... what is the rewinding process: <br><ul><li>  Scanning the directory of the old node since the WAL branch and recording the blocks that were changed after the branch. </li><li>  Copying the changed blocks from the new master to the old one; </li><li>  Copying the remaining files (clog, configuration files, etc.); </li><li>  Editing recovery.conf and launching the old wizard with new settings; </li><li>  WAL playback from checkpoint after failover. </li></ul><br>  So now the practice, below I will describe the process of how to "rewind" the old master and connect to the new master without full reinitialization. <br>  The plan is simple: <br><ul><li>  build and install PostgreSQL 9.4 (currently only devel); </li><li>  build pg_rewind; </li><li>  configure streaming replication; </li><li>  failover; </li><li>  rewind the old master and connect to the new master. </li></ul><br>  All operations are performed in CentOS 6.5.  In general, the process is quite simple, I had the most difficulty at the pg_rewind assembly stage, so I will describe the process completely. <br>  So let's go!  First you need to install several packages that will be required as dependencies when building postgresql.  After installation, we clone the repositories and install PostgreSQL. <br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># yum install git gcc zlib-devel flex bison readline-devel pam-devel openssl-devel libxslt-devel # git clone --branch master http://git.postgresql.org/git/postgresql.git # git clone https://github.com/vmware/pg_rewind # cd postgresql # ./configure &amp;&amp; make &amp;&amp; make install</span></span></code> </pre> <br>  Here it is worth noting that by default PostgreSQL is installed in / usr / local and all utilities are in / usr / local / pgsql / bin, therefore this path must be added to the PATH environment variable.  This can be done in different ways, I did the following, more or less decent (and maybe not very) way for CentOS: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># vi /etc/profile.d/pgsql-9.4.sh PGSQL94_BINDIR=/usr/local/pgsql/bin pathmunge $PGSQL94_BINDIR export PGSQL94_BINDIR # source /etc/profile</span></span></code> </pre><br>  Now go to the directory with the pg_rewind code and build the utility.  The resulting utility is simply copied to the postgres utilities. <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># cd ../pg_rewind # make USE_PGXS=1 top_srcdir=../postgresql/ # cp pg_rewind /usr/local/pgsql/bin/</span></span></code> </pre><br>  Now we set up stream replication.  As I wrote at the beginning, for pg_rewind to work successfully, one of two conditions must be met: <br>  1) Clusters must be initialized with checksum support (initdb -k). <br>  or <br>  2) postgres services must be started with the <i>wal_log_hints = on</i> option in postgresql.conf <br>  I chose the second option. <br>  The configuration process has already been described <a href="http://www.thislinux.org/2014/03/postgresql-streaming-replication-setup.html">many</a> <a href="http://www.youtube.com/watch%3Fv%3Dz0bhyqyBSUI">times</a> , so I will not dwell on this here. <br>  So when replication is up and running, we are failover.  This operation is performed by creating a trigger file specified in recovery.conf in the trigger_file option.  After creating the trigger file, the stand-by will switch to master mode and start living its life.  Therefore, the old master now needs to be turned off. <br>  And now pg_rewind comes into play.  The parameters are the directory where the cluster of the old master ( <i>-D</i> ) is located and the options for connecting to the new master server ( <i>--source-server</i> ).  Attention, the operation needs to be performed under the user who owns the database cluster (by default, postgres). <br><pre> <code class="bash hljs">$ pg_rewind -D /var/lib/pgsql/9.4/data/ --<span class="hljs-built_in"><span class="hljs-built_in">source</span></span>-server=<span class="hljs-string"><span class="hljs-string">"host=192.168.122.12 port=5432 user=postgres"</span></span> The servers diverged at WAL position 0/48D9580 on timeline 1. Rewinding from Last common checkpoint at 0/3000860 on timeline 1 error reading xlog record: record with zero length at 0/48D9620 Done!</code> </pre><br>  So rewind done (do not be afraid of the word error, this is a regular test).  Now you need to pay attention to the postrgesql.conf and recovery.done files, remember that they are copied from the new wizard and may contain server-specific settings (for example, ip-addresses or port numbers in listen_addresses, port, etc.) The second file, recovery.  done should be renamed to recovery.conf and configured to connect to the new master. <br><pre> <code class="bash hljs">$ mv /var/lib/pgsql/9.4/data/recovery.done /var/lib/pgsql/9.4/data/recovery.conf $ vi /var/lib/pgsql/9.4/data/recovery.conf standby_mode = <span class="hljs-string"><span class="hljs-string">'on'</span></span> primary_conninfo = <span class="hljs-string"><span class="hljs-string">'user=postgres host=192.168.122.12 port=5432'</span></span> trigger_file = <span class="hljs-string"><span class="hljs-string">'/var/lib/pgsql/9.4/data/failover'</span></span></code> </pre><br>  After the configuration is corrected we launch postgres and look at the server log <br><pre> <code class="bash hljs">$ cat /var/lib/pgsql/9.4/data/pg_log/postgresql-Mon.log LOG: entering standby mode LOG: redo starts at 0/48D95B0 LOG: record with zero length at 0/61D9EE8 LOG: consistent recovery state reached at 0/61D9EE8 LOG: database system is ready to accept <span class="hljs-built_in"><span class="hljs-built_in">read</span></span> only connections LOG: started streaming WAL from primary at 0/6000000 on timeline 2</code> </pre><br>  Pay attention to the <i>database system is ready to accept read only connections</i> , this is the most important line here indicating that everything went smoothly and postgres started as expected and ready to accept connections.  You can check streaming replication with standard tools via <i>pg_stat_replication</i> or create test tables on the wizard and check their availability on the stand-by. <br><br>  That's all.  At the end I will add ... First, in the process between the proclamation of a new master and rewind, the new master is available for recording, so when rewinding you do not need to isolate the master from connections from the application side.  Second, the project is still young, is in active development, and in my opinion is not ready for production.  So try, test ... <br><br>  Those who are not ready to do this all or simply lazy, but I want to see, there is a small <a href="http://www.youtube.com/watch%3Fv%3Dwcwh0icr9GM">video</a> for 8 minutes, the switching action starts at 4:20 (who is unfamiliar with postgres will not understand anything). 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Thank you all for your attention. </div><p>Source: <a href="https://habr.com/ru/post/216067/">https://habr.com/ru/post/216067/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../216055/index.html">The German company is developing self-learning manipulators a la "Doc Ock"</a></li>
+<li><a href="../216057/index.html">From Oracle yes to Postgres</a></li>
+<li><a href="../216059/index.html">iToilet. Office toilet is free</a></li>
+<li><a href="../216063/index.html">Adaptation of Microsoft Project Server 2010 to the specifics of the company's project management system</a></li>
+<li><a href="../216065/index.html">Conference Runet 2014</a></li>
+<li><a href="../216069/index.html">Google has released a new version of Google Play (4.6.16) with a new password protection option against uncontrolled purchases</a></li>
+<li><a href="../216071/index.html">Xperia themes</a></li>
+<li><a href="../216075/index.html">Ubiquiti UniFi firmware recovery history on AP Long Range and Outdoor</a></li>
+<li><a href="../216077/index.html">Storwize V5000 - IBM's new storage system</a></li>
+<li><a href="../216079/index.html">Meeting with Opera tomorrow in Moscow</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

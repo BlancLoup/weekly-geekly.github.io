@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How GIL works in Ruby. Part 3. Does GIL make your code thread safe?</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Translations of the previous two parts: 
+ First part 
+ The second part of 
+
+ This is an Jesse Storimer article. He speaks at the Unix fu seminar , an ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How GIL works in Ruby. Part 3. Does GIL make your code thread safe?</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/723/86c/02c/72386c02c09eaadd5e4f828109a31272.png"><br><br>  Translations of the previous two parts: <br>  <a href="https://habrahabr.ru/post/189320/">First part</a> <br>  <a href="https://habrahabr.ru/post/189486/">The second part of</a> <br><br>  <i>This is an <a href="http://www.jstorimer.com/">Jesse Storimer</a> article.</i>  <i>He speaks at the <a href="http://www.jstorimer.com/products/unix-fu-workshop">Unix fu seminar</a> , an online classroom for Ruby developers who want to learn the amazing hacks in Ruby and improve their skills in the development of the server stack.</i>  <i>The number of participants is limited, so hurry up, while there are empty seats.</i>  <i>He is also the author of the books <a href="http://www.jstorimer.com/products/working-with-unix-processes">“Working with Unix Processes”</a> , <a href="http://www.jstorimer.com/products/working-with-tcp-sockets">“Working with TCP Sockets”</a> and <a href="http://www.jstorimer.com/products/working-with-ruby-threads">“Working with Threads in Ruby”</a> .</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In the Ruby community there are some misconceptions about GIL in the interpreter's MRI implementation.  If you want to know the answer to the main question of this article, without reading it, here it is: GIL does not make your Ruby code thread safe. <br><br>  But you must not take my words for granted. <br><a name="habracut"></a><br>  This series of articles began with an attempt to understand what GIL is at the technical level.  <a href="https://habrahabr.ru/post/189320/">The first part</a> explains where the conditions for the occurrence of the race condition in the C code, which is used in the implementation of MRI, come from.  However, it seems that GIL avoided this, at least for the <code>Array#&lt;&lt;</code> method, we saw it. <br><br>  <a href="https://habrahabr.ru/post/189486/">The second part</a> confirms that GIL, in fact, makes the atomic implementation of embedded methods in MRI.  In other words, this precludes the occurrence of a race condition.  However, this applies only to the built-in functions of the MRI itself, and not to your Ruby code.  Thus, we still had the question: “Does the GIL provide any guarantees that your Ruby code will be thread safe?”. <br><br>  I have already answered this question above.  Now, I want the delusions about this to stop. <br><br><h4>  Once again about the state of the race </h4><br>  A race condition may occur if some data is shared across multiple threads and they try to work with this data at the same time.  When this happens without any synchronization, for example, without blocking, your program may start doing unexpected things, and data may be lost. <br><br>  Let's take a step back and remember how a race condition can arise.  We will use the following Ruby code example for this part of the article: <br><br><pre> <code class="ruby hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Sheep</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">def</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">initialize</span></span></span><span class="hljs-class"> @</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">shorn</span></span></span><span class="hljs-class"> = </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">false</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">end</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">def</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">shorn?</span></span></span><span class="hljs-class"> @</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">shorn</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">end</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">def</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">shear!</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">puts</span></span></span><span class="hljs-class"> "</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">shearing</span></span></span><span class="hljs-class">..." @</span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">shorn</span></span></span><span class="hljs-class"> = </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">true</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">end</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">end</span></span></span></span></code> </pre><br><br>  This class is nothing new.  Sheep is not shorn at birth.  The “shear!” Method performs shearing and marks the sheep as already cropped. <br><br><img src="//habrastorage.org/files/677/f37/6b3/677f376b304847f3ba095cfe04c8046e.jpg"><br><br><pre> <code class="ruby hljs">sheep = Sheep.new <span class="hljs-number"><span class="hljs-number">5</span></span>.times.map <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> Thread.new <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unless</span></span> sheep.shorn? sheep.shear! <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>.each(&amp;<span class="hljs-symbol"><span class="hljs-symbol">:join</span></span>)</code> </pre><br><br>  This code creates a new sheep object and spawns 5 threads.  Each of them checks whether the sheep has been shaved, and if not, it calls the “shear!” Method. <br><br>  This is the result I get by running this code several times on MRI 2.0: <br><br><pre> <code class="bash hljs">$ ruby check_then_set.rb shearing... $ ruby check_then_set.rb shearing... shearing... $ ruby check_then_set.rb shearing... shearing...</code> </pre><br><br>  Sometimes one sheep is sheared twice! <br><br>  If you were sure that GIL would allow your code to "just work" in multiple threads, now this should pass.  GIL does not give you any guarantees.  Please note that the first time you run the script, you get the expected result, but in subsequent times - the result was not expected.  If you continue to run this example, you will see a few more options. <br><br>  These unexpected results came from a race condition in your Ruby code.  In fact, this is a fairly common design error pattern, which even has its own name: “check-then-set race condition”.  In this case, two or more threads check some value, and then set other values ​​based on the first.  Having nothing to ensure atomicity, it is quite possible that the two streams go through the “value check” phase, and then both perform the “set new value” phase. <br><br><h4>  Race Status Recognition </h4><br>  Before we consider how to fix it, I want you to understand how to recognize it.  I am obliged to <a href="https://twitter.com/brixen">@brixen</a> for explaining the alternation terminology in the context of parallelism.  It is really useful. <br><br>  Remember that context switching can occur on any line of your code.  When switching from one thread to another, imagine that your program is divided into a set of separate blocks.  This sequential block set is a set for interleaving. <br><br>  On the one hand, it is quite possible that the context switch occurs after every line of code!  Such a set of alternating blocks will contain one line of code in each.  On the other hand, it is quite possible that there will be no context switching in the body of the stream at all.  In this case, in each alternating block will be the complete code of the stream.  Between these extremes there are many options, as your program can be cut into alternating blocks. <br><br>  Some of these alternations are fine.  Not every line of code leads to a race condition.  But presenting your programs as a set of possible alternating blocks can help you understand when conflict situations occur.  I will use a series of graphical schemes to show how this code can be executed by two threads. <br><br><img src="//habrastorage.org/files/8eb/1cc/b07/8eb1ccb0706a41f5bae3b8c79872811e.png"><br>  <i>Just to make the schemes easier, I replaced the call to the “shear!” Method with its code.</i> <br><br>  Consider this scheme.  Alternating flow blocks A are highlighted in red, Block B are highlighted in blue. <br><br>  Now let's see how this code can be interleaved by simulating context switching.  In the simplest case, if no thread is interrupted during execution, this will not lead to a race condition, and we will get the expected result.  It might look like this: <br><br><img src="//habrastorage.org/files/415/4f1/7c7/4154f17c700b448cb152d35d85055248.png"><br><br>  Now I have organized the circuit so that you can see the sequence of events.  Remember that GIL stops everything around the executable code, so two threads cannot really work in parallel.  Events in this case are sequential, top-down. <br><br>  In this alternation, thread A did all its work, and then the scheduler switches the context to thread B. Since thread A has already successfully shaved the sheep and updated the state variable, thread B does nothing with it. <br><br>  But not always everything is so simple.  Remember that the scheduler can switch context at any time.  This time we are lucky. <br><br>  Let's look at a more vile example that will produce an unexpected result for us. <br><br><img src="//habrastorage.org/files/360/f9e/00c/360f9e00c1ab4534bbf342fd792bd112.png"><br><br>  In this case, the context switch occurs at the point that causes the problem.  Stream A checks the status and starts the haircut.  Then, the scheduler switches the context, and flow B starts. Although flow A has already shaved the sheep, he has not yet had time to update the status flag, so flow B does not know anything about it. <br><br>  Flow B checks the condition, considers that the sheep is not trimmed and shears it again.  After that, the context is switched to thread A, which terminates its execution.  Although thread B has set the state flag, thread A does it again, because it only remembers its state at the time of the interruption. <br><br>  The fact that the sheep was cut twice may not seem like a big problem to take care of, but it is enough to replace it with an account, and to take a fee for each hairstyle in order to get dissatisfied customers! <br><br>  I will share one more example to show the non-deterministic nature of these things. <br><br><img src="//habrastorage.org/files/287/819/3fc/2878193fc81042e98bedbbce681fb7dc.png"><br><br>  We just added more context switches, so each thread is executed a little bit more than once.  You just need to understand that context switching is possible on any line of the program.  These switchings can occur at different times each time the code is executed, so that you can get the desired result at one iteration, and unexpected at the next. <br><br>  It is really good to think about the state of the race.  When you write a multithreaded code, you should think that the program can be crushed into blocks, and take into account the effect of their various alternations.  If it seems to you that some of them may lead to incorrect results, you should rethink your approach or introduce synchronization through a mutex. <br><br><h4>  It's horrible! </h4><br>  Now it seems appropriate to tell you that you can make this code thread safe by simply adding a mutex.  Yes, you can really <a href="https://gist.github.com/jstorimer/5802725">do it</a> , but I specifically prepared the following example to prove my point that this is a terrible approach.  You should not write such code for multi-threaded execution. <br><br>  Every time you have multiple threads referencing an object and making changes to it, and you do not have a lock in the right place to prevent the consequences of a context switch in the middle of the changes, you come across a problem. <br><br>  However, the race condition can be avoided without blocking in the code.  Here is one of the solutions using the queue: <br><br><pre> <code class="ruby hljs"><span class="hljs-keyword"><span class="hljs-keyword">require</span></span> <span class="hljs-string"><span class="hljs-string">'thread'</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Sheep</span></span></span><span class="hljs-class"> </span><span class="hljs-comment"><span class="hljs-class"><span class="hljs-comment"># ... end sheep = Sheep.new sheep_queue = Queue.new sheep_queue &lt;&lt; sheep 5.times.map do Thread.new do begin sheep = sheep_queue.pop(true) sheep.shear! rescue ThreadError # raised by Queue#pop in the threads # that don't pop the sheep end end end.each(&amp;:join)</span></span></span></span></code> </pre><br><br>  I removed the implementation of the sheep class, as it is exactly the same as before.  Now, instead of the joint work of different streams on one sheep and the race for its shearing, a queue has appeared that provides synchronization. <br><br>  If you run this code on MRI, or on any other truly parallel Ruby implementation, it will produce the expected result each time.  We eliminated the race condition in this code.  Even taking into account that all threads will call <code>Queue#pop</code> at more or less one time, this code uses an internal mutex so that only one stream at a time can get a sheep. <br><br>  As soon as this one stream receives a sheep, the race condition disappears.  Just one stream, no more to compete with him! <br><br>  The reason why I suggest using the queue instead of blocking is that it is more difficult to use it incorrectly.  In locks, as you know, it is easy to make mistakes.  If they are not used correctly, they bring new problems, such as interlocking and performance degradation.  To use a data structure, this is how to use an abstraction.  Make tricky things more limited, but get a simpler API. <br><br><h4>  Delayed initialization </h4><br>  I just quickly note that lazy initialization is another form of "check-then-set race condition".  Operator <code>||=</code> expands to: <br><br><pre> <code class="ruby hljs">@logger <span class="hljs-params"><span class="hljs-params">||</span></span>= Logger.new <span class="hljs-comment"><span class="hljs-comment">#   if </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@logger</span></span></span><span class="hljs-comment"> == nil </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@logger</span></span></span><span class="hljs-comment"> = Logger.new end </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@logger</span></span></span></span></code> </pre><br><br>  Look at the expanded version and think about where the problem may arise.  With several threads and without synchronization, it is quite possible that <code>@logger</code> will be initialized several times.  Of course, initializing <code>@logger</code> twice may not be a problem in this case, but I have seen similar bugs in the code that caused problems. <br><br><h4>  Reflections </h4><br>  In the end, I want you to learn a lesson for yourself. <br><br>  4 out of 5 programmers agree that in multi-threaded programming it is quite difficult to do everything correctly. <br><br>  In the end, all that GIL guarantees you is that the implementations of methods built into MRI will be performed atomically (but there are some <a href="http://www.jstorimer.com/blogs/workingwithcode/8100871-nobody-understands-the-gil-part-2-implementation">pitfalls</a> here).  This behavior can sometimes help us, but GIL is actually designed for the internal protection of the MRI itself, and not as a reliable API for Ruby developers. <br><br>  Thus, GIL does not solve thread safety problems.  As I have already said, it is difficult to write multi-threaded programs correctly, but we are solving complex tasks every day.  One of the options for how we work with a complex problem is abstraction. <br><br>  For example, when I need to make an HTTP request in my code, I have to use a socket.  But usually I do not use it directly, as it is cumbersome and error prone.  Instead, I use abstraction.  The HTTP client gives a more limited and simple API, hiding the work with the socket and saving me from unnecessary errors. <br><br>  If it's hard to get a properly working multi-threading, then maybe you shouldn't use it directly. <br><br><blockquote>  "If you added a new stream to your program, then you probably added 5 new errors."  <b><a href="http://twitter.com/mperham">Mike perham</a></b> </blockquote><br><br>  We see more and more abstractions around threads.  The approach that captures the Ruby community is the actor model, with the most popular implementation being <a href="http://celluloid.io/">Celluloid</a> .  It gives us a great abstraction that links primitive concurrency with the Ruby object model.  Celluloid does not guarantee that your code will be thread safe or free from a race condition, but it contains best practices about this.  I urge you to give <a href="https://github.com/celluloid/celluloid/wiki/Basic-usage">him a</a> <a href="http://railscasts.com/episodes/367-celluloid">chance</a> . <br><br>  These issues that we are talking about are not specific to Ruby or MRI.  This is a reality in the world of multi-core programming.  The number of cores in devices is only growing, and the MRI has yet to somehow respond to this.  Despite some guarantees, the use of GIL in multithreaded programming seems wrong.  This is part of the growing pains of MRI.  Other implementations such as JRuby or Rubinus are really distributed and do not have a GIL. <br><br>  We see many new languages ​​that have built-in abstractions for parallelism.  There is no one in Ruby, at least not yet.  Another advantage of abstractions is that their implementation can improve, while at the same time your code will remain unchanged.  For example, if the queue implementation got rid of the use of locks, then your code will reap the rewards without any changes. <br><br>  Currently, Ruby programmers should themselves study methods for solving these problems!  Learn about concurrency.  Know the cause of the race condition.  Present the code as alternating blocks, it will help you solve problems. <br><br>  Lastly, I will add a quote that well describes most of the work with concurrency to date: <br><br><blockquote>  “Do not work together, sharing state, share state together working” </blockquote><br><br>  Using a data structure for synchronization supports this.  The actor model supports this idea.  It underlies concurrency in languages ​​such as Go, Erlang, and others. <br><br>  Ruby needs to look at what and how it works in other languages ​​and add it to yourself.  As a Ruby developer, you can start doing something today, just try and support one of the approaches.  With more people on board, these approaches can become the new standard for Ruby. <br><br>  <i>Thanks to Brian Shirai for analyzing the draft of this article.</i> </div><p>Source: <a href="https://habr.com/ru/post/230809/">https://habr.com/ru/post/230809/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../230791/index.html">Falcon 9 successfully splashed down</a></li>
+<li><a href="../230793/index.html">WebCamp 2014 Live Webcast: Project Management Day</a></li>
+<li><a href="../230799/index.html">Remote testing. Experienced Freelancer Tips</a></li>
+<li><a href="../230801/index.html">QtContribs = Harbor + QT</a></li>
+<li><a href="../230805/index.html">PHP Programmer Job Interview Guide</a></li>
+<li><a href="../230811/index.html">Tablet Acer Iconia W4: a small assistant under the yoke of large Windows</a></li>
+<li><a href="../230815/index.html">Microsoft will combine different versions of Windows into a single system.</a></li>
+<li><a href="../230819/index.html">First exoplanet name contest</a></li>
+<li><a href="../230821/index.html">A bit about npm-scripts</a></li>
+<li><a href="../230823/index.html">FIAS or KLADR: choose the directory of addresses</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

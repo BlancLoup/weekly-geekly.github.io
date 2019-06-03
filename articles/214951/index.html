@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Implementing BFS Algorithm on GPU</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="annotation 
+ In this article I want to tell how you can effectively parallelize the algorithm BFS - search in width in the graph using graphics accele...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Implementing BFS Algorithm on GPU</h1><div class="post__text post__text-html js-mediator-article"><h2>  annotation </h2><br>  In this article I want to tell how you can effectively parallelize the algorithm BFS - search in width in the graph using graphics accelerators.  The article will provide a detailed analysis of the algorithm.  The calculations were performed on a single GPU GTX Titan Kepler architecture. <br><br><h2>  Introduction </h2><br>  Recently, graphic accelerators (GPU) in non-graphical calculations play an increasing role.  The need for their use is due to their relatively high performance and lower cost.  As you know, on a GPU, tasks on structural grids are well solved, where parallelism is somehow easily distinguished.  But there are tasks that require high power and use non-structural grids.  An example of such a task is the Single Shortest Source Path problem (SSSP) - the task of finding the shortest paths from a given vertex to all others in a weighted graph.  The solution to this problem is considered by me in <a href="http://habrahabr.ru/post/214515/">this</a> article.  The second example of a problem on nonstructural grids is the Breadth First Search (BFS) problem — a wide search in an undirected graph.  This task is fundamental in a number of algorithms on graphs.  It is also a bit simpler than finding the shortest path.  At the moment, the BFS algorithm is used as the main test for the <a href="http://www.graph500.org/">Graph500</a> rating.  Next, we consider how to use the ideas of solving the SSSP problem in the BFS problem.  Nvidia’s GPU architecture and the mentioned algorithms have already been written a lot, so in this article I will not write further about it.  Also, I hope that the concepts of warp, cuda block, SMX, and other basic things related to CUDA are familiar to the reader. <br><a name="habracut"></a><br><h2>  The format of the data used </h2><br>  Just like in the SSSP task, we will use the same transformations in order to increase the load on one SMX and reduce the amount of identical data stored in the global memory of the GPU.  The main difference is that the BFS algorithm does not need weights in the graph.  It is also worth noting that we need to store not the shortest distances, but the number of the level at which this vertex is located: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e55/ee7/bd0/e55ee7bd0c9768636dc91475728d2160.jpg" alt="image">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      After the test launches, it turned out that the number of levels in RMAT graphs with an average degree of connectivity 32 does not exceed 10. Therefore, unsigned char will be enough to store the data values.  Thus, the array of levels will occupy 8 times less space than the array of distances, which is very important, since the cache size in the Kepler architecture is only 1.5 MB. <br><br><h2>  The implementation of the algorithm on the CPU </h2><br>  On the CPU, a native version of the wide bypass algorithm was implemented, namely the creation of a queue of not yet viewed vertices.  The implementation CPU code looks like this: <br><br><pre><code class="cpp hljs"><span class="hljs-built_in"><span class="hljs-built_in">queue</span></span>&lt;<span class="hljs-keyword"><span class="hljs-keyword">vertex_id_t</span></span>&gt; q; <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> *used = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span>[G-&gt;n]; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; G-&gt;n; ++i) used[i] = <span class="hljs-literal"><span class="hljs-literal">false</span></span>; used[root] = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; q.push(root); dist[root] = <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (!q.empty()) { <span class="hljs-keyword"><span class="hljs-keyword">vertex_id_t</span></span> nextV = q.front(); q.pop(); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> k = G-&gt;rowsIndices[nextV]; k &lt; G-&gt;rowsIndices[nextV + <span class="hljs-number"><span class="hljs-number">1</span></span>]; ++k) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (used[G-&gt;endV[k]] == <span class="hljs-literal"><span class="hljs-literal">false</span></span>) { used[G-&gt;endV[k]] = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; q.push(G-&gt;endV[k]); dist[G-&gt;endV[k]] = dist[nextV] + <span class="hljs-number"><span class="hljs-number">1</span></span>; } } }</code> </pre> <br>  This code is quite simple and, quite possibly, not optimal.  It was used to verify the correct operation of the algorithm on the GPU.  There were no goals to write the optimal algorithm on the CPU, so the performance on the CPU will be obtained by this algorithm.  I want to add that at the moment optimal CPU implementations are many and easy to find.  Also proposed are many other approaches and ideas for implementing the BFS algorithm. <br><br><h2>  The implementation of the algorithm on the GPU </h2><br>  The implementation was based on the same Ford-Bellman algorithm and core in the SSSP problem considered.  The main computational core for BFS will look like this: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(k &lt; maxV) { <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> en = endV[k]; <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> st = startV[k]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(levels[st] == iter) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(levels[en] &gt; iter) { levels_NR[en] = iter + <span class="hljs-number"><span class="hljs-number">1</span></span>; modif[<span class="hljs-number"><span class="hljs-number">0</span></span>] = iter; } } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(levels[en] == iter) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(levels[st] &gt; iter) { levels_NR[st] = iter + <span class="hljs-number"><span class="hljs-number">1</span></span>; modif[<span class="hljs-number"><span class="hljs-number">0</span></span>] = iter; } } }</code> </pre><br>  The idea of ​​the algorithm is as follows.  Let the levels array be initially filled with the maximum value for the selected type (255 for unsigned char).  We will transfer the current iteration number to the kernel - iter.  Next, you need to look through all the edges and check whether the starting or ending vertex is the current parent, that is, it belongs to the iter level.  If yes, then it is necessary to mark the opposite vertex of the arc being viewed with a value one more to “include” this vertex in the list of parents at the next iteration.  As well as in SSSP, the variable modif remains, indicating the need to continue marking the graph. <br>  This code already contains the applied optimizations in the SSSP task — using const __restrict for the levels array and using another levels_NR reference pointing to the same memory location needed for recording.  The second permutation optimization for better data localization in the cache was also used.  For the BFS algorithm, the length of the optimal cache line is 1024KB, or about 1 million elements of the levels array (1024 * 1024), regardless of the size of the graph. <br><br><h2>  Analysis of the results </h2><br>  For testing, we used synthetic undirected RMAT-graphs, which simulate real graphs from social networks and the Internet well.  The graphs have an average connectivity of 32, the number of vertices is a power of two.  The table below shows the columns on which the testing was conducted: <br><table><tbody><tr><td>  Number of vertices 2 ^ N </td><td>  Number of vertices </td><td>  Number of arcs </td><td>  Array size in MB </td><td>  MB edge array size </td></tr><tr><td>  14 </td><td>  16 384 </td><td>  524 288 </td><td>  &gt; 0.125 </td><td>  2 </td></tr><tr><td>  15 </td><td>  32,768 </td><td>  1,048,576 </td><td>  &gt; 0.125 </td><td>  four </td></tr><tr><td>  sixteen </td><td>  65,536 </td><td>  2,097,152 </td><td>  &gt; 0.125 </td><td>  eight </td></tr><tr><td>  17 </td><td>  131,072 </td><td>  4 194 304 </td><td>  0.125 </td><td>  sixteen </td></tr><tr><td>  18 </td><td>  262 144 </td><td>  8,388,608 </td><td>  0,250 </td><td>  32 </td></tr><tr><td>  nineteen </td><td>  524 288 </td><td>  16 777 216 </td><td>  0.5 </td><td>  64 </td></tr><tr><td>  20 </td><td>  1,048,576 </td><td>  33,554,432 </td><td>  one </td><td>  128 </td></tr><tr><td>  21 </td><td>  2,097,152 </td><td>  67 108 864 </td><td>  2 </td><td>  256 </td></tr><tr><td>  22 </td><td>  4 194 304 </td><td>  134 217 728 </td><td>  four </td><td>  512 </td></tr><tr><td>  23 </td><td>  8,388,608 </td><td>  268 435 456 </td><td>  eight </td><td>  1024 </td></tr><tr><td>  24 </td><td>  16 777 216 </td><td>  536 870 912 </td><td>  sixteen </td><td>  2048 </td></tr></tbody></table>  Due to the use of the smallest data type for storing level values, for a graph with a number of vertices of 2 <sup>20</sup> , 1MB is needed for caching the array of levels, while for the same graph in the SSSP task, 8MB is needed.  Testing was carried out on the NVidia GTX Titan GPU, which has 14 SMX and 2688 CUDA cores and a 3rd generation Intel core i7 processor with a frequency of 3.4 GHz and 8 MB of cache.  To compare the performance on the CPU, a native implementation of the search algorithm was used.  No optimizations in the form of data swapping before working on the CPU were made.  Instead of time, we consider the number of arcs processed per second of time as a measure of performance.  In this case, it is necessary to divide the time received by the number of arcs in the graph.  As an end result, an average value of 32 points was taken.  Also calculated the maximum and minimum values.  The compilers used were Intel 13th compilers and NVCC CUDA 5.5 with the –O3 –arch = sm_35 flags. <br><br>  The graph of the average performance of the various options on the GPU and CPU is as follows: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/96d/5ce/4dd/96d5ce4dd96758e38c79a5aae248b13f.jpg" alt="image"><br><br>  This graph shows the average performance curves for the following algorithms: <br><ul><li>  cache &amp;&amp; restrict on - GPU algorithm with all optimizations (1) </li><li>  cache off - GPU algorithm without optimizing permutations for improved caching (2) </li><li>  restrict off - GPU algorithm without texture cache optimization (3) </li><li>  cache &amp;&amp; restrict off - basic GPU algorithm without optimizations (4) </li><li>  CPU - the basic algorithm on the CPU </li></ul><br>  The first thing that catches the eye is the identical behavior of algorithms (1) - (2) and (3) - (4).  As noted above, this is due to the fact that the levels array for graphs with the number of vertices up to 2 <sup>20</sup> is placed in the L2 cache.  Therefore, you can not make a permutation of the arcs, if we consider the algorithms (1) and (2), and do not use the texture cache in case (3) and (4). <br><br>  Further, it can be noted that as soon as the levels array does not fit in the L2 cache, disabling the permutation gives a strong performance loss, despite the fact that const __restrict is used.  This is primarily due to random access to the levels array.  A similar picture is observed in the case of disabling the option const __restirict. <br><br>  Not a smooth graph in the range of degrees 15-16-17 for the best algorithm is the result of another small optimization - packing two vertices of one arc into one variable of unsigned int type.  Since the maximum vertex number is 16 bits, and unsigned int is 32 bits, you can pack the edge data in one unsigned int in advance, and unpack it in the kernel, reading two times less than the data from the global memory of the GPU. <br><br>  As a result, the average performance of 3.6 GTEPS was achieved.  Almost peak average performance is achieved on graphs with the number of vertices 2 <sup>16</sup> - 2 <sup>23</sup> , which is not bad enough for this architecture.  Maximum performance is obtained on a graph with the number of vertices 2 <sup>19</sup> - 4.2 GTEPS. <br><br>  The resulting acceleration compared to the native implementation on the CPU was not very clear: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/cad/584/6c7/cad5846c77dbc5b2f0d264ccd22041fc.jpg" alt="image"><br><br>  The general trend is visible - a gradual increase in acceleration.  Most likely this is due to inefficient implementations and limited CPU cache size. <br><br><h2>  Detailed analysis of the implemented kernel </h2><br>  In conclusion, I would like to show how effective this approach is in terms of the use of GPU resources.  This section is presented only for interest and, perhaps, for those who in the future will want to compare their algorithm with what is presented in this article.  Let us consider in detail all that the NVVP profiler displays for two graphs - 2 <sup>19</sup> and 2 <sup>22</sup> .  I chose such graphs, because the first level array completely fits into the L2 cache, and the second one does not.  In the beginning we will consider general information: <br><table><tbody><tr><td>  Scale </td><td>  Number of iterations performed </td><td>  Shared Memory Usage </td><td>  Number of registers used </td><td>  Total kernel count time in ms </td><td>  Array copy time in ms </td></tr><tr><td>  2 <sup>19</sup> </td><td>  7 </td><td>  not </td><td>  12 </td><td>  4,512 </td><td>  10.97 </td></tr><tr><td>  2 <sup>22</sup> </td><td>  eight </td><td>  not </td><td>  12 </td><td>  41.1 </td><td>  86.66 </td></tr></tbody></table><br>  Taking into account the copying of arrays of vertices on the GPU before the start of the counting and copying the result on the CPU after the end  From the table it can be seen that copying takes approximately twice as long as the entire bill.  Next, consider the iterations for each graph. <br><br><h5>  Count 2 <sup>19</sup> </h5><br><table><tbody><tr><td>  Iteration </td><td>  Time in ms </td><td>  GL Eff,% </td><td>  GS Eff,% </td><td>  WE Eff,% </td><td>  NP WE Eff,% </td><td>  Occupancy,% </td><td>  L2 Read, GB / s </td><td>  L2 Write, GB / s </td><td>  Global Read, GB / s </td><td>  Global Write, GB / s </td></tr><tr><td>  one </td><td>  0.577 </td><td>  100 </td><td>  ten </td><td>  100 </td><td>  94.6 </td><td>  89.3 </td><td>  551 </td><td>  0.0002 </td><td>  110 </td><td>  0.0002 </td></tr><tr><td>  2 </td><td>  0.572 </td><td>  100 </td><td>  8.1 </td><td>  99.9 </td><td>  94.5 </td><td>  89.2 </td><td>  551 </td><td>  0.0986 </td><td>  110 </td><td>  0.0498 </td></tr><tr><td>  3 </td><td>  0.58 </td><td>  100 </td><td>  11.9 </td><td>  93.5 </td><td>  88.5 </td><td>  88.1 </td><td>  545 </td><td>  14 </td><td>  109 </td><td>  6 </td></tr><tr><td>  four </td><td>  1.062 </td><td>  100 </td><td>  24.3 </td><td>  85.1 </td><td>  77.7 </td><td>  78.2 </td><td>  289 </td><td>  71 </td><td>  58 </td><td>  51 </td></tr><tr><td>  five </td><td>  0.576 </td><td>  100 </td><td>  9.5 </td><td>  91.1 </td><td>  86.8 </td><td>  88.8 </td><td>  549 </td><td>  1.37 </td><td>  110 </td><td>  0.5576 </td></tr><tr><td>  6 </td><td>  0.576 </td><td>  100 </td><td>  7,8 </td><td>  99.6 </td><td>  94.2 </td><td>  89.2 </td><td>  551 </td><td>  0.0017 </td><td>  110 </td><td>  0.0010 </td></tr><tr><td>  7 </td><td>  0.572 </td><td>  100 </td><td>  0 </td><td>  100 </td><td>  94.6 </td><td>  89.3 </td><td>  551 </td><td>  0.000 </td><td>  110 </td><td>  0.000 </td></tr></tbody></table><br>  Decryption: <br><ul><li>  GL Eff - Global Load Efficiency </li><li>  GS Eff - Global Store Efficiency </li><li>  WE Eff - Warp Execution efficiency </li><li>  NP WE Eff - Non-predicated Warp Execution efficiency </li><li>  Occupancy - the number of real active warps / maximum number of warps on SMX </li></ul><br>  From the table it can be seen that the largest number of vertices is processed at 3 and 4 iterations.  Because of this, at the 4th iteration, a decrease in the use of L2 bandwidth and global GPU memory is visible.  It should be noted that according to the specifics of the algorithm, no entries occur at the last iteration.  It is necessary to determine the completeness of the graph layout.  Efficiency of execution of warps is within 93-100% and 85% at the most "loaded" iteration. <br>  For comparison, below is a table for a graph with 2 <sup>22</sup> vertices, the size of whose levels array does not fit entirely into the L2 GPU cache. <br><br><h5>  Count 2 <sup>22</sup> </h5><br><table><tbody><tr><td>  Iteration </td><td>  Time in ms </td><td>  GL Eff,% </td><td>  GS Eff,% </td><td>  WE Eff,% </td><td>  NP WE Eff,% </td><td>  Occupancy,% </td><td>  L2 Read, GB / s </td><td>  L2 Write, GB / s </td><td>  Global Read, GB / s </td><td>  Global Write, GB / s </td></tr><tr><td>  one </td><td>  4.66 </td><td>  100 </td><td>  10.4 </td><td>  100 </td><td>  94.6 </td><td>  89.1 </td><td>  556 </td><td>  0.0001 </td><td>  113 </td><td>  0.00001 </td></tr><tr><td>  2 </td><td>  4.60 </td><td>  100 </td><td>  11.8 </td><td>  100 </td><td>  94.6 </td><td>  89.1 </td><td>  556 </td><td>  0.0014 </td><td>  113.2 </td><td>  0,0011 </td></tr><tr><td>  3 </td><td>  4.61 </td><td>  100 </td><td>  11.2 </td><td>  99.8 </td><td>  94.4 </td><td>  89.1 </td><td>  555 </td><td>  0.5547 </td><td>  117 </td><td>  0.3750 </td></tr><tr><td>  four </td><td>  6,405 </td><td>  100 </td><td>  17,8 </td><td>  83.7 </td><td>  79.1 </td><td>  82.2 </td><td>  399 </td><td>  46 </td><td>  81 </td><td>  28 </td></tr><tr><td>  five </td><td>  7,016 </td><td>  100 </td><td>  15.8 </td><td>  83.6 </td><td>  74.1 </td><td>  79.8 </td><td>  364 </td><td>  34 </td><td>  74 </td><td>  nineteen </td></tr><tr><td>  6 </td><td>  4.62 </td><td>  100 </td><td>  7.9 </td><td>  90.2 </td><td>  85,5 </td><td>  89.1 </td><td>  555 </td><td>  0.0967 </td><td>  117 </td><td>  0.0469 </td></tr><tr><td>  7 </td><td>  4.60 </td><td>  100 </td><td>  7,8 </td><td>  100 </td><td>  94.6 </td><td>  89 </td><td>  556 </td><td>  0.0002 </td><td>  113 </td><td>  0.0001 </td></tr><tr><td>  eight </td><td>  4.60 </td><td>  100 </td><td>  0 </td><td>  100 </td><td>  94.6 </td><td>  89.1 </td><td>  556 </td><td>  0.000 </td><td>  113 </td><td>  0.000 </td></tr></tbody></table><br>  Decoding is given above.  This graph shows approximately the same picture as on 2 <sup>19</sup> .  The peak is at 4-5 iterations.  According to the NVVP profiler, the L2 cache capacity of 560 GB / s is high (there is low, medium, high, maximum), and the global memory of 117 GB / s is medium (there is low, medium, high, maximum). <br><br><h2>  Conclusion </h2><br>  As a result of the work done, a wide search algorithm was implemented and optimized on RMAT graphs with an average degree of connectivity of vertices 32. A peak performance of 4.2 GTEPS and an average of 3.6 GTEPS was achieved.  As you know, not only performance is important, but also energy efficiency.  Along with the Graph500 rating, there is a Green Graph500 rating showing energy efficiency.  The first place in the Graph500 performance rating for March 2014 is occupied by BlueGene / Q, Power BQC 16C 1.60 GHz with the number of cores 1048576 and the number of nodes 65536 with a capacity of 15363 GTEPS.  The power consumption of such a system is 340kW (taken from the top 500 rating).  The efficiency of the GTEPS / kW result for BlueGene / Q is 45. For the algorithm implemented by me, we get about 18 (the total power of 200W and the average performance of 3.6 GTEPS were taken for the calculation, since only one 4x CPU core is involved in the work and the peak load on the GPU is not achieved). <br>  I would also like to note that in the Graph500 rating there is a similar Xeon E5-2650 v2 system, the GeForce GTX TITAN, which in the 2 <sup>25</sup> column received a performance of 17 GTEPS.  Unfortunately, information about which graph was used is not given.  As of March 2014, this system is at 58 positions in the ranking. </div><p>Source: <a href="https://habr.com/ru/post/214951/">https://habr.com/ru/post/214951/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../214935/index.html">3d printers: Chinese "twins"</a></li>
+<li><a href="../214937/index.html">Javascript UPNP / DLNA server</a></li>
+<li><a href="../214943/index.html">Elementary OS: get paid to fix bugs</a></li>
+<li><a href="../214945/index.html">Comparison of services for autocompletion of addresses in the form</a></li>
+<li><a href="../214949/index.html">GitHub launched Developer Program</a></li>
+<li><a href="../214953/index.html">Microsoft NCSI in service or as we were looking for a forgotten netbook</a></li>
+<li><a href="../214955/index.html">Boat for DirectX-arcade. Part number 1: make contact</a></li>
+<li><a href="../214959/index.html">Photobank Getty Images has opened free access to 35 million photos</a></li>
+<li><a href="../214961/index.html">Satoshi Nakamoto - "I am not Dorian Nakamoto"</a></li>
+<li><a href="../214963/index.html">IML TODO</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

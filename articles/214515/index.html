@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Implementing SSSP Algorithm on GPU</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="annotation 
+ In this article I want to tell you how you can effectively parallelize the algorithm SSSP - search for the shortest path in the graph usi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Implementing SSSP Algorithm on GPU</h1><div class="post__text post__text-html js-mediator-article"><h2>  annotation </h2><br>  In this article I want to tell you how you can effectively parallelize the algorithm SSSP - search for the shortest path in the graph using graphics accelerators.  The GTX Titan <a href="http://www.nvidia.ru/object/nvidia-kepler-ru.html">Kepler</a> architecture map will be considered as a graphics accelerator. <br><br><h2>  Introduction </h2><br>  Recently, graphic accelerators (GPU) in non-graphical calculations play an increasing role.  The need for their use is due to their relatively high performance and lower cost.  As you know, on a GPU, tasks on structural grids are well solved, where parallelism is somehow easily distinguished.  But there are tasks that require high power and use non-structural grids.  An example of such a task is the Single Shortest Source Path problem (SSSP) - the task of finding the shortest paths from a given vertex to all others in a weighted graph.  To solve this problem, there are at least two well-known algorithms on the CPU: the Actionctry algorithm and the Ford-Bellman algorithm.  There are also parallel implementations of the Deistra and Ford-Bellman algorithm on the GPU.  Here are the main articles that describe the solution to this problem: <br><a name="habracut"></a><br><ol><li>  Accelerating Large Graph Algorithms for GPU Using CUDA, Pawan Harish and PJ Narayanan </li><li>  A New GPU-based Approach to the Shortest Path Problem, Orchega-Arranz Hector, Yuri Torres, Diego R. Llanos, and Arturo Gonzalez-Escribano </li></ol><br>  There are other English-language articles.  But in all these articles the same approach is used - the idea of ​​the algorithm of Diskra.  I will describe how you can use the idea of ​​the Ford-Bellman algorithm and the advantages of the Kepler architecture to solve the problem.  A lot has been written about the GPU architecture and the mentioned algorithms, so in this article I will not additionally write about it.  Also, it is believed that the concepts of warp (warp), cuda block, SMX, and other basic things related to <a href="http://www.nvidia.ru/object/cuda-parallel-computing-ru.html">CUDA</a> are familiar to the reader. <br><habracut><br><h2>  Description of the data structure </h2><br>  We briefly consider the storage structure of an undirected weighted graph, since in the future it will be mentioned and transformed.  The graph is set in compressed CSR format.  This format is widely used to store sparse matrices and graphs.  For a graph with N vertices and M edges, three arrays are needed: xadj, adjncy, weights.  The xadj array of size N + 1, the remaining two - 2 * M, since in the undirected graph for any pair of vertices it is necessary to store the forward and reverse arcs. <br><br>  The principle of storage of the graph is as follows.  The entire list of neighbors of vertex I is in the adjncy array from index xadj [I] to xadj [I + 1], not including it.  For similar indices, weights of each edge from vertex I are stored. For the illustration, the graph on the left shows a graph of 5 vertices, recorded using an adjacency matrix, and on the right, in CSR format. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/getpro/habr/post_images/e58/56f/478/e5856f47841675d447b1428ab6c1036b.jpg" alt="image"><br><br><h2>  The implementation of the algorithm on the GPU </h2><br><h3>  Input preparation </h3><br>  In order to increase the computational load on a single stream multiprocessor (SMX), it is necessary to convert the input data.  All conversions can be divided into two stages: <br><ul><li>  Expansion of CSR format to coordinate format (COO) </li><li>  Sort COO format </li></ul><br>  At the first stage, it is necessary to expand the CSR format as follows: we will introduce another startV array in which we will store the beginnings of the arcs.  Then their ends will be stored in the adjncy array.  Thus, instead of storing neighbors, we will store arcs.  An example of this transformation on the graph described above: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/afc/9a7/498/afc9a7498a0009b956ba7641386b888e.jpg" alt="image"><br><br>  At the second stage, it is necessary to sort the obtained edges so that each pair (U, V) occurs exactly once.  Thus, when processing the edge (U, V), you can immediately process the edge (V, U) without re-reading the data about this edge from the global memory of the GPU. <br><br><h3>  Core Computing Core </h3>  The <a href="http://e-maxx.ru/algo/ford_bellman">Ford-Bellman</a> algorithm was taken as the basis for implementation on the GPU.  This algorithm is well suited for implementation on a GPU due to the fact that the edges can be viewed independently of each other and the data of the edges and their weights are arranged in a row, which improves the throughput of the GPU memory: <br><br><pre><code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">int</span></span> k = blockIdx.x * blockDim.x + threadIdx.x; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(k &lt; maxV) { <span class="hljs-keyword"><span class="hljs-keyword">double</span></span> w = weights[k]; <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> en = endV[k]; <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> st = startV[k]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(dist[st] &gt; dist[en] + w) <span class="hljs-comment"><span class="hljs-comment">// (*) { dist[st] = dist[en] + w; modif[0] = iter; } else if(dist[en] &gt; dist[st] + w) // (**) { dist[en] = dist[st] + w; modif[0] = iter; } }</span></span></code> </pre> <br><br>  In this core, each thread processes two edges (forward and reverse), trying to improve the distance along one of them.  It is clear that both conditions of the if block cannot be fulfilled simultaneously.  Unlike the Ford-Bellman algorithm, where each edge is scanned sequentially, a situation of “race” of flows can occur in the algorithm implemented on the GPU — when two or more streams enter to update the same cell dist [I].  We show that in this case the algorithm will remain correct. <br><br>  Suppose there are two threads K1 and K2 that want to update the cell dist [I].  This means that the condition (*) or (**) is fulfilled.  Two cases are possible.  The first is one of the two threads recorded the smallest value.  Then at the next iteration for these two threads the condition will be false, and the value in the dist [I] cell will be minimal.  The second - one of the two threads recorded not the minimum value.  Then at the next iteration the condition will be true for one of the threads, and false for the other.  Thus, the result will be the same in both cases, but achieved in a different number of iterations. <br><br>  According to the optimized version of the Ford-Bellman algorithm, if at any iteration there were no changes in the dist array, then it does not make sense to iterate further.  For these purposes, the variable modif was introduced on the GPU, in which the threads recorded the current iteration number. <br><br>  One iteration - one launch of the kernel.  In the base case, we start the kernel on the CPU in a cycle, then read the modif variable and, if it has not changed from the previous iteration, then in the dist array the answer of the problem is the shortest path from the specified vertex to all others. <br><br><h2>  Optimization of the implemented algorithm </h2><br>  Next, we consider some optimizations that can significantly improve the performance of the algorithm.  Knowledge of the final architecture can be useful when performing optimizations. <br><br>  Modern CPUs have a three-level cache.  The size of the first-level cache is 64KB and is contained on all the processing cores of the processor.  The size of the second level cache varies from 1 to 2MB.  The cache of the third level is common to the entire CPU and has a size of about 12-15MB. <br><br>  Modern GPUs have a two-level cache.  The size of the first level cache is 64KB.  Used for shared memory and forcing out registers.  For shared memory is available no more than 48KB.  Contained in each computing unit.  The maximum cache size in the second level is 1.5 MB and is common to the entire GPU.  Used to cache data loaded from the GPU's global memory.  In the most modern GPU chip GK110 there are 15 computing units.  It turns out that one block has approximately 48KB of the first-level cache and 102KB of the second-level cache.  Compared to the CPU, it is very small, so reading from the global memory of the graphics processor is more expensive than from the main memory of the CPU.  Also, the Kepler architecture has the ability to directly access the read-only texture cache.  To do this, you must add in the kernel before the corresponding formal parameter const __restrict. <br><br><h3>  Texture Cache Usage </h3>  In this task, you need to constantly update and read the distance array dist.  This array takes up quite a bit of space in the global memory of the GPU compared to information about arcs and their weights.  For example, for a graph with the number of vertices 2 <sup>20</sup> (approximately 1 million), the dist array will occupy 8MB.  Despite this, access to this array is carried out randomly, which is bad for the GPU, since additional loads are generated from global memory to each computational warp.  In order to minimize the number of downloads per warp, it is necessary to store data in the L2 cache, read but not used data by other warp. <br><br>  Since the texture cache is read-only, in order to use it, I had to enter two different references to the same dist distance array.  Corresponding code: <br><br><pre> <code class="cpp hljs">__<span class="hljs-function"><span class="hljs-function">global__ </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">relax_ker</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">double</span></span></span></span><span class="hljs-function"><span class="hljs-params"> * __restrict dist, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">double</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *dist1, … …)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> k = blockIdx.x * blockDim.x + threadIdx.x + minV; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(k &lt; maxV) { <span class="hljs-keyword"><span class="hljs-keyword">double</span></span> w = weights[k]; <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> en = endV[k]; <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> st = startV[k]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(dist[st] &gt; dist[en] + w) { dist1[st] = dist[en] + w; modif[<span class="hljs-number"><span class="hljs-number">0</span></span>] = iter; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>(dist[en] &gt; dist[st] + w) { dist1[en] = dist[st] + w; modif[<span class="hljs-number"><span class="hljs-number">0</span></span>] = iter; } } }</code> </pre><br><br>  As a result, it turned out that inside the kernel all read operations are carried out with one array, and all write operations with another.  But both dist and dist1 links point to the same section of GPU memory. <br><br><h3>  Localize data to better use cache </h3>  For the best optimization work described above, it is necessary that as long as possible the downloaded data is in the L2 cache.  Access to the dist array is carried out using predefined indices stored in the endV and startV arrays.  To localize the calls, we divide the dist array into segments of a certain length, for example, P elements.  Since there are only N vertices in the graph, we obtain (N / P + 1) different segments.  Next, we will re-sort the edges into these segments as follows.  In the first group we assign the edges, the ends of which fall into the zero segment, and the beginning - first in the zero, then in the first, etc.  In the second group we assign the edges, the ends of which fall into the first segment, and the beginning - first in the zero, then in the first, etc. <br><br>  After a given permutation of the edges, the values ​​of the elements of the dist array, corresponding to, for example, the first group, will be in the cache as long as possible, since the threads in the first group will request data from the zero segment for leaf vertices and zero, the first, etc.  for initial vertices.  Moreover, the edges are arranged so that the threads will request data from no more than three different segments. <br><br><h2>  Algorithm Test Results </h2>  For testing, we used synthetic undirected <a href="http://dislab.org/GraphHPC-2014/rmat-siam04.pdf">RMAT-graphs</a> , which simulate real graphs from social networks and the Internet well.  The graphs have an average connectivity of 32, the number of vertices is a power of two.  The table below shows the columns on which the testing was conducted. <br><br><table><tbody><tr><td>  Number of vertices 2 ^ N </td><td>  Number of vertices </td><td>  Number of arcs </td><td>  Dist array size in MB </td><td>  Size of arrays of ribs and weights in MB </td></tr><tr><td>  14 </td><td>  16 384 </td><td>  524 288 </td><td>  0.125 </td><td>  four </td></tr><tr><td>  15 </td><td>  32,768 </td><td>  1,048,576 </td><td>  0,250 </td><td>  eight </td></tr><tr><td>  sixteen </td><td>  65,536 </td><td>  2,097,152 </td><td>  0,500 </td><td>  sixteen </td></tr><tr><td>  17 </td><td>  131,072 </td><td>  4 194 304 </td><td>  one </td><td>  32 </td></tr><tr><td>  18 </td><td>  262 144 </td><td>  8,388,608 </td><td>  2 </td><td>  64 </td></tr><tr><td>  nineteen </td><td>  524 288 </td><td>  16 777 216 </td><td>  four </td><td>  128 </td></tr><tr><td>  20 </td><td>  1,048,576 </td><td>  33,554,432 </td><td>  eight </td><td>  256 </td></tr><tr><td>  21 </td><td>  2,097,152 </td><td>  67 108 864 </td><td>  sixteen </td><td>  512 </td></tr><tr><td>  22 </td><td>  4 194 304 </td><td>  134 217 728 </td><td>  32 </td><td>  1024 </td></tr><tr><td>  23 </td><td>  8,388,608 </td><td>  268 435 456 </td><td>  64 </td><td>  2048 </td></tr><tr><td>  24 </td><td>  16 777 216 </td><td>  536 870 912 </td><td>  128 </td><td>  4096 </td></tr></tbody></table><br><br>  The table shows that an array of distances dist for a graph with the number of vertices 2 <sup>18</sup> and more does not fit entirely into the L2 cache on the GPU.  Testing was done on the Nividia GTX Titan GPU, which has 14 SMX with 192 cuda cores (2688 in total) and the 3rd generation Intel core i7 processor with a frequency of 3.4 GHz and 8 MB of cache.  To compare the performance on the CPU, an optimized Dijkstra algorithm was used.  No optimizations in the form of data swapping before working on the CPU were made.  Instead of time, we consider the number of arcs processed per second of time as a measure of performance.  In this case, it is necessary to divide the time received by the number of arcs in the graph.  As an end result, an average value of 32 points was taken.  The maximum and minimum values ​​were also calculated. <br><br>  The compilers used were Intel 13th compilers and NVCC CUDA 5.5 with the –O3 –arch = sm_35 flags. <br><br>  As a result of the work done, consider the following graph: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/abb/94c/635/abb94c635c7d1431edc13075f45eb59e.jpg" alt="image"><br><br>  This graph shows the average performance curves for the following algorithms: <br><ol><li>  cache &amp;&amp; restrict on - GPU algorithm with all optimizations </li><li>  cache off - GPU algorithm without optimizing permutations for improved caching </li><li>  restrict off - GPU algorithm without texture cache optimization </li><li>  cache &amp;&amp; restrict off - basic GPU algorithm without optimizations </li><li>  CPU - the basic algorithm on the CPU </li></ol><br><br>  It can be seen that both optimizations strongly affect performance.  It is worth noting that incorrect use of const __restrict optimization can degrade performance.  The resulting acceleration can be seen in this graph: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/870/1ab/f4b/8701abf4bae81cad84cab75762c33d99.jpg" alt="image"><br><br>  The graph shows that, unlike the CPU, the GPU has a larger range of deviations from the average.  This is due to the peculiarity of the implementation of the algorithm in the form of a “race” of threads, since we can get a different number of iterations from launch to launch. <br><br><h2>  Conclusion </h2><br>  As a result of the work done, the SSSP algorithm, the search for the shortest paths in a graph, was developed, implemented and optimized.  This algorithm searches for the shortest distances in a graph from a given vertex to all the others.  Among all the graphs that fit in the GTX Titan memory, the maximum performance is shown by graphs with the number of peaks up to 2 <sup>21</sup> - about 1100 million edges per second.  The maximum average acceleration that was achieved was about 40 on graphs with the number of vertices from 1 to 4 million. <br><br><h2>  Literature </h2><br><ol><li>  <a href="http://www.nvidia.ru/object/cuda-parallel-computing-ru.html">CUDA</a> </li><li>  <a href="http://ru.wikipedia.org/wiki/%25C3%25F0%25E0%25F4_(%25EC%25E0%25F2%25E5%25EC%25E0%25F2%25E8%25EA%25E0)">Graph</a> </li><li>  <a href="http://e-maxx.ru/algo/ford_bellman">Ford-Bellman algorithm</a> </li><li>  <a href="http://e-maxx.ru/algo/dijkstra">Dijkstra's basic algorithm</a> </li></ol></habracut></div><p>Source: <a href="https://habr.com/ru/post/214515/">https://habr.com/ru/post/214515/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../214487/index.html">What's inside the 2014 Olympic fan medal?</a></li>
+<li><a href="../214495/index.html">Photo excursion to the data center "DataPro Tver", Part 2</a></li>
+<li><a href="../214497/index.html">Best free photoshop plugins for web designers</a></li>
+<li><a href="../214503/index.html">Ay-tracker ET-1000 from The EyeTribe</a></li>
+<li><a href="../214513/index.html">Over $ 1 billion raised through Kickstarter</a></li>
+<li><a href="../214517/index.html">Writing a generator for Yeoman.io</a></li>
+<li><a href="../214519/index.html">Full comments for google sites with dynamically changing table height</a></li>
+<li><a href="../214525/index.html">The logic of thinking. Part 4. Background Activity</a></li>
+<li><a href="../214527/index.html">IBM Watson supercomputer will be available from a smartphone: a contest for mobile application developers has been announced</a></li>
+<li><a href="../214529/index.html">Suitcases iPhones and Gopnik in Butovo: how we almost went broke on Apple products</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

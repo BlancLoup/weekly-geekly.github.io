@@ -1,0 +1,155 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Using MongoDB instead of memcached: to be or not to be?</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="On the topic of "using MongoDB instead of memcached" there are a lot of success stories. It seems that there is a wide class of tasks for which the id...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Using MongoDB instead of memcached: to be or not to be?</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/00e/181/7c3/00e1817c30469395f4a255c039222974.png" align="left">  On the topic of "using MongoDB instead of memcached" there are a lot of success stories.  It seems that there is a wide class of tasks for which the idea works well: first of all, these are projects where <a href="http://habrahabr.ru/post/57142/">cache tagging is</a> used <a href="http://habrahabr.ru/post/57142/">extensively</a> .  But if you try, you will notice that MongoDB lacks the function of deleting entries from the cache that are the least readable (LRU - Least Recently Used).  How to keep cache size within reasonable limits?  LRU is, by the way, memcached "horse";  You can write to memcached without worrying about the overflow of your cache;  but what about MongoDB? <br><br>  Thinking over this, I wrote in Python a <a href="https://github.com/DmitryKoterov/cachelrud/">small utility called CacheLRUd</a> (laid out on GitHub).  This is a daemon to support LRU-delete records in various DBMS (first of all, of course, in MongoDB).  A farm of such demons (one for each MongoDB replica) monitors the size of the collection, periodically deleting the records that are most rarely readable.  Tracking the facts of reading a cache entry is decentralized (without a single point of failure) using a UDP-based protocol (why is that so? Because the “naive” option is to write from the application to the MongoDB master database with every read operation is a bad idea, especially if the master database will be in another data center).  Read the details below. <br><br><h5>  But why? </h5><a name="habracut"></a><br>  Why might I need to replace memcached with MongoDB?  Let's try to figure it out.  The concept of "cache" has two different types of use. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  The cache is used to reduce the load on the failing database (or other subsystems).  For example, suppose we have 100 requests per second to read a certain resource.  Turning on caching and setting a small cache expiration time (for example, 1 second), we thereby reduce the load on the database by 100 times: now, only one query out of a hundred reaches the DBMS.  And we almost do not need to fear that the user will see outdated data: after all, the time of obsolescence is very short. </li><li>  There is another type of cache: this is a cache of more or less static pieces of a page (or even the entire page), and it is used to reduce the time it takes to form a page (including those rarely visited).  It differs from the first in that the cached entries have a long lifetime (hours or even days), which means that the question arises: how to ensure that the cache contains relevant data, how to clean it?  For this purpose <i>tags</i> are used: each piece of data in the cache that is related to a certain large resource X is tagged with one or another tag.  When the resource X is changed, the command “clear tag X” is given. </li></ol><br>  For the first use of the cache, nothing better than memcached seems to be invented.  But for the second, memcached is stalling, and here the idea of ​​“MongoDB instead of memcached” can come to the rescue.  Perhaps this is your case if your cache: <br><br><ul><li>  Relatively small (upper limit - hundreds of gigabytes). </li><li>  Contains many “long-lived” records that become obsolete in hours and days (or never become obsolete at all). </li><li>  You essentially use tags and rely on the fact that the tag cleaning operation should work reliably. </li><li>  I would like to make the cache common and equally easily accessible (that is, replicable) on all the cluster machines, including several data centers. </li><li>  You don’t want to worry when one of the cache machines stops being available for a while. </li></ul><br>  MongoDB and its replication with an automatic failover wizard (turning a replica into a master at the “death” of the latter) guarantee the reliability of the clearing of one or another tag.  In memcached, this is a problem: memcached servers are independent of each other, and to remove a tag you need to “go” to each of them with the cleanup command.  But what if at this moment any of the memcached servers is unavailable?  It will “lose” the cleaning command and will start sending out old data;  MongoDB solves this problem. <br><br>  And finally, MongoDB is very fast in reading operations, because it uses an event-oriented mechanism for working with connections and memory mapped files, i.e.  reading is done directly from the RAM with enough of it, and not from the disk.  (Many people write that MongoDB is as fast as memcached, but I don't think so: just the difference between them is sinking with a huge margin against the background of network delays.) <br><br>  Here is the result of CacheLRUd on one not very loaded project.  It can be seen that the size of the collection with the cache is indeed kept constant at the 1G level specified in the config. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/de8/eb2/43d/de8eb243d18004ea6e030945250f6078.png"><br><br><h5>  Install CacheLRUd </h5><br>  ## Install the service on EACH MongoDB NODE: <br>  cd / opt <br>  git clone <a href="https://github.com/DmitryKoterov/cachelrud">git@github.com: DmitryKoterov / cachelrud.git</a> <br>  ln -s /opt/cachelrud/bin/cachelrud.init /etc/init.d/cachelrud <br><br>  ## Configure: <br>  cp /opt/cachelrud/cachelrud.conf /etc/cachelrud.conf # and then edit <br><br>  ## For RHEL (RedHat, CentOS): <br>  chkconfig --add cachelrud <br>  chkconfig cachelrud on <br><br>  ## ... or for Debian / Ubuntu: <br>  update-rc.d cachelrud defaults <br><br><h5>  How the demon works </h5><br>  There are no miracles, and your application must tell the CacheLRUd daemon (daemon farm) what cache entries it reads.  The application obviously cannot do this in synchronous mode (for example, updating the last_read_at field in the cache document in the MongoDB master database), because a) the master database may be in another data center relative to the current web application muzzle, b) MongoDB uses the TCP protocol, which threatens timeouts and client “hangs” in case of communication instability, c) it is unsuitable to write at each reading, this does not work in distributed systems. <br><br>  To solve the problem, the UDP protocol is used: the application sends UDP packets with a list of recently read keys to one or another CacheLRUd daemon.  Which one - you can decide on your own, depending on the load: <br><br><ul><li>  If the load is relatively low, send UDP packets to the CacheLRUd daemon that is “sitting” on the current MongoDB master node (the rest will simply stand idle and wait for their turn).  Determining who is currently the master on the application side is very easy: for example, in PHP, MongoClient :: getConnections is used for this. </li><li>  If one daemon fails, then you can send UDP messages, for example, to the CacheLRUd daemons in the current data center. </li></ul><br>  Details are described in the <a href="http://dklab.ru/lib/cachelrud/">documentation</a> . <br><br><h5>  What else is useful </h5><br>  <a href="https://github.com/DmitryKoterov/cachelrud/blob/master/binding/ZendFramework1/Zend/Cache/Backend/CacheLRUdWrapper.php">CacheLRUdWrapper</a> : this is a simple class for communicating with CacheLRUd from the application code in PHP, wrapping the standard Zend_Cache_Backend (although this class is for Zend Framework 1; if you rewrite it for ZF2 or for other languages ​​in general, I will be glad to pull-request). <br><br>  <a href="https://github.com/DmitryKoterov/Zend_Cache_Backend_Mongo">Zend_Cache_Backend_Mongo</a> : this is the implementation of Zend_Cache_Bachend for MongoDB from the neighboring GitHub repository.  Wrap an object of this class in CacheLRUdWrapper, and get an interface for working with LRU cache in MongoDB in ZF1 style: <br><br><pre> $ collection = $ mongoClient-&gt; yourDatabase-&gt; cacheCollection;
+ $ collection-&gt; w = 0;
+ $ collection-&gt; setReadPreference (MongoClient :: RP_NEAREST);  // allows reading from the master as well
+ $ primaryHost = null;
+ foreach ($ mongoClient-&gt; getConnections () as $ info) {
+     if (in_array ($ info ['connection'] ['connection_type_desc'], array ("STANDALONE", "PRIMARY"))) {
+         $ primaryHost = $ info ['server'] ['host'];
+     }
+ }
+ $ backend = new Zend_Cache_Backend_Mongo (array ('collection' =&gt; $ collection));
+ if ($ primaryHost) {
+     // We have a primary (no failover in progress etc.) - use it.
+     $ backend = new Zend_Cache_Backend_CacheLRUdWrapper (
+         $ backend,
+         $ collection-&gt; getName (),
+         $ primaryHost,
+         null
+         array ($ yourLoggerClass, 'yourLoggerFunctionName')
+     );
+ }
+ // You may use the $ backend below this line.
+</pre><br>  Share in the comments: what do you think about all this? </div><p>Source: <a href="https://habr.com/ru/post/219481/">https://habr.com/ru/post/219481/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../219467/index.html">Save our eyes: LED projectors</a></li>
+<li><a href="../219469/index.html">Entertaining zhirovedenie or consequence of the principle of Peter</a></li>
+<li><a href="../219471/index.html">Asynchronous HTTP in the Play Framework</a></li>
+<li><a href="../219473/index.html">COLT 2.0 Recompiling DOM as Directive Changes</a></li>
+<li><a href="../219475/index.html">Vulnerability of remember me functionality found in Laravel</a></li>
+<li><a href="../219487/index.html">"Sex" robots</a></li>
+<li><a href="../219491/index.html">We fix the errors with their own hands, or a bug that "no one shakes"</a></li>
+<li><a href="../219493/index.html">Fingerprint scanner in the Samsung Galaxy S5 is also vulnerable</a></li>
+<li><a href="../219497/index.html">Math and Play 2048</a></li>
+<li><a href="../219499/index.html">Vidonn X5 - bracelet from heaven to monitor physical activity</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

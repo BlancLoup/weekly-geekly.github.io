@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>RabbitMQ - Deferred messages, part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the previous article about deferred messages, I considered the option of organizing deferred messages for the simple case in which all deferred mes...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>RabbitMQ - Deferred messages, part 2</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/65c/d35/58d/65cd3558d661c97271f1e74631286390.jpg" alt="image" align="left">  In the <a href="http://habrahabr.ru/post/235505/">previous article</a> about deferred messages, I considered the option of organizing deferred messages for the simple case in which all deferred messages have the same delay time.  However, right there in the comments I was told that this version of the organization of deferred messages will create problems when trying to use it for messages with different delay times. <br><br>  In this regard, I want to give a more universal (but slightly more complicated) solution that allows you to organize deferred messages with an arbitrary delay time. <br><a name="habracut"></a><br><h4>  What is the problem? </h4><br>  The queues in RabbitMQ are arranged in such a way that no message can leave the queue before the previous messages leave it.  Actually, then she and all - you can not climb forward.  Even if the message has the “expiration” parameter set, and the life of this message has expired, it still does not give the right to leave the queue while there are other messages in front of it.  The outdated message will hang in the queue until its turn comes (pun, aha). <br><br>  At that moment, when his turn finally comes, one of two things will happen: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  If the queue does not have the “x-dead-letter-exchange” parameter set, the message will simply be deleted, without being delivered to anyone </li><li>  If the “x-dead-letter-exchange” parameter is set, the message will be transferred to the specified exchanger </li></ol><br>  In this connection, in the variant considered in the previous article the following happened: <br><br>  If all messages had the same "expiration", then they all lined up one after the other in a queue and waited until all previous messages were quit.  At the first message the storage time expired, this message left the queue and was delivered to the specified exchanger, freeing the exit from the queue to all other messages.  The remaining messages had the same expiration value, therefore they were always obsolete at least at the same time as the previous one, or later, respectively, by the time of their obsolescence they were already the first in the queue and no one had delayed them. <br><br>  Another thing is if the message in the queue with the value of the parameter “expiration” is larger than that of other messages.  In this case, the message with a large “expiration” reached the exit from the queue and “stuck” there until the expiration of its lifetime.  And behind him began to accumulate messages with a small «expiration», which could not get out of the queue, even if outdated.  Then the message with a large “expiration” left the queue and immediately behind it all the accumulated messages, in which the “expiration” was outdated, fell out. <br><br>  In short, when sending messages with delays of 30, 20, 10, the order of output was just that, and not the expected 10, 20, 30. <br><br><h4>  How to beat it </h4><br>  In the same article, in the previous article, I proposed a simple solution: to create not one common delayed queue, but several - for each task, its own delayed queue.  It is assumed that for one task one delay will be enough.  But, if you need the ability to set different delays even within the same task - let's make a universal way to create pending messages. <br><br>  The main idea is this - if messages with different delays interfere with each other in the same queue, then we will create our own personal queue for each delay! <br><br><img src="https://habrastorage.org/getpro/habr/post_images/1a2/95d/14f/1a295d14fbeea180e17636a86e8fbce6.png" alt="image"><br><br>  Key points: <br><br><ol><li>  Create queues for deferred messages, which differ in delay - their own queue for each delay </li><li>  We bind the usual queue with the exchanger using the “name_lead_free. *” Key so that it gets messages regardless of the delay </li></ol><br><h4>  Recipient </h4><br>  Consider the consumer_dlx.pl script: <br><br><pre><code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#!/usr/bin/perl use strict; use warnings; use Net::AMQP::RabbitMQ; my $mq = Net::AMQP::RabbitMQ-&gt;new(); my $user = 'guest'; my $password = 'guest'; #  $mq-&gt;connect("localhost", {user =&gt; $user, password =&gt; $password}); #  $mq-&gt;channel_open(1); #      --- for my $i (1..2) { my $exchange = 'myexchange' . $i; #  $mq-&gt;exchange_declare(1, $exchange, {exchange_type =&gt; 'topic'}); for my $j (1..2) { my $queue = 'myqueue' . $j; #  my $queue_full = "$exchange.$queue"; $mq-&gt;queue_declare(1, $queue_full, {auto_delete =&gt; 0}); #  my $routing_key = $queue . '.*'; $mq-&gt;queue_bind(1, $queue_full, $exchange, $routing_key); #  $mq-&gt;consume(1, $queue_full); } } #   ( ) while ( my $msg = $mq-&gt;recv() ) { print "$msg-&gt;{body} ($msg-&gt;{routing_key})\n"; }</span></span></code> </pre> <br>  As in the previous article, there are no features in the recipient's script that are directly related to pending queues. <br><br>  Pay attention to only one important point - the exchanger is created here with the type of “topic”.  This is due to the fact that the routing_key, which we will use, will contain two parameters - the name of the queue and the time of the desired delivery. <br><br>  Moreover, in the recipient itself, the delivery time is not taken into account, as indicated by the following line: <br><br><pre> <code class="perl hljs"><span class="hljs-keyword"><span class="hljs-keyword">my</span></span> $routing_key = $queue . <span class="hljs-string"><span class="hljs-string">'.*'</span></span>;</code> </pre><br>  As you can see, the second parameter is set as <code>'*'</code> , which is why all messages will be delivered to the normal queue, without taking into account time (and this is what is required for a normal queue). <br><br><h4>  Sender </h4><br>  Now consider the producer_dlx.pl script: <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#!/usr/bin/perl use strict; use warnings; use Net::AMQP::RabbitMQ; my $mq = Net::AMQP::RabbitMQ-&gt;new(); my $user = 'guest'; my $password = 'guest'; my $message = $ARGV[0] || 'mymessage'; my $exchange = $ARGV[1] || 'myexchange1'; my $queue = $ARGV[2] || 'myqueue1'; my $delay = $ARGV[3] || 0; #  $mq-&gt;connect("localhost", {user =&gt; $user, password =&gt; $password}); #  $mq-&gt;channel_open(1); #  $mq-&gt;exchange_declare(1, $exchange, {exchange_type =&gt; 'topic'}); #  dlx my $exchange_dlx = $exchange . '.dlx'; $mq-&gt;exchange_declare(1, $exchange_dlx, {exchange_type =&gt; 'topic'}); #  dlx my $endtime = time() + $delay; my $queue_full = "$exchange.$queue.$endtime"; $mq-&gt;queue_declare(1, $queue_full, {}, {'x-message-ttl' =&gt; $delay * 1000, 'x-dead-letter-exchange' =&gt; $exchange, 'x-expires' =&gt; $delay * 1000 + 10000}); #  my $routing_key = "$queue.$endtime"; $mq-&gt;queue_bind(1, $queue_full, $exchange_dlx, $routing_key); #   $mq-&gt;publish(1, $routing_key, $message, {exchange =&gt; $exchange_dlx});</span></span></code> </pre><br>  Here the following points are important: <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#  dlx my $exchange_dlx = $exchange . '.dlx'; $mq-&gt;exchange_declare(1, $exchange_dlx, {exchange_type =&gt; 'topic'});</span></span></code> </pre><br>  The exchanger for temporary messages as well as the usual exchanger must be of the type 'topic'. <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#  dlx my $endtime = time() + $delay; my $queue_full = "$exchange.$queue.$endtime"; $mq-&gt;queue_declare(1, $queue_full, {}, {'x-message-ttl' =&gt; $delay * 1000, 'x-dead-letter-exchange' =&gt; $exchange, 'x-expires' =&gt; $delay * 1000 + 10000});</span></span></code> </pre><br>  We calculate the desired delivery time for the <code>$endtime</code> by adding the specified delay to the current time (using the values ​​in seconds, unixtime). <br><br>  Then we create a personal queue for the specified delay and enter the delivery time directly in the queue name.  Entering the time in the queue name is not a technical necessity, you can give any name to the queue, but to ensure clarity and avoid confusion, it is most convenient to do so. <br><br>  When creating a queue, you need to pass three arguments: <br><br><ol><li>  <code>'x-message-ttl'</code> is the lifetime of messages.  As you remember, we have a separate queue for each delay, so we can set a delay for all messages in the queue at once, instead of specifying the same <code>'expiration'</code> value for each individual message. </li><li>  <code>'x-dead-letter-exchange'</code> is the name of the exchanger where the messages from this queue will be placed. </li><li>  <code>'x-expires'</code> is the lifetime of the queue itself.  Since we are creating a new pending queue for every delay, these queues will constantly accumulate.  So that they do not interfere with how much in vain, we will give them a time to live, after which they will be automatically removed.  Important!  Queue life time should be longer than the message lifetime.  If you set the queue lifetime to be equal to the message lifetime, then the delivery of messages is not guaranteed - the queue may be crashed before the messages are delivered from it.  In this example, the queue lifetime is set 10 seconds longer than the message lifetime. </li></ol><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#  my $routing_key = "$queue.$endtime"; $mq-&gt;queue_bind(1, $queue_full, $exchange_dlx, $routing_key);</span></span></code> </pre><br>  The key routing_key is set in the form of "name_learn_degree.the desired_time_delivery."  The dot in the middle divides the key into two parameters; these parameters are parsed by the type “topic” exchanger. <br><br>  As you can see, both parameters are included in the binding here.  Accordingly, the exchanger for temporary messages will send messages with this key to one specific queue with a specific delivery time. <br><br><h4>  Launch </h4><br>  First you need to run consumer_dlx.pl, then you can run producer_dlx.pl with different parameters. <br><br>  Parameters: [message] [exchanger] [queue] [delay in seconds]. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/7bf/b1e/80f/7bfb1e80fd69363e0b1c87644bca058f.png" alt="image"><br><br>  As you can see, first messages were sent with a longer delay, but the messages were delivered in the correct order - first, those with less delay. </div><p>Source: <a href="https://habr.com/ru/post/235983/">https://habr.com/ru/post/235983/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../235973/index.html">Simple export to Excel XML</a></li>
+<li><a href="../235975/index.html">AccuVein: an easy way to find a vein in a difficult situation</a></li>
+<li><a href="../235977/index.html">Data service for elections and candidates</a></li>
+<li><a href="../235979/index.html">NASA's project to transfer an asteroid to the moon's orbit: questions and answers</a></li>
+<li><a href="../235981/index.html">See who says: The birth of the videophone</a></li>
+<li><a href="../235987/index.html">"IT-galaxy" will be held September 25 in Moscow</a></li>
+<li><a href="../235989/index.html">Whistler 118ST Ru radar detector: tested on the roads</a></li>
+<li><a href="../235991/index.html">Autonomous soft robot slider carries 3 kg of cargo</a></li>
+<li><a href="../235993/index.html">Overview of the most interesting materials on data analysis and machine learning №12 (September 1 - 8, 2014)</a></li>
+<li><a href="../235995/index.html">Advanced Dependency Injection on the example of Ninject</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

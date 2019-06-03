@@ -1,0 +1,142 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>LUA in nginx: hot cache in memory</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I decided to replenish the piggy bank of articles on Habré about such a wonderful PL as lua, a couple of examples of its use under the hood of nginx. ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>LUA in nginx: hot cache in memory</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/f86/53e/912/f8653e912efdd13702989a0e36ef59e0.png" align="right"><br>  I decided to replenish the piggy bank of articles on Habré about such a wonderful PL as lua, a couple of examples of its use under the hood of nginx.  Smashed into two independent posts, the second <a href="http://habrahabr.ru/post/215235/">here</a> . <br><br>  In this post, nginx is used as a “hot cache” of some constantly updated data requested by clients over an interval with optional grouping (some analogue of BETWEEN and GROUP BY / AGGREGATE from SQL).  Data is loaded into the cache by lua + nginx from Redis.  The initial data in Redis is added every second, and customers want them from so far (interval in seconds, minutes, hours ...) with aggregation by N (1 &lt;= N &lt;= 3600) seconds, sorted by date and in json format. <br>  With a good hitrate on an existing machine, it turns out to provide 110-130k “hotelok” per second, but with a bad one - only 20-30k.  That, in general, is also acceptable for us at the same instance of nginx. <br><a name="habracut"></a><br><br>  From a certain source, data that is added to Redis ZSET comes every second.  The important point is to link the data to the time - the sample will go on time intervals.  One client came - “give me one of these so-by-seconds”, another came - “and I’m having this interval, but let's get aggregated for hour”, the third needed one last second, fourth for a day with aggregation of 27 seconds d ... Knocking on data directly in Redis is unreal.  It is very problematic to cache the prepared data in advance, because  The required intervals and aggregation step are generally in each client / request and can vary arbitrarily.  The server must be ready to quickly respond to any reasonable request. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Initially, there was an idea to perform aggregation on the Redis side, calling through EVAL redis-lua code from nginx-lua code.  This “We need to go deeper technology” didn’t work because of the single-stream nature of Redis itself: it’s quick to give out “raw data” much faster than to group and push the finished result. <br><br>  Data in Redis is stored element-wise already in json format of the form: <br><pre><code class="javascript hljs">ZADD ns:zs:key <span class="hljs-number"><span class="hljs-number">1386701764</span></span> <span class="hljs-string"><span class="hljs-string">"{\"data100500\":\"hello habr\",\"dt\":\"10.12.2013 10:05:00\",\"smth\":\"else\"}"</span></span></code> </pre> <br>  The key is the timestamp, in dt, the string equivalent of the "filler" version. <br>  Accordingly, sampling range: <br><pre> <code class="javascript hljs">ZREVRANGEBYSCORE ns:zs:data:sec <span class="hljs-number"><span class="hljs-number">1386701764</span></span> <span class="hljs-number"><span class="hljs-number">1386700653</span></span> WITHSCORES</code> </pre> <br>  And on lua via resty Redis: <br><pre> <code class="lua hljs"><span class="hljs-keyword"><span class="hljs-keyword">local</span></span> redis = <span class="hljs-built_in"><span class="hljs-built_in">require</span></span> <span class="hljs-string"><span class="hljs-string">'redis'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> R, err = redis:new() R:connect(<span class="hljs-string"><span class="hljs-string">'12.34.56.78'</span></span>, <span class="hljs-number"><span class="hljs-number">6379</span></span>) R:zrevrangebyscore(<span class="hljs-string"><span class="hljs-string">'ns:zs:data:sec'</span></span>, to, from, <span class="hljs-string"><span class="hljs-string">'WITHSCORES'</span></span>) <span class="hljs-comment"><span class="hljs-comment">--  ..</span></span></code> </pre><br><div class="spoiler">  <b class="spoiler_title">About a pool of connections in resty Redis</b> <div class="spoiler_text">  It is important that Resty uses a custom connection pool to Redis and R: connect () generally does not create a new connection.  The return of the connection after use is NOT performed automatically, it must be performed by calling R: set_keepalive (), which returns the connection back to the pool (after the return, you cannot use it again R: connect ()).  You can get the counter for the current connection from the pool through R: get_reused_times ().  If&gt; 0, then this is a previously created and configured connection.  In this case, do not need to re-send AUTH, etc. </div></div><br><br>  We build nginx ( <a href="https://github.com/chaoslawful/lua-nginx-module">lua-nginx-module</a> + <a href="https://github.com/agentzh/lua-resty-redis">lua-resty-redis</a> ), fluently customize: <br><pre> <code class="javascript hljs">http { lua_package_path <span class="hljs-string"><span class="hljs-string">'/path/to/lua/?.lua;;'</span></span>; init_by_lua_file <span class="hljs-string"><span class="hljs-string">'/path/to/lua/init.lua'</span></span>; lua_shared_dict ourmegacache <span class="hljs-number"><span class="hljs-number">1024</span></span>m; server { location = <span class="hljs-regexp"><span class="hljs-regexp">/data.js { content_by_lua_file '/</span></span>path/to/lua/get_data.lua<span class="hljs-string"><span class="hljs-string">'; } } }</span></span></code> </pre><br><div class="spoiler">  <b class="spoiler_title">About working with shared dict</b> <div class="spoiler_text">  The config indicates a <a href="https://github.com/chaoslawful/lua-nginx-module">shared dict</a> "ourmegacache", which will be available in lua as a table (dictionary, hash).  This table is the same for all worker processes of nginx and the operations on it are atomic for us. <br>  Access to the table is simple: <br><pre> <code class="lua hljs"><span class="hljs-keyword"><span class="hljs-keyword">local</span></span> cache = ngx.shared.ourmegacache cache:get(<span class="hljs-string"><span class="hljs-string">'foo'</span></span>) cache:set(<span class="hljs-string"><span class="hljs-string">'bar'</span></span>, <span class="hljs-string"><span class="hljs-string">'spam'</span></span>, <span class="hljs-number"><span class="hljs-number">3600</span></span>) <span class="hljs-comment"><span class="hljs-comment">--  .. . </span></span></code> </pre><br>  When the free space in memory is exhausted, the <a href="http://ru.wikipedia.org/wiki/%25D0%2590%25D0%25BB%25D0%25B3%25D0%25BE%25D1%2580%25D0%25B8%25D1%2582%25D0%25BC%25D1%258B_%25D0%25BA%25D1%258D%25D1%2588%25D0%25B8%25D1%2580%25D0%25BE%25D0%25B2%25D0%25B0%25D0%25BD%25D0%25B8%25D1%258F">LRU</a> cleaning begins, which is suitable in our case.  Who does not suit - look towards the safe_add, flush_expired, etc. methods.  It is also worth considering another, sort of like, officially <a href="http://www.mail-archive.com/nginx-devel%40nginx.org/msg00661.html">unsolved bug in nginx</a> related to the storage of large items in this shared dict. <br></div></div><br><br>  For a variety of boundaries of the requested interval and the aggregation step, we will receive from the GET parameters of the query <b>from</b> , <b>to,</b> and <b>step</b> .  With this agreement, the approximate format of the request to the service will be as follows: <br><blockquote>  /data.js?step=300&amp;from=1386700653&amp;to=1386701764 </blockquote><br><pre> <code class="lua hljs"><span class="hljs-keyword"><span class="hljs-keyword">local</span></span> args = ngx.req.get_uri_args() <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> from = <span class="hljs-built_in"><span class="hljs-built_in">tonumber</span></span>(args.from) <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> ...</code> </pre><br><br>  So, we have element-wise json records stored in Redis, which we can get from there.  How best to cache and give them to customers? <br><ul><li>  You can store second records in a table separately.  However, as practice has shown, the implementation of several dozen queries to the table has a very negative impact on performance.  And if a request arrives for a day, then a response with a short timeout can be avoided; </li><li>  Records can be stored in blocks, combining through a common separator or serializing them at least in the same json.  And when a query needs to be broken down by separator or deserialized.  So-so option; </li><li>  Store data hierarchically, with partial repetitions at different levels of aggregation.  Cache blocks of different sizes are used: 1 second (single entry), 10 seconds, 1 minute, 10 minutes, an hour.  Each block contains data of all its seconds.  The most important thing is that the contents of the block do not change and are not given in pieces: either as a whole or in any way. </li></ul><br>  The latter option is chosen, which consumes more memory but significantly reduces the number of table accesses.  Cache blocks of different sizes are used: 1 second (single entry), 10 seconds, 1 minute, 10 minutes, an hour.  Each block contains data of all its seconds.  Each block is aligned to the boundary of its interval, for example, the first element of the 10 second interval always has a timestamp having a decimal remainder of 9 (sorting in descending order as customers want), and the hour block contains 59:59, 59: 58, ... 00:00 elements.  When combining elements, they are immediately glued together with a separator - a comma, which allows you to give these blocks to the client in one action: '[', block, ']', and also quickly combine them into larger pieces. <br><br>  To cover the requested interval, a partition is performed into the maximum possible blocks with smaller blocks along the edges.  Since  we have single blocks, it is always possible to fully cover the required interval.  To query the interval 02: 29: 58 ... 03:11:02 we get the layout of the cache: <br><pre> 1sec - 03:11:02
+ 1sec - 03:11:01
+ 1sec - 03:11:00
+ 1min - 03:10:59 .. 03:10:00
+ 10min - 03:09:59 .. 03:00:00
+ 30min - 02:59:59 .. 02:30:00
+ 1sec - 02:29:59
+ 1sec - 02:29:58
+</pre><br>  <i>This is just an example.</i>  <i>Real calculations are performed on timestamps.</i> <br>  It turns out that we need 8 requests to the local cache.  Or to Redis, if they are locally / not yet available.  And in order not to break behind the same data from different workers / connects, you can use the atomicity of shared dict operations to implement locks (where key is a string cache key containing information about the interval and aggregation step): <br><pre> <code class="lua hljs"><span class="hljs-keyword"><span class="hljs-keyword">local</span></span> chunk <span class="hljs-keyword"><span class="hljs-keyword">local</span></span> lock_ttl = <span class="hljs-number"><span class="hljs-number">0.5</span></span> <span class="hljs-comment"><span class="hljs-comment">--     ,   local key_lock = key .. ':lock' local try_until = ngx.now() + lock_ttl local locked while true do locked = cache:add(key_lock, 1, lock_ttl) chunk = cache:get(key) if locked or chunk or (try_until &lt; ngx.now()) then break end ngx.sleep(0.01) -- ,   nginx evloop end if locked then --   . ,   elseif chunk then --    ,        end if locked then cache:delete(key_lock) end</span></span></code> </pre><br><br>  Having the necessary layout for caches, the ability to select the desired range from Redis, and the aggregation logic (it is very specific here, I don’t give an example), we get an excellent caching server, which, after warming up, knocks on Redis only once a second for a new element + for the old, if they have not been selected yet or were thrown out on the LRU.  And don't forget about the limited pool of connections in Redis. <br>  In our case, the warm-up looks like a short-term jump in incoming traffic of the order of 100-110Mb / s for a few seconds.  On cpu, on a machine with nginx, warming up is almost not noticeable at all. <br><br>  <i>The image in the cap is taken <a href="http://blog.cloudflare.com/pushing-nginx-to-its-limit-with-lua">from here</a> .</i> </div><p>Source: <a href="https://habr.com/ru/post/215237/">https://habr.com/ru/post/215237/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../215225/index.html">Break me down completely (ZeroNightsCrackme, Part 2)</a></li>
+<li><a href="../215227/index.html">Simple monitoring of server load in real time with a web interface</a></li>
+<li><a href="../215229/index.html">“Stolen” money found on MtGox accounts</a></li>
+<li><a href="../215233/index.html">DDOS of any site using Google Spreadsheet</a></li>
+<li><a href="../215235/index.html">LUA in nginx: a slightly intelligent firewall</a></li>
+<li><a href="../215239/index.html">IBOX - another ARM mini PC</a></li>
+<li><a href="../215241/index.html">Miracle Machine: water wine</a></li>
+<li><a href="../215243/index.html">VMware and KVM: OpenStack hypervisor race is gaining momentum</a></li>
+<li><a href="../215245/index.html">InfoboxCloud cloud platform update: Jelastic 1.9.3</a></li>
+<li><a href="../215247/index.html">As I accidentally discovered for myself an unlimited (!) Internet on a usb modem from mts, for a minimal fee</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

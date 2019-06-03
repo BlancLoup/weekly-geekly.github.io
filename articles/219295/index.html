@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Write Cache and DRBD: Why it is useful to know the inside story</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prehistory 
+ There is a beautiful solution for creating a reliable low-cost cluster based on DRBD + Proxmox VE. A page on the Proksmox project's Wiki ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Write Cache and DRBD: Why it is useful to know the inside story</h1><div class="post__text post__text-html js-mediator-article"><h2>  Prehistory </h2><br>  There is a beautiful solution for creating a reliable low-cost cluster based on DRBD + Proxmox VE.  A page on the Proksmox project's Wiki appeared on September 11, 2009, and it was created by the CEO of Martin Maurer. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/6ac/a9c/caf/6aca9ccaf7dd469d6b7c251c7466d7f4.png"><br><br>  Since then, this decision has become very popular, and no one suspected that this solution has a hidden pitfall.  The documentation does not write about it, and those who have come across the consequences of this problem (for example, the machine crashes during an online migration from one host to another), blamed everything on the “case”.  Someone sinned on iron, someone on Proxmox, and someone on the drivers inside the virtual machine.  Of course, I would like DRBD to report its problems on its own, and, somehow, unconsciously believe in what it does.  Check / proc / drbd, see the line “cs: Connected ro: Primary / Primary ds: UpToDate / UpToDate” and continue to believe that DRBD has nothing to do with it. <br><a name="habracut"></a><br>  Once, carefully reading the documentation for DRBD, I found a recommendation to do a regular check of DRBD for integrity, i.e.  on the identity of the two nodes among themselves.  Well, why not, I thought, there will be no unnecessary verification.  And then the whole year long story began. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      It turned out that every week new out-of-sync blocks appeared in DRBD.  Those.  the data on the two servers was different.  But why?! <br><br>  Replacing the hardware, updating the DRBD version, disconnecting offload and bonding did not lead to a positive result, and new blocks all appeared and appeared.  Analysis of exactly which blocks turned out to be out-of-sync led to the following results: <br>  - often - swap partition of the virtual machine with Linux <br>  - rarely - Windows with NTFS partition on the virtual machine <br>  - never - ext4 on a Linux virtual machine <br><br>  It was “interesting”, but it did not give an answer to the question “why and how it can be”.  I talked about all of my research on the DRBD Users mailing list (http://www.gossamer-threads.com/lists/drbd/users/25227) and once I received the answer I had been waiting for.  Lars Ellenberg, one of the main developers of DRBD, explained what was happening and how to check it. <br><br><h2>  How to write to DRBD </h2><br>  General case: <br>  1) DRBD receives a request from the OS for writing data from the buffer; <br>  2) DRBD writes data to a local block device; <br>  3) DRBD sends data to the second node over the network; <br>  4) DRBD receives confirmation of the end of the recording from the local block device; <br>  5) DRBD receives confirmation of the end of the recording from the second node; <br>  6) DRBD sends the OS a confirmation of the end of the recording. <br><br>  Now imagine that the data in the buffer unexpectedly changed and we get: <br>  1) DRBD receives a request from the OS for writing data from the buffer; <br>  2) DRBD writes data to a local block device; <br>  2.5) buffer data has changed; <br>  3) DRBD sends data to the second node over the network; <br>  4) DRBD receives confirmation of the end of the recording from the local block device; <br>  5) DRBD receives confirmation of the end of the recording from the second node; <br>  6) DRBD sends the OS a confirmation of the end of the recording. <br>  And we immediately get out-of-sync. <br><br>  How does this work?  Very simple.  The buffer can be used by the application for write caching (the application, we have, is a virtual machine process).  In this case, the application can update the data in the buffer, without waiting for confirmation of the recording of this data on a physical device or controller, and in the case of DRBD this is unacceptable. <br><br>  The most annoying thing about all this is that <b>to lose data you don’t even need to turn off the power</b> .  You only need to enable the cache to write. <br><br>  How to check?  It is necessary to enable data-integrity-alg in the DRBD settings and wait.  If you get something like "buffer modified upper layers during write", then this is it.  Be careful, if DRBD works in dual-primary mode, then with “data-integrity-alg” enabled, you will immediately get a split brain (this is not written in the documentation). <br><br><h2>  Caching write to QEMU / KVM </h2><br>  By default, virtual machines in Proxmox VE use cache = none mode for virtual disks.  Despite the fact that "none" as if tells us "we do not cache anything", in fact, this is not quite so.  None, in this case, means not using “host cache”, but the write cache on the block device is still used.  And from here we get a problem with block out-of-sync in DRBD. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/f2c/7e7/93c/f2c7e793c83a893358ff5dfcd364f027.png"><br><br>  Only two modes can be considered reliable when used with DRBD: directsync and writethrough.  The first does not use caching at all, i.e.  always reads directly from the block device (it can be a RAID controller) and writes to the block device (it can be a RAID controller), always waiting for confirmation of the record.  The second mode uses “host cache” for reading. <br><br>  Thus, the virtualization system can become catastrophically slow if you do not use physical RAID with caching per write and BBU.  And if you use RAID with BBU, then the virtual machine will receive confirmation of the record immediately after placing the data in the controller cache. <br><br><h2>  Why is there no out-of-sync on ext4 </h2><br>  Using the cache = directsync and cache = writethrough modes are the most reliable, because, in this case, we do not need to worry about what is happening inside the virtual machine.  But this is not the only way.  This needs to be taken into account in cases where we have insufficient RAID performance or we do not have RAID at all. <br><br>  You can make sure that the data is already written, not only at the process level of the virtual machine, but also inside the VM.  Here we are introduced to the concept of barrier, which assumes that the file system itself knows when it needs to reset the data from the cache to a physical device and wait for the operation to complete.  And man mount tells us that "The ext4 filesystem enables write barriers by default".  That is why we will never see out-of-sync on areas where the file system is using barriers. <br><br>  Useful links: <br>  - Proxmox and DRBD: <a href="http://pve.proxmox.com/wiki/DRBD">pve.proxmox.com/wiki/DRBD</a> <br>  - Out of sync: <a href="http://www.gossamer-threads.com/lists/drbd/users/25227">www.gossamer-threads.com/lists/drbd/users/25227</a> <br>  - More about out of sync: <a href="http://forum.proxmox.com/threads/18259-KVM-on-top-of-DRBD-and-out-of-sync-long-term-investigation-results">forum.proxmox.com/threads/18259-KVM-on-top-of-DRBD-and-out-of-sync-long-term-investigation-results</a> <br>  - Description of the cache parameter for kvm / qemu: <a href="https://www.suse.com/documentation/sles11/book_kvm/data/sect1_1_chapter_book_kvm.html">www.suse.com/documentation/sles11/book_kvm/data/sect1_1_chapter_book_kvm.html</a> <br>  - More about the cache: <a href="http://www.ilsistemista.net/index.php/virtualization/23-kvm-storage-performance-and-cache-settings-on-red-hat-enterprise-linux-62.html%3Fstart%3D2">www.ilsistemista.net/index.php/virtualization/23-kvm-storage-performance-and-cache-settings-on-red-hat-enterprise-linux-62.html?start=2</a> </div><p>Source: <a href="https://habr.com/ru/post/219295/">https://habr.com/ru/post/219295/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../219285/index.html">GUI installer for Django 1.6.2 for Windows</a></li>
+<li><a href="../219287/index.html">Meet the LenovoEMC PX4-300r NAS</a></li>
+<li><a href="../219289/index.html">Configuring Angular Directive on the fly with COLT and Emmet</a></li>
+<li><a href="../219291/index.html">A different look at ordering online store</a></li>
+<li><a href="../219293/index.html">Plugin COLT for WebStorm is available for download.</a></li>
+<li><a href="../219297/index.html">Roskomnadzor has banned the largest Ukrainian site for programmers dou.ua</a></li>
+<li><a href="../219299/index.html">Microsoft introduces SQL Server 2014 in Russia!</a></li>
+<li><a href="../219301/index.html">Yandex.Catalog failed or hacked?</a></li>
+<li><a href="../219303/index.html">Bringing electronics back to life - we wash off dust and force out water</a></li>
+<li><a href="../219305/index.html">Automatic background image cleaning</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>The infrastructure processing queues in the social network My World</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Some time ago we talked about the server queues, its principles of operation and internal structure. Now, finally, it's time to move on to reviewing t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>The infrastructure processing queues in the social network My World</h1><div class="post__text post__text-html js-mediator-article"> <a href="http://habrahabr.ru/company/mailru/blog/228131/"><img src="https://habrastorage.org/getpro/habr/post_images/17a/652/ab1/17a652ab1c54c0a12455da1bae4ebe1e.jpg"></a> <br><br>  Some time ago we <a href="http://habrahabr.ru/company/mailru/blog/216363/">talked</a> about the server queues, its principles of operation and internal structure.  Now, finally, it's time to move on to reviewing the queues from a more grocery point of view and talk about the infrastructure used for processing tasks.  Let's start a little from afar, with what we stopped in the last article: why, in fact, the queue can be used. <br><a name="habracut"></a><br><h1>  The benefits of queues </h1>  Of course, the most common method of application is for asynchronous execution of operations generated during the processing of user requests, the results of which are not immediately required for feedback.  In our case, for example, sending mail and notifications, friend requests, updating search indexes, resetting caches, post-processing data received from the user (video transcoding, cutting photos), sending data to subsystems whose response time / reliability is not guaranteed. <br><br>  In practice, it turned out that, having a convenient infrastructure for distributed task processing, the range of applications is significantly higher: <br><ul><li>  Due to the fact that each event in the queue server has an activation time, you can use queues <b>as a scheduler for pending tasks</b> .  Thus, for example, we made postponed posts in groups.  Instead of posting to a group feed, the post is placed in temporary storage, and a task is created in the queue with an activation time equal to the post publication time. </li><li>  Using the activation time, you can <b>spread the load on the database in time</b> , postponing the execution of some non-priority tasks from peak time to night time. </li><li>  You can <b>rotate content</b> displayed by a user group using queues.  We apply for social moderation of photos.  Images that need to be moderated are added to a special queue, and when the content is delivered to the user, the user takes one photo from the queue and shows it to the moderator. </li><li>  The queue can be embedded as an interlayer in the data receiving API, for example, <b>push notifications</b> from colleagues from a neighboring project, to increase reliability and load smoothing. </li><li>  To organize the <b>receipt of data from external sources</b> , for example, by downloading some content from a third-party resource. </li><li>  You can also <b>force the synchronization of data</b> with friendly projects by circumventing our database and sending multiple requests to their API.  This can be done periodically and for a long time by adjusting the load on the API of a third-party project by limiting the number of handlers or by spreading the activation time of events. </li><li>  Similarly, you can <b>bypass your own repositories</b> in order to correct the data, beaten due to logical errors in the code, or to update the structure of the stored data in the new format. </li><li>  It is very convenient with the help of queues to carry out <b>modifications of the distributed and related data</b> .  For example, you can take such an operation as deleting a post, which also requires the removal of all comments and likes.  Accordingly, it can be divided into three separate lines: one is responsible for removing the post, the other for deleting comments, and the third for deleting likes.  Thus, we find that the speed of clearing each queue depends only on the state of the specific storage and, for example, problems with the storage of likes will not affect the removal of the posts themselves. </li></ul><br><h1>  Processing infrastructure </h1>  We have to admit that for some time we tried to process jobs from queues without creating a specialized infrastructure for this.  As the number of types of queues increased, it became more and more obvious that it became more and more difficult to keep track of the increasing number of scripts and demonos that are very similar but slightly different.  It is necessary to monitor the load and run a sufficient number of processes, do not forget to monitor them, when server drops out, to timely lift processes on other machines.  There is an understanding that we need infrastructure, which can be said: "here's a cluster of server handlers, here's a queue server, let's dig it out."  Therefore, we thought a little, looked at whether there were ready-made solutions, took Perl (because it is one of the main languages, along with C, in which we develop) and rushed. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      When designing the infrastructure for processing queues, the following characteristics were key: <br><ul><li>  <b>Distribution</b> - tasks of the same type can be performed on different servers; </li><li>  <b>resiliency</b> - dropping ten to twenty percent of the cluster servers should not lead to the degradation of important queues; </li><li>  <b>homogeneity</b> - the absence of any server specialization, any task can be performed on any server; </li><li>  <b>prioritization</b> - there are critical queues, but there are those that can wait; </li><li>  <b>automation</b> - a minimum of manual intervention (especially admin): <b>balancing</b> - the redistribution of handlers of each type, depending on the needs;  <b>adaptation to the server</b> - determining the number of processors on each server depending on its characteristics, tracking memory and processor consumption; </li><li>  <b>batch processing</b> - tasks of the same type should be grouped to enable the use of optimizations; </li><li>  <b>statistics</b> — collection of data on queue behavior, task flow, number, presence of errors; </li><li>  <b>monitoring</b> — alerts about abnormal situations and changes in the standard behavior of queues. </li></ul><br>  At the same time, we applied a rather classical scheme, highlighting three components: a manager, a master and a slot. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b7c/735/bec/b7c735becabe57ae5d2f11f6ad2ff223.png"><br><br>  <b>A slot</b> is the actual process handler of the queue (worker).  There can be a lot of slots running on each server, each slot is characterized by the type of queue that it is currently processing.  Specialization of slots on certain types of queues increases the locality of data, connections to databases and external services, simplifies debugging (including in case of process memory damage and the formation of "crusts"). <br><br>  <b>A master</b> is a process foreman responsible for the operation of slots on a specific server.  His responsibilities include starting and stopping slots, maintaining the optimal number of slots on the server, depending on its configuration, available memory and LA, monitoring the life of slots, destroying stuck and using too many system resources of slots. <br><br>  <b>A manager</b> is a cluster process manager, runs in one instance (under pacemaker for reliability) and is responsible for the entire cluster.  He is involved in micromanagement: on the basis of data from the queue server and statistical data from the wizards, he determines the required number of slots of each type and decides which particular slot will deal with what type of tasks. <br><br><h1>  Cluster management </h1>  The definition of the required number of slots for processing each type of queue by the manager is carried out on the basis of: <br><ul><li>  configuration parameters, including: queue priority;  the minimum and maximum number of processors allowed;  the number of jobs processed in one iteration; </li><li>  recent statistics, including: the number of active jobs in the queue;  number of tasks processed;  total task processing time;  total lifetime of handlers. </li></ul><br>  At the same time, in order to exclude the blinking of slots, some inaccuracy is intentionally allowed: if the required number of slots slightly differs from the current one, then reconfiguration does not occur (“insignificance” upward and downward deviations are defined as a function of queue priority).  With the same purpose, the compilation of a new slot card is always carried out on the basis of the current one.  This leads to the fact that the slots are stably engaged in processing one type of tasks.  Also, when distributing slots across servers, the manager tries to prevent the accumulation of handlers of the same type and spreads them across the cluster. <br><br>  It should be recognized that we did not succeed in choosing a formula that balances the number of slots of each type the first time - at first we tried to do with fewer parameters and coefficients.  In the process of selecting the formula, the administrator’s manager was drawn, according to which you can analyze the correctness of his actions, and also see how certain slots of the types are distributed across servers. <br><br> <a href=""><img src="https://habrastorage.org/getpro/habr/post_images/25f/b46/01b/25fb4601b8210dc656345bab970ca7b6.png"></a> <br><br>  By the way, this picture shows a couple of funny effects, for example, that the number of slots (including the average) may be less than the minimum.  This means that the slot lifetime is not very long, most likely due to memory intensive use, and they are often restarted.  Or the fact that the load can be much more than 100%, since it takes into account not only the processing tasks, but also those that accumulate in the queue.  It is on the basis of this indicator that the manager determines that the number of slots should be reduced or increased (highlighted in red).  For some types of queues, we deliberately overestimate the minimum number of slots of this type.  This is necessary to ensure for these queues the minimum response time to the event and to be sure that as soon as it enters the queue, it will immediately go into processing, without waiting for the previous tasks to be completed. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/c74/8be/b3a/c748beb3a36f600d7d51ec816333d8a9.png"><br><br><h1>  Local government </h1> Servers on which masters are started, different in power: some are old and so-so, some are new and nothing at all.  Therefore, it is necessary to automatically, without settings from the admins, determine the available resources, current slots appetites and adjust their number.  In our case, it turned out that the most valuable resource is RAM.  That it determines how many slots can be run on the server.  Of course, to save it, we tried to make maximum use of copy-on-write and load all the code necessary for the execution of slots in the wizard so that after the fork of the slots they share all this memory.  In order to calculate the allowable number of slots on one server, standard VSZ and RSS are not enough - they do not contain information about how much process memory is shared between processes.  Fortunately, linux for some time has a wonderful parameter PSS (Proportional Set Size), which for each memory page is inversely proportional to the number of processes between which it is fumbled (you can subtract and calculate the PSS process from / proc / $ pid / smaps).  The sum of the PSS master and all slots divided by the number of slots corresponds approximately to the average size of the slot (a bit more, since we do not specifically divide the master).  By adding the amount of PSS to the free memory and dividing it by the average slot size, you can get their permissible amount (minus some reserve just in case). <br><br>  In the course of work, the slots constantly interact with the master, receiving commands from it to change the slot parameters and passing it statistical information, which is subsequently used by the manager when planning.  The slot periodically calculates the amount of memory it has exclusively (Private_Dirty), and if it exceeds the specified limit, it completes its work.  Subsequently, such a slot is restarted by the master from scratch.  This saves memory and does not allow individual slots to disrupt the functioning of the server as a whole. <br><br><h1>  Task Processing Algorithm </h1><img src="https://habrastorage.org/getpro/habr/post_images/ef5/280/fe9/ef5280fe9dbd946090de2fa7e2b1b45f.png"><br>  The task processing process itself is built according to a fairly simple cyclical algorithm.  The slot constantly sends a request to the next queue server to the queue server.  If there are events, they are processed.  In this case, whenever possible, all events from the pack are processed together.  This allows you to reduce the number of database queries by grouping the same type and sending multi-requests.  Or, in the case of lack of support for multi-requests from the repositories, speed up communication with them by parallelizing asynchronous requests by using libev or libcoro.  The logical solution, of course, would be to use asynchronous task processing as part of an event machine.  But in practice, such a solution is fraught with development difficulties (the need to execute the same code from under a synchronous web server and an asynchronous queue handler) and debugging. <br><br>  Error handling is built in the simplest way possible and uses the feature of the queue server, which, when issuing jobs to the handler, locks them for a while (as a rule, for two hours, but this is configured for each queue).  All situations not foreseen by the developer simply result in the task being locked in a queue for two hours and then picked up by another handler.  This approach allows the same type of response to problems in the processing logic, as well as errors in the low-level code, which can lead to the fall of the handler in the "shell".  More or less regular situations can be handled in a more reasonable way, for example, by postponing the activation time of an event until a later time.  In any case, the event is considered processed only when the handler sends a command to the queue server for deletion. <br><br>  The entire process of job processing is neatly overlaid with sending statistical information, drawing various graphs and monitoring.  Information on the number of tasks in the queue and how many of them are locked is used as the primary monitoring.  An increase in the number of locked events clearly indicates that events are accumulating in the queue that cannot be processed due to the presence of fatal errors.  The increase in the number of active tasks indicates that the incoming stream does not have time to be processed. <br><br><h1>  Conclusion </h1>  In conclusion, I would like to note that the described infrastructure has been used in My World not for the first couple of years and did not require any significant intervention or modification during this time, even though the number of queues and the number of servers used have significantly increased.  During this time, we have managed to virtually nullify the zoo of scripts and demonok, transferring them to the infrastructure of the queue manager.  Its convenience has led to the fact that new queues appear in the project no less than new ajax functions.  And currently, about 350 million tasks of 150 different types are processed on a cluster of 40 servers (about 3,500 handlers) per day. <br><br>  PS Of course, such ready-made solutions as the <a href="http://gearman.org/">gearman</a> have already appeared, and if there is a need for distributed processing of tasks, then it makes sense to look in their direction.  But we were lucky to attend to this task a bit earlier, and we got a lot of pleasure in the process of developing our own solution. </div><p>Source: <a href="https://habr.com/ru/post/228131/">https://habr.com/ru/post/228131/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../228109/index.html">Efficient energy management in the data center</a></li>
+<li><a href="../228115/index.html">Disaster Recovery Planning. Part Three - Final</a></li>
+<li><a href="../228121/index.html">DIY projection screen</a></li>
+<li><a href="../228123/index.html">Online Store Migration: Testing Your Shop on a Different Platform</a></li>
+<li><a href="../228125/index.html">Reactive programming for Android</a></li>
+<li><a href="../228135/index.html">Ribs.js - nested attributes, computed fields and binding for Backbone.js</a></li>
+<li><a href="../228137/index.html">Charles Herzfield: Director of DARPA and the Godfather of ARPANET</a></li>
+<li><a href="../228139/index.html">How we stopped being afraid of Ogre and started making a game on it</a></li>
+<li><a href="../228141/index.html">Mojolicious Documentation: Lost Chapters</a></li>
+<li><a href="../228145/index.html">Bare Fridays # 1</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

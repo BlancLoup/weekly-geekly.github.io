@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>RabbitMQ - delayed messages</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="On Habré there is a series of translations of the official manual for RabbitMQ ( 1 , 2 , 3 , 4 , 5 ). Unfortunately, the official guide does not deal ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>RabbitMQ - delayed messages</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/69b/8e4/816/69b8e4816c63dbdaad45b694b3299b1b.jpg" alt="image" align="left"><br><br>  On Habré there is a series of translations of the official manual for RabbitMQ ( <a href="http://habrahabr.ru/post/149694/">1</a> , <a href="http://habrahabr.ru/post/150134/">2</a> , <a href="http://habrahabr.ru/post/200870/">3</a> , <a href="http://habrahabr.ru/post/201096/">4</a> , <a href="http://habrahabr.ru/post/201178/">5</a> ).  Unfortunately, the official guide does not deal with the organization of deferred messages, but I consider this question to be very important.  Therefore, I decided to write such an article myself. <br><br>  Code examples will be on Pearl, but there will be no Pearl-specific details in the code, so examples can be relatively easily adapted to any other language. <br><a name="habracut"></a><br><h4>  Formulation of the problem </h4><br>  Sometimes you need to perform any task not "right-right-second-second," but after a while. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      For example, we have a script that occasionally accesses an API, and, if the answer has not changed, it “spills” for a while, then “wakes up” and checks again. <br><br>  Or, for example, we saved a temporary file and we need to start a timer to delete the file after a specified time. <br><br>  In such cases, we need a mechanism to create a delayed message in RabbitMQ (unless, of course, we want to do this using RabbitMQ). <br><br>  Unfortunately, in RabbitMQ itself there is no ready mechanism for publishing pending messages.  Messages posted by RabbitMQ senders are delivered instantly to recipients.  Of course, the recipient may not be connected to RabbitMQ, in which case the message will be delivered after connection, but if the recipient is connected, the message will be delivered immediately. <br><br>  You can’t just post a message and say to him: “Lie down so far unnoticed in the little corner, and after 10 minutes, get out and be delivered to the recipient.” <br><br>  Therefore, the problem arises - how, with the help of RabbitMQ, to organize deferred messages? <br><br><h4>  Decision </h4><br>  To do this, you have to make a workaround.  The key idea is that if a message sent to a queue is immediately delivered to the recipient who is listening to this queue, then you need to send this message to another queue! <br><br>  In general, the scheme of work will be as follows: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/7d5/483/fd3/7d5483fd3a8e6cfeadafe576c6bf67fb.jpg" alt="image"><br><br><ol><li>  We create an exchanger to which deferred messages will be sent. </li><li>  Create a queue to store pending messages. </li><li>  We make a binding between the queue and the exchanger </li><li>  We set up the queue so that the messages, having lain in it for some specified time, are sent to the usual exchanger for immediate delivery to the recipient </li></ol><br><h4>  Recipient </h4><br>  Consider the consumer_dlx.pl script: <br><br><pre><code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#!/usr/bin/perl use strict; use warnings; use Net::AMQP::RabbitMQ; my $mq = Net::AMQP::RabbitMQ-&gt;new(); my $user = 'guest'; my $password = 'guest'; my $exchange = 'myexchange'; my $queue = 'myqueue'; my $routing_key = 'mykey'; #  $mq-&gt;connect("localhost", {user =&gt; $user, password =&gt; $password}); #  $mq-&gt;channel_open(1); #  $mq-&gt;exchange_declare(1, $exchange, {exchange_type =&gt; 'direct'}); #  $mq-&gt;queue_declare(1, $queue); #  $mq-&gt;queue_bind(1, $queue, $exchange, $routing_key); #  $mq-&gt;consume(1, $queue); #   -- $mq-&gt;queue_declare(1, $queue.'2'); $mq-&gt;queue_bind(1, $queue.'2', $exchange, $routing_key.'2'); $mq-&gt;consume(1, $queue.'2'); #   ( ) while ( my $msg = $mq-&gt;recv() ) { print "$msg-&gt;{body} ($msg-&gt;{routing_key})\n"; }</span></span></code> </pre> <br>  I will not focus on each line of this script, since there is nothing new for a person who has read the above-mentioned articles from the manual.  This is quite a normal recipient of messages, there is not even any specifics associated with the topic in question - deferred messages.  The recipient is needed only for demonstration, all the salt will be in the sender. <br><br>  I will note only one thing: <br><br>  Please note that the recipient creates and listens to two different queues, intertwined with the exchanger with two different routing_key.  In principle, one queue is enough, but with two it will be clearer, plus it will help to further demonstrate one useful feature. <br><br><h4>  Sender </h4><br>  Now consider the producer_dlx.pl script: <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#!/usr/bin/perl use strict; use warnings; use Net::AMQP::RabbitMQ; my $mq = Net::AMQP::RabbitMQ-&gt;new(); my $user = 'guest'; my $password = 'guest'; my $exchange = 'myexchange'; my $exchange_dlx = 'myexchange.dlx'; my $queue_dlx = 'myqueue.dlx'; my $message = $ARGV[0] || 'mymessage'; my $routing_key = $ARGV[1] || 'mykey'; my $expiration = $ARGV[2] || 0; #  $mq-&gt;connect("localhost", {user =&gt; $user, password =&gt; $password}); #  $mq-&gt;channel_open(1); #  $mq-&gt;exchange_declare(1, $exchange, {exchange_type =&gt; 'direct'}); #  dlx $mq-&gt;exchange_declare(1, $exchange_dlx, {exchange_type =&gt; 'fanout'}); #  dlx $mq-&gt;queue_declare(1, $queue_dlx, {}, {'x-dead-letter-exchange' =&gt; $exchange}); #  $mq-&gt;queue_bind(1, $queue_dlx, $exchange_dlx, $routing_key); #   $mq-&gt;publish(1, $routing_key , $message, {exchange =&gt; $exchange_dlx}, {expiration =&gt; $expiration});</span></span></code> </pre><br>  Let's sort separate sections of the code. <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#  $mq-&gt;exchange_declare(1, $exchange, {exchange_type =&gt; 'direct'});</span></span></code> </pre><br>  This is the same exchanger that is used in the recipient.  Our sender does not send messages directly to this exchanger, but you still need to create an exchanger, since it will still be used, albeit indirectly. <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#  dlx $mq-&gt;exchange_declare(1, $exchange_dlx, {exchange_type =&gt; 'fanout'});</span></span></code> </pre><br>  This is an exchanger to which we will send pending messages. <br><br>  Pay attention to the type of exchanger being created - 'fanout', in contrast to the first exchanger having the type 'direct'.  Next, I will explain why it is 'fanout'. <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#  dlx $mq-&gt;queue_declare(1, $queue_dlx, {}, {'x-dead-letter-exchange' =&gt; $exchange});</span></span></code> </pre><br>  Here we create a queue in which the pending messages will be placed. <br><br>  The 'x-dead-letter-exchange' argument is the nail that holds the entire mechanism for deferred messages.  If this argument is specified for the queue, then messages that have expired are automatically transferred from this queue to the exchanger specified in this argument. <br><br>  Accordingly, as the exchanger you need to specify the usual exchanger, with which the recipient works. <br><br>  <i>Just in case, a mark for those that are not familiar with Pearl: the construction of <code>{}</code> in the third parameter means that in this place you need to pass a reference to the hash with options, but since in this particular case no options are required, a link to empty hash.</i> <br><br><pre> <code class="perl hljs"><span class="hljs-comment"><span class="hljs-comment">#   $mq-&gt;publish(1, $routing_key , $message, {exchange =&gt; $exchange_dlx}, {expiration =&gt; $expiration});</span></span></code> </pre><br>  Send a message to the exchanger for deferred messages. <br><br>  The 'expiration' parameter is important here.  This parameter specifies the message storage time in milliseconds.  After this time, the message will be removed from the queue.  But, as mentioned above, if the 'x-dead-letter-exchange' argument is specified for the queue, then simultaneously with the removal from the queue, the message will be sent to the exchanger specified in the argument, which in turn will send the message to the usual queue associated with it for immediate delivery. <br><br><h4>  Thin moment with routing_key </h4><br>  As you remember, in the recipient we created one exchanger of the type 'direct' and two queues interlaced with it for different keys.  Such a scheme can be used to send messages on one topic to two different recipients, for example, sending a log to a file or to the console, depending on the situation.  For which queue to send a message, the routing_key key is responsible. <br><br>  Now imagine that two messages with two different keys need to be set aside.  We will send them to the exchanger for deferred messages, the exchanger will have to decide which queue to send them to.  But they have different routing_key, so the exchanger, if it were of the type 'direct', could not send them to the same queue. <br><br>  That is why the exchanger for deferred messages is done like 'fanout' - this type of exchanger ignores routing_key and sends messages to all the queues that are intertwined with it.  In our case, only one queue is interlaced - the queue for pending messages.  Accordingly, all messages with any routing_key sent to the exchanger for pending messages will go to this queue. <br><br>  The attentive reader in this place should ask: “And with what routing_key will the messages be sent to the usual exchanger after the expiration of their retention in the message queue?” <br><br>  They will be sent with the same routing_key that they had.  The value of routing_key does not change if you do not specifically do anything for this (but if you wish, you can configure the queue to change the routing_key). <br><br><h4>  Launch </h4><br>  First you need to run consumer_dlx.pl, then you can run producer_dlx.pl with different parameters. <br><br>  Parameters: [message] [key mykey or mykey2] [delay in milliseconds]. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/8c6/64f/223/8c664f22356289efdd3c705150c35f63.png" alt="image"><br><br>  It is not visible on the static picture, but after launching producer_dlx.pl with an indication of the delay, this very delay occurs, and then consumer_dlx.pl displays a message (the key is displayed in brackets). <br><br><h4>  WARNING </h4><br>  As the user <a href="https://habrahabr.ru/users/tsyganov_ivan/" class="user_link">Tsyganov_Ivan</a> correctly suggested to me here, there is a problem with messages that have different expired.  The fact is that messages “exit” from the queue in a strictly sequential manner (that’s why it’s a queue).  Because of this, a situation is possible when a message with a large expired, going ahead, will “block” the output from the queue to messages that have a small expired, even if this small expired has already expired. <br><br>  Therefore, if all of a sudden you have to specify different 'expired' for different queues, then instead of one common deferred queue, make several individual deferred queues - each has its own deferred queue. <br><br>  A more universal solution for arbitrary values ​​of 'expired' is described in the <a href="http://habrahabr.ru/post/235983/">second part of the article</a> . </div><p>Source: <a href="https://habr.com/ru/post/235505/">https://habr.com/ru/post/235505/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../235491/index.html">Do you really need the source code?</a></li>
+<li><a href="../235493/index.html">Structure attachments to list items in Sharepoint 2010</a></li>
+<li><a href="../235495/index.html">How to buy shares of IT companies before, during and after the IPO</a></li>
+<li><a href="../235501/index.html">Asus smart watches at IFA 2014</a></li>
+<li><a href="../235503/index.html">HeadHunter 2014 programmers start recruiting</a></li>
+<li><a href="../235507/index.html">Hardly ever a telescope will be built</a></li>
+<li><a href="../235511/index.html">Together more fun: python + flask + google app engine</a></li>
+<li><a href="../235513/index.html">Qt. Codec Perestroika</a></li>
+<li><a href="../235521/index.html">About me, about school 1C and about the June module of the course "Management of software development"</a></li>
+<li><a href="../235523/index.html">View Torrent-TV in the LiveTV XBMC interface, under Linux</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

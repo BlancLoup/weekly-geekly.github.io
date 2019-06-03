@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Cisco ASA traffic accounting using NetFlow, nfdump, and MySQL on FreeBSD or Linux (Part 2)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction 
+ A few months ago, I had several Cisco ASA devices of different models. After configuring them, I had a question about counting the traf...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Cisco ASA traffic accounting using NetFlow, nfdump, and MySQL on FreeBSD or Linux (Part 2)</h1><div class="post__text post__text-html js-mediator-article"><h4>  Introduction </h4><br>  A few months ago, I had several <b>Cisco ASA</b> devices of different models.  After configuring them, I had a question about counting the traffic that will pass through them.  I decided to keep records using the standard NetFlow protocol, which is supported by this equipment.  But what a bad luck, to this day there is no free solution for traffic accounting that can normally count and account for traffic by users. <br><br>  The only thing that could be found on the Internet is the ability to configure the equipment so that it sends NetFlow packets to a specific host, where these packets are stored in files.  But the description of how to get normal statistics on users using these files, just was not found.  Therefore, I decided to write my own application, which can show statistics on users and keep records of traffic in the company. <br><br>  The first thing I had to start with was to study this article - <a href="http://habrahabr.ru/post/127613/">http://habrahabr.ru/post/127613/</a> (the author of <a href="http://habrahabr.ru/users/gag_fenix/" class="user_link">gag_fenix has a lot of</a> respect).  This is the only normal and complete article on how you can receive and account for traffic on <b>Cisco ASA</b> network equipment using <b>nfdump</b> .  This article perfectly describes only the implementation of how to configure the equipment to transfer NetFlow packets to a host, as well as how to use the data for subsequent analysis.  The very analysis of traffic and its accounting is not considered in the article. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Before reading further, I strongly recommend that you carefully study the above article, as some features of the settings will be omitted.  The article will look at such questions as how to keep track of NetFlow (using MySQL on the collector), how to calculate VPN traffic, what type of packets to consider, how to avoid “doubling” and “duplicating” traffic, and how to use my application. <br><a name="habracut"></a><br><h4>  What you need to know about NetFlow, which is used on <b>Cisco ASA</b> equipment </h4><br>  To whom the theory is not interesting, just skip this section. <br><br>  Looking ahead, I will say the following, that I failed to make friends with other " <b>software</b> " routers that use NetFlow.  For example, I could not make a router like <a href="http://www.pfsense.org/">pfSense</a> , because the plugin responsible for sending NetFlow provides incorrect data (in my case there were packets where traffic was calculated in <b>terabytes</b> over a period of 10 minutes). <br><br>  <b>NetFlow v9 is</b> supported by Cisco hardware starting with <b>ASA 5505</b> . <br><br>  The average amount of NetFlow traffic in a company will be 10-20 megabytes per hour, so don’t rush to allocate a port for your collector using a 1 Gbit / s switch.  In my case, the amount of traffic is no more than 15 megabytes per hour from several Cisco ASA devices. <br><br>  Now let's start with what type of NetFlow packet or what type of packet to use for traffic accounting.  There are 4 types of them: <b>DENIED, CREATED, UPDATED, DELETED (Torn Down)</b> .  On the other equipment, only <b>IGNORED</b> is still found, for example, in the same <b>pfSense</b> (there NetFlow packages do not differ in type). <br><br>  <b>DENIED</b> - NetFlow packets, which indicate which traffic was blocked, the amount of traffic will always be zero in the incoming or outgoing field, therefore we will ignore this type; <br><br>  <b>CREATED, UPDATED</b> - NetFlow packets that specify initialization ( <b>CREATED</b> ), and periodic traffic updates after initialization ( <b>UPDATED</b> ), these types will also not be taken into account by us for traffic accounting (explanation below); <br><br>  <b>DELETED (Torn Down)</b> - NetFlow packets, which contain complete information about the traffic that was completed, the amount of incoming and outgoing traffic "always" must satisfy the following formula <b>CREATED + UPDATED = DELETED</b> , this type we will take into account. <br><br>  In order to avoid " <b>doubling</b> " of traffic, you must use either <b>CREATED + UPDATED</b> packets, or only <b>DELETED</b> .  If you use both, your real traffic will be displayed as real traffic multiplied by two!  Ideally, you should consider <b>CREATED + UPDATED</b> traffic, as these 2 types give a more accurate idea of ​​how busy your Internet is at the current time.  <b>DELETED</b> is the traffic information in which the session has ceased to exist, and for example, if someone in the company puts a very large file download in the morning and stops downloading it in the evening, then the traffic data will be displayed <b>ONLY</b> in the evening! <br><br>  Alas, but I had to keep track of traffic as <b>DELETED</b> , since there is a bug in the <b>Cisco NetFlow + nfcapd (nfdump) + UPDATED bundle</b> .  The bug is that with a certain frequency when <b>parsing nfdump</b> in <b>UPDATED</b> packets, traffic of <b>4.3 GB</b> is encountered.  I could not figure out what caused this bug, or the implementation of the <b>Cisco</b> equipment itself, where the package contains some “tricky” information that <b>nfdump</b> cannot handle, or a bug in the <b>nfcapd + nfdump</b> implementation <b>itself</b> .  In the <b>DELETED</b> packages such a bug was not noticed for a couple of months of equipment operation. <br><br><h4>  How to keep track of NetFlow, including VPN traffic </h4><br>  To whom and this theory is not interesting, also skip this section. <br><br>  It is clear that we want to consider and take into account only the " <b>real</b> " traffic that comes <b>ONLY</b> from the provider.  And we do not want local traffic to be added to this traffic, for example, traffic between the <b>LAN</b> and the <b>DMZ</b> , or traffic between all the " <b>white</b> " hosts on your subnet (the IP address subnet assigned by your provider).  Everything is simple here, we consider only such traffic from the NetFlow package, where our local host goes somewhere to the Internet and filter the traffic that goes either to the <b>DMZ</b> , or to some of your " <b>white</b> " IP address, or any <b>VPN</b> subnet (why ignore <b>VPN</b> subnet described below). <br><br>  The whole snag is based on <b>real</b> traffic, where any type of <b>VPN is used</b> .  For example, the following <b>VPN</b> traffic routes: <b>LAN (DMZ) -to-VPN, VPN-to-LAN (DMZ), VPN-to-VPN, VPN-to-INTERNET</b> .  So, after analyzing the files using the <b>nfdump</b> utility, I made the following conclusions on how to account for traffic with such routes.  If you want to know how much <b>VPN</b> traffic is consumed by your employees, for example, <b>LAN (DMZ) -to-VPN, VPN-to-VPN</b> , then you just have to consider this traffic as it is, that is, just count the amount of traffic that comes from your local subnet or <b>DMZ</b> on the <b>VPN</b> subnet, or <b>VPN-to-VPN</b> (this number will almost accurately reflect the amount of <b>VPN</b> traffic consumed).  The received amount of <b>VPN</b> traffic cannot be used for “ <b>real</b> ” traffic accounting, since “ <b>real</b> ” traffic will be displayed between white IP addresses, for example, between your IP office and remote client IP, or between white IP 2x offices.  Firstly, this number will fully reflect the amount of <b>VPN</b> traffic between white hosts, and secondly, this number will be significantly higher than the amount of <b>ANY-to-VPN</b> traffic, since this amount will take into account such traffic as <b>VPN-to-INTERNET</b> , as well as additional system traffic. <br><br>  Thus, traffic accounting must be done on your <b>WAN</b> subnets along with the <b>LAN</b> .  We do 2 traffic counts: <b>WAN-to -! (LAN, DMZ, VPN, YOUR WAN)</b> and <b>! (LAN, DMZ, VPN, YOUR WAN) -to-WAN</b> .  So we will accurately take into account all the " <b>real</b> " traffic, as well as the traffic that is initialized on the <b>Cisco ASA</b> themselves, or comes from outside.  <b>VPN-to-INTERNET</b> traffic accounting is accounted for exactly the same way as <b>LAN (DMZ) -to-INTERNET</b> . <br><br>  The final formula for calculating <b>real</b> traffic on NetFlow: <b>(LOCAL-to-INTERNET) + (INTERNET-to-LOCAL)</b> <br><br>  <b>LOCAL</b> - these are all subnets like <b>WAN, LAN, DMZ, VPN</b> ; <br>  <b>INTERNET</b> - all other traffic that does not apply to <b>WAN, LAN, DMZ, VPN</b> . <br><br>  In practice, when calculating traffic of the type " <b>INTERNET-to-LOCAL</b> " you will only consider traffic of the type " <b>INTERNET-to-WAN</b> ", since you will not have other NetFlow data, for example, there will be no data like " <b>INTERNET-to- ( LAN, DMZ, VPN)</b> ". <br><br>  The final formula for calculating <b>VPN</b> traffic over NetFlow: <b>LOCAL-to-VPN</b> <br><br>  <b>LOCAL</b> - these are all <b>WAN, LAN, DMZ, VPN</b> subnets <br><br>  This <b>VPN</b> traffic <b>can NOT be</b> summed up with real traffic, as it already includes full statistics on all <b>VPN</b> sessions between <b>VPN_REMOTE_HOST-to-WAN</b> , <b>WAN-to-VPN_REMOTE_HOST</b> .  This traffic displays only the approximate amount of traffic that goes through <b>VPN</b> sessions. <br><br><h4>  From theory to practice or doing sensor and collector training </h4><br>  To begin with, I will write the versions of the software I work with at the time of this writing: <br><br>  <b>Cisco ASA</b> - <b>ASDM 7.1.6</b> , <b>ASA 9.1.5</b> ( <a href="http://software.cisco.com/download/type.html%3Fmdfid%3D279513399">http://software.cisco.com/download/type.html?mdfid=279513399</a> ) <br>  Collector (PC Core2Duo, <b>2GB RAM</b> , 160GB HDD) - <b>Debian 7.4</b> , <b>MySQL 5.5.35</b> , <b>Apache 2.2.22</b> , <b>PHP 5.4.4-14</b> <br>  <b>nfdump 1.6.12</b> ( <a href="http://sourceforge.net/projects/nfdump/files/stable/">http://sourceforge.net/projects/nfdump/files/stable/</a> ) <br><br>  We agreed that only NetFlow packages with a <b>DELETED</b> type will be considered.  Therefore, in the <b>ASDM, we will</b> only send this type of packet. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e42/7d0/fa1/e427d0fa1ef2b4058d6eb54409abec6b.jpg" alt="image"><br><br>  Now we need to prepare the collector.  All we need is to download the sources and compile them with <b>NSEL</b> support: <br><br><ul><li>  1) ./configure --enable-nsel </li><li>  2) make </li><li>  3) make install </li></ul><br><br><h5>  Preparation of <b>MySQL</b> database under NetFlow on the collector: </h5><br><br><ul><li>  1) Create a database: CREATE DATABASE NetFlow CHARACTER SET utf8 COLLATE utf8_general_ci; </li><li>  2) Add a netflow user: GRANT ALL PRIVILEGES ON NetFlow. * TO 'netflow' @ '%' IDENTIFIED BY 'nfpass' WITH GRANT OPTION; </li><li>  3) We reset privileges: FLUSH PRIVILEGES; </li><li>  4) Import a clean database: mysql -u <b>root</b> -p <b>root_pass</b> NetFlow &lt;/var/www/netflow/setup/netflow.sql (where <b>root_pass</b> , the password from your <b>MySQL</b> server). </li></ul><br><br><h5>  <b>MySQL</b> optimization: </h5><br>  In our case, we will need to change the default settings, since the database will use more resources than is written in the default <b>MySQL</b> config.  For example, only one <b>INSERT</b> request may be several megabytes.  The main task is to ensure that all <b>INSERT</b> requests pass, and the data are not lost, as I had at the very beginning of the study.  And also to optimize the performance of <b>SELECT</b> queries so that the database sends the data at a reasonable time.  I could not optimize the base for <b>InnoDB</b> , so I use <b>MyISAM</b> . <br><br>  Let me remind you that I have <b>2GB RAM</b> installed on my collector, so in your case the parameters may differ both up and down.  I will give my settings that helped me optimize <b>MySQL</b> : <br><br>  skip-innodb <br>  default-storage-engine = MyISAM <br>  sort_buffer_size = 4M <br>  myisam_sort_buffer_size = 256M <br>  key_buffer = 256M <br>  max_allowed_packet = 32M <br>  read_rnd_buffer_size = 2M <br>  thread_stack = 2M <br>  thread_cache_size = 16 <br>  query_cache_limit = 32M <br>  query_cache_size = 128M <br><br>  Rebooting <b>MySQL</b> : /etc/init.d/mysql restart <br><br>  If you have any problems with optimization, use the <b>perl</b> script from <a href="http://mysqltuner.com/">http://mysqltuner.com/</a> <br>  All the details of the use and optimization are written on the website, as well as during the execution of the script. <br><br><h5>  We define our subnets in the database: </h5><br>  Open your browser and follow the link <b>/ netflow / networks</b> <br>  Describe all your local subnets by <b>LAN, DMZ, WAN, VPN</b> <br>  Next, specify the subnets that belong to the <b>VPN</b> , for example, the subnet of the remote office or the subnet of remote clients. <br><br><h5>  We start our collector: </h5><br>  Before starting, check that you have installed the plugin <b>php5-mysql</b> or <b>php5-mysqlnd</b> <br><br>  / usr / local / bin / nfcapd -t 600 -w -p 9995 -l / netflow / nflogs -D -x '/ usr / bin / php5 /var/www/netflow/scripts/netflow.php% d /% f ' <br><br>  "/ netflow / nflogs" is the path to the logs; <br>  "/ usr / bin / php5 /var/www/netflow/scripts/netflow.php% d /% f" is the start of a <b>php</b> script after the file with logs is created. <br><br>  This script is the <b>heart</b> of traffic accounting, which collects statistics every 10 minutes, processes it and puts traffic data into the database, as well as cleans outdated data.  The script is optimized for the time interval for collecting statistics every 10 minutes, so do not change the parameter " <b>-t 600</b> ". <br><br>  If everything is done correctly, then NetFlow packets will come to your collector.  You can see the command: " <b>tcpdump port 9995</b> ".  If the packets come from your equipment to the port, then everything is fine, otherwise you have incorrectly configured your tsiska. <br><br><h4>  Total </h4><br>  This completes the configuration of the collector.  Now you can observe in detail who and how uses the Internet in your office.  This will help you 2 additional scripts that are in the folder " <b>/ netflow</b> " and " <b>/ netflow / admin</b> ".  The first script you can scare your employees to watch their own traffic, and use the second script for administrative viewing of all statistics. <br><br><h4>  Installation and description of my scripts </h4><br>  You can download the application here <a href="">netflow.tar.gz</a> , then unpack and copy the folder <b>/ netflow</b> to the root of your WEB directory, for example <b>/ var / www</b> <br><br>  There are several files in the archive: <br><br>  \ netflow \ setup \ crontab - <b>nfcap.sh</b> script <b>run</b> every 5 minutes is registered in the crown; <br>  \ netflow \ setup \ nfcap.sh is a script that checks the survivability of the <b>nfcapd</b> service and starts it if it is not started; <br>  \ netflow \ scripts \ netflow.php - a script that collects traffic information and puts it into the <b>MySQL database</b> ; <br>  \ netflow \ index.php - user script to view its statistics; <br>  \ netflow \ admin \ index.php - administrative script to view all statistics in the office; <br>  \ netflow \ networks \ index.php is a script with which you can manage subnets and maintain details on them. <br><br>  All files should be protected from users, except <b>\ netflow \ index.php</b> , for example through <b>.htaccess</b> <br><br><h4>  Some lyrics or how my application works </h4><br>  Now I will tell about the work of my application.  Who is not interested, feel free to skip this section, you have already received a free tool that keeps track of traffic in almost real time. <br><br>  First, I apologize for my “French”, as the scripts that display the statistics are written in an inconvenient form, from the point of view of programming.  I have my own excuses for this: I have not been programming for a long time, I have almost no experience in writing WEB applications, I really don’t know the structure of <b>HTML</b> and I don’t know the rules by which <b>HTML</b> pages are built using <b>PHP</b> . <br><br>  Secondly, in spite of the above, I tried to optimize and write structuredly the code that collects and processes the statistics, and also puts it into the <b>MySQL database</b> . <br><br>  For convenience of data display, <b>CSS</b> and <b>jQuery</b> scripts were used. <br><br>  At the beginning of development I had to meet with several global problems: <br><ul><li>  1) What netflow traffic count? </li><li>  2) How to calculate traffic and how to take it into account in <b>MySQL</b> ? </li><li>  3) How to take into account statistics <b>TOP-20</b> ? </li><li>  4) How to get more detailed statistics? </li></ul><br>  I tried to answer the first question at the beginning of this article.  In view of the long analysis of files using <b>nfdump</b> , I had to change the structure of my database several times, then complicate it, then simplify it. <br><br>  The second question was also answered at the beginning of this article.  The only thing that had to be done was to optimize data collection in such a way that the base would not swell to enormous size.  Therefore, there is only one <b>NetFlowData</b> table in the <b>database</b> , which stores all the logs for the last <b>2 days</b> .  This table can easily add about <b>100 megabytes</b> per day.  Therefore, I use this table for <b>DEBUG</b> 'a.  All other tables are optimized using data grouping. <br><br>  Before answering the third question, I will say that only <b>INTERNET</b> traffic is collected in <b>TOP-20</b> , and it does not include subnets like <b>ANY-to-LAN</b> , <b>ANY-to-DMZ</b> , <b>ANY-to-VPN</b> , <b>LOCAL-to-WAN</b> .  I could not solve the problem for a long time considering <b>TOP-20</b> , since the table in the database inflates to large sizes, about <b>100 thousand entries every 10 minutes</b> .  As a result, the size of the table easily adds 50 megabytes per day.  Optimizing it turned out only one way, it is to collect the full statistics per day, and then group the data in such a way, where the sum of <b>UPLOAD</b> or <b>DOWNLOAD is</b> more than 1 megabyte.  Thus, the number of entries in the table has fallen sharply to <b>several thousand</b> lines.  Even if any traffic is not taken into account, the <b>TOP-20</b> will still adequately display the statistics with minimal error. <br><br>  It would seem that you can stop at this, but I wanted to do the hourly detailing in order to know the amount of traffic consumed by a particular user at certain hours.  Here I had to complicate the code in the scripts that are responsible for displaying data. <br><br>  And finally, here are some screenshots of my application: <a href="">user.jpg</a> , <a href="">admin.jpg</a> , <a href="">top20.jpg</a> , <a href="">networks.jpg</a> <br><br>  Thank you all for your attention, enjoy your health! </div><p>Source: <a href="https://habr.com/ru/post/220431/">https://habr.com/ru/post/220431/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../220417/index.html">The Millennium Challenge: e-commerce in the B2B segment</a></li>
+<li><a href="../220421/index.html">The third book "Simple Science" is almost ready</a></li>
+<li><a href="../220423/index.html">And how are you intellectuals?</a></li>
+<li><a href="../220425/index.html">Configuring Apache to work with Caché DBMS on Linux</a></li>
+<li><a href="../220429/index.html">Gmail and Skype face ban in Russia. As well as the rest of email and IM services.</a></li>
+<li><a href="../220433/index.html">Slow work of SD cards - who is to blame and what to do?</a></li>
+<li><a href="../220435/index.html">Lytro introduced the second generation Plenoptic Camera.</a></li>
+<li><a href="../220437/index.html">Full stack web developer</a></li>
+<li><a href="../220445/index.html">PrintBox3d. 3d printer in Russian</a></li>
+<li><a href="../220447/index.html">How in Russia they press businesses dealing with Bitcoin</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

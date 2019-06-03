@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Synchronize MySQL + Git structure</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="To synchronize project files, history management, we use version control systems, for example, Git. However, when I had a question about controlling t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Synchronize MySQL + Git structure</h1><div class="post__text post__text-html js-mediator-article">  To synchronize project files, history management, we use version control systems, for example, Git.  However, when I had a question about controlling the versions of the structure of the MySQL base, it was not possible to find a satisfying solution. <br>  I note, in many frameworks and ORM, there are necessary out-of-the-box mechanisms - migration, versioning, etc.  But for the native work with MySQL - you have to do everything with pens.  And the idea came to try to create an automatic system for tracking changes. <br><a name="habracut"></a><br><h4>  Task </h4><br>  I wanted to change the database structure on the development-server, automatically update it on the production-server, and also see the history of all changes in Git, since it was already used to control the code.  And so everything is free and easy! <br>  For this, it is necessary to receive information on all change requests (CREATE, ALTER, DROP). <br><br><h4>  Solution start </h4><br>  MySQL supports 3 ways of logging: error logs (error logs), logs of all requests (general logs), and logs of slow queries (slow logs). <br>  I have not used the first option yet, but there are ideas (details below).  Now about the other two options. <br>  Logs can be written either to mysql tables or to files.  The format of the log files is rather inconvenient and I decided to use tables. <br><br>  <b>Attention, since we are talking about ALL mysql logs, this solution should only be used on a dev server without loading MySQL!</b> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The important point is the definition of the database to which the query goes, since it is in the SQL text of the query itself - this information may not be available. <br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> <span class="hljs-comment"><span class="hljs-comment">/*DB_NAME.*/</span></span>TABLE_NAME</code> </pre> <br>  It turned out that the general log writes only the stream number of the server, and in order to determine the database, we would have to search for an entry for this stream with an indication of the database used.  In addition, the logs contain information about connecting and disconnecting to the server. <br><br>  Mysql.general_log structure <br><img src="https://habrastorage.org/getpro/habr/post_images/f05/2cf/567/f052cf5676c5f2df9b95b3bde6466a98.png"><br><br>  But in slow_log, everything that was needed was found: firstly, the logs contain only information about queries, and secondly, the name of the database is remembered, in the context of which there are queries. <br><br>  Mysql.slow_log structure <br><img src="https://habrastorage.org/getpro/habr/post_images/779/738/953/779738953d0a62b4d2f59edbb53bcc48.png"><br><br>  Setting up slow log to record all requests is very simple in my.cnf <br> <code>log-output=TABLE</code> <br> <code>slow_query_log = 1</code> <br> <code>long_query_time = 0</code> <br> <code>log_slow_admin_statements = 1</code> <br> <br>  log_slow_admin_statements is needed to record ALTER requests. <br><br><h4>  Log processing </h4><br>  So, we need to constantly take all requests, select from them requests to change the structure of the database and clean up all the others. <br><br>  The mysql.slow_log table does not contain a key field, and it cannot be locked (and therefore partially delete records).  Therefore, we will create a table that will suit us. <br><br>  Structure change_structure_log <br><img src="https://habrastorage.org/getpro/habr/post_images/938/be5/144/938be5144f5520e73e530a0376bfc442.png"><br><br>  For the rotation of logs a small procedure: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">USE</span></span> mysql; DELIMITER $$ <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PROCEDURE</span></span> <span class="hljs-string"><span class="hljs-string">`change_structure_log_rotate`</span></span>() <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-comment"><span class="hljs-comment">-- Definition start drop table if exists slow_log_copy; CREATE TABLE slow_log_copy LIKE slow_log; RENAME TABLE slow_log TO slow_log_old, slow_log_copy TO slow_log; insert into change_structure_log (start_time,query_time,sql_text, db) select start_time, query_time, sql_text,db from slow_log_old where sql_text like "ALTER%" OR sql_text like "CREATE%" OR sql_text like "DROP%"; drop table slow_log_old; -- Definition end END $$</span></span></code> </pre><br><br>  And you can add it to the MySQL scheduler: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EVENT</span></span> <span class="hljs-string"><span class="hljs-string">`event_archive_mailqueue`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> SCHEDULE EVERY <span class="hljs-number"><span class="hljs-number">5</span></span> <span class="hljs-keyword"><span class="hljs-keyword">MINUTE</span></span> STARTS <span class="hljs-keyword"><span class="hljs-keyword">CURRENT_TIMESTAMP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> COMPLETION <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRESERVE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ENABLE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COMMENT</span></span> <span class="hljs-string"><span class="hljs-string">''</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DO</span></span> <span class="hljs-keyword"><span class="hljs-keyword">call</span></span> change_structure_log_rotate();</code> </pre><br><br>  So, we have a table with all requests to change the structure.  Now we will write a small script for its processing.  I will not use any particular language (I personally write in PHP, but because of the large number of dependencies in the code, it makes no sense to lay out the code). <br><br>  So: <br>  1. We loop through all the records in the change_structure_log table. <br>  2. For sql_text regular we pull out the database name, if it is, for example <br> <code>^ALTER\s+TABLE\s+(?:(?:ONLINE|OFFLINE)\s+)?(?:(?:IGNORE)\s+)?(?:([^\s\.]+)\.\s*)?([^\s\.]+)</code> <br>  3. If the request does not specify the name db - use it from the db field. <br>  4. Write to the project folder with Git all the records of the corresponding databases.  For example, 20140508150500.sql.log.  For queries without a database, at the beginning write use $ DB; <br>  5. Delete all processed records. <br><br>  So, we have new files in the project folder with requests to change the database, now we can commit them as usual in our Git client. <br><br>  Next, on the production server, we write a script that tracks the appearance of new files and executes them in mysql.  So, when updating the git repository on a production server together with the code, we change the database to the state on the dev server. <br><br>  <b>Upd.</b>  Also (at the tip of <a href="https://habrahabr.ru/users/dsidespb/" class="user_link">DsideSPb</a> ) you can use the hook for Git post-checkout, which will allow you to iterate on the update continuous and without external listeners. <br><br>  At once I will say that this solution is quite primitive and does not support many of the functions of Git.  However, based on it, we can do more cool things: by changing specific tables — for example, automatically changing the files of our ORM. <br>  Or automatically create Yaml schemes - using any MySQL client without additional plug-ins to it. <br>  It is also possible, for example, to track data changes in specific tables without changing the database structure itself (triggers, etc.), which can be useful for different CMS. <br><br>  PS If we also want to learn about slow queries - we can integrate it into our system, for this we need to remove the filter from the procedure and in our script make a query for slow queries and save them. </div><p>Source: <a href="https://habr.com/ru/post/221979/">https://habr.com/ru/post/221979/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../221961/index.html">How exactly do social media work for us?</a></li>
+<li><a href="../221963/index.html">Chinese domain code number</a></li>
+<li><a href="../221973/index.html">NSA is looking for new employees, informing them with an encrypted tweet</a></li>
+<li><a href="../221975/index.html">My story Imagine cup, or how Microsoft makes life brighter</a></li>
+<li><a href="../221977/index.html">Robotic snake to help people</a></li>
+<li><a href="../221983/index.html">US Robotics Pilot 5000 - the first successful PDA. Internals, modem, use with modern OS</a></li>
+<li><a href="../221987/index.html">Universal powerful PC the size of a smartphone: Tango PC</a></li>
+<li><a href="../221989/index.html">Targeting users: region, city, street</a></li>
+<li><a href="../221991/index.html">Hacker Battles: Parsing PHDays CTF and CTF Quals</a></li>
+<li><a href="../221997/index.html">Introduction to programming the DECT module SC14CVMDECT</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

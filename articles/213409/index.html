@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Configuring pgpool-II + PostgreSQL + Streaming replication + Hot standby in AWS</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello! 
+ I decided to describe the main points of setting up a PostgreSQL Failover (HA) cluster in the IaaS environment from Amazon - AWS. 
+
+ A lot of...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Configuring pgpool-II + PostgreSQL + Streaming replication + Hot standby in AWS</h1><div class="post__text post__text-html js-mediator-article">  Hello! <br>  I decided to describe the main points of setting up a PostgreSQL Failover (HA) cluster in the IaaS environment from Amazon - AWS. <br><br>  A lot of articles have already been written about the configuration of this bundle since the release of version 9 with native replication, so I will not dwell on the configuration of PostgreSQL and pgpool itself, everything is relatively standard.  The given pieces of configs are unsuitable for mindless copy-paste, in any case, you have to open your configs and edit the necessary parameters.  I do not want to encourage the configuration process using the copy-paste method. <br><a name="habracut"></a><br><h5>  Terminology: </h5><br>  Streaming replication - means that the postgres nodes will themselves pull updates from the wizard.  No need for additional archive functionality. <br>  Hot standby - allows slave nodes to serve READ requests for load balancing, in contrast to warm standby, in which the slave server does not serve customer requests, but only constantly pulls up to date from the wizard.  In turn, replication can be synchronous and asynchronous (sync or async). <br>  In my example, the usual server slab master-slave bundle in it cannot be used synchronous replication, because during synchronous replication, the master, failing to send a replica to the slave, simply does not fulfill the request and will hang waiting for the slave and the whole point in such a scheme will be lost . <br><br><h5>  Input data: </h5><br>  The created configuration should not have a single point of failure.  At the pgpool level, we will use its native watchdog functionality to be able to track down the fall of one of the nodes and drag and drop the IP through which the client application is connected.  At the postgresql level, we use streaming replication + hot standby.  In the event that the master crashes, its role will quickly be taken by the slave, the slave in the master will turn the pgpool by creating the file trigger in $ PGDATA.  In the case of a slave falling, we will bring it back to life manually, since  any automatic manipulations with the databases are not brought to the good and the abnormal situation of the node's fall in any case requires attention.  In all described cases of a fall, the client application must continue to function with minimal downtime. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Four virtual machines are created in AWS (Amazon Web Services) cloud: pgpool-1 (IP: 10.0.3.11), pgpool-2 (IP: 10.0.3.12), db-1 (IP: 10.0.3.21), db-2 ( IP: 10.0.3.22).  Machines are created immediately in the VPC, in order to be able to assign private addresses and they would be saved between instances of reboots.  When creating instances, I used the image of ami-8e987ef9 with Ubuntu.  But if you have the opportunity to choose any image - take Amazon Linux, why I think you will learn from the text. <br><br><h5>  Configuration: </h5><br>  1. <b>db-1</b> - wizard at the start of the bundle <br><blockquote>  ... <br>  wal_level = hot_standby <br>  <i># The following parameter is ignored on the master server, but due to the fact that master and slave can change places, we include it in the master config</i> <br>  hot_standby = on <br>  ... <br></blockquote><br>  In accordance with our needs, we adjust the values ​​for <br>  checkpoint_segments, max_wal_senders, wal_keep_segments <br>  To start replication, they can be left by default, and then podtyunit, after reading <a href="https://wiki.postgresql.org/wiki/Tuning_Your_PostgreSQL_Server">wiki.postgresql.org/wiki/Tuning_Your_PostgreSQL_Server</a> <br><br>  In pg_hba.conf we set up access to replication, you can use a password, because  I have everything in the cloud VPC is spinning and does not have direct access from the outside, I just registered trust: <br><blockquote>  host replication postgres 10.0.3.0/24 trust </blockquote><br>  2. <b>db-2</b> - slave at the start of the bundle <br><blockquote>  ... <br>  wal_level = hot_standby <br>  hot_standby = on <br>  ... </blockquote><br>  The behavior of standby for the slave is controlled by the file recovery.conf, which must be in $ PGDATA. <br>  In my case it was the directory /var/lib/postgresql/9.3/main <br>  recovery.conf: <br><blockquote>  standby_mode = 'on' <br>  primary_conninfo = 'host = 10.0.3.21 port = 5432 user = postgres' <br>  trigger_file = '/var/lib/postgresql/9.3/main/postgresql.trigger' </blockquote><br>  Do not forget about the settings for accessing pg_hba.conf <br><br>  3. <b>pgpool-1</b> <div class="spoiler">  <b class="spoiler_title">pgpool.conf:</b> <div class="spoiler_text"><blockquote>  ... <br>  backend_hostname0 = '10 .0.3.21 ' <br>  backend_port0 = 5432 <br>  backend_weight0 = 1 <br>  backend_data_directory0 = '/var/lib/postgresql/9.3/main' <br>  backend_flag0 = 'ALLOW_TO_FAILOVER' <br><br>  backend_hostname1 = '10 .0.3.22 ' <br>  backend_port1 = 5432 <br>  backend_weight1 = 1 <br>  backend_data_directory1 = '/var/lib/postgresql/9.3/main' <br>  backend_flag1 = 'ALLOW_TO_FAILOVER' <br><br>  <i># Because</i>  <i>we have Hot Standby:</i> <br>  load_balance_mode = on <br>  <i># We will work Streaming replication</i> <br>  master_slave_mode = on <br>  master_slave_sub_mode = 'stream' <br>  sr_check_period = 10 <br>  sr_check_user = 'postgres' <br>  sr_check_password = '' <br>  delay_threshold = 100 <br>  <i># It makes sense when slaves&gt; 1</i> <br>  follow_master_command = '' <br>  <i>What to do when the node disappears:</i> <br>  failover_command = '/etc/pgpool2/failover.sh% d% P% H% R' <br>  <i>What to do when the dropped node returns:</i> <br>  failback_command = '' <br>  <i># Run failover when we cannot connect to the backend</i> <br>  fail_over_on_backend_error = on <br>  search_primary_node_timeout = 10 <br>  <i># What kind of user will we do online recovery</i> <br>  recovery_user = 'postgres' <br>  recovery_password = '' <br>  <i># At the first stage, pgpool continues to accept connections and requests from clients; the second stage does not.</i> <i><br></i>  <i># The running script should be in $ PGDATA</i> <br>  recovery_1st_stage_command = 'basebackup.sh' <br>  recovery_2nd_stage_command = '' <br>  <i># How many seconds are waiting for node recovery</i> <br>  recovery_timeout = 90 <br>  <i># We will use watchdog to monitor the status of pgpool</i> <br>  use_watchdog = on <br>  wd_hostname = 'pgpool-1' <br>  wd_port = 9000 <br>  wd_authkey = '' <br>  <i># Virtual address to which the client application will connect:</i> <br>  delegate_IP = '10 .0.3.10 ' <br>  <i># Where will the interface management scripts lie:</i> <br>  ifconfig_path = '/ opt / AWS' <br>  <i># Execute the command to assign a virtual IP node</i> <br>  if_up_cmd = 'if.sh up $ _IP_ $' <br>  <i># We execute the command to remove the virtual IP from the node</i> <br>  if_down_cmd = 'if.sh down $ _IP_ $' <br>  <i>#Pgpool performs arping while dragging a virtual interface for an early update of the ARP cache</i> <br>  arping_cmd = '' <br>  <i>How can we check the liveliness of the neighboring pgpool node:</i> <i><br></i>  <i>#heartbeat or try to send database requests through it</i> <br>  wd_lifecheck_method = 'heartbeat' <br>  # Interval in seconds between checks: <br>  wd_interval = 4 <br>  <i># Which port helmet:</i> <br>  wd_heartbeat_port = 9694 <br>  <i># Interval between keepalive packages</i> <br>  wd_heartbeat_keepalive = 2 <br>  <i># The time after which we consider the silent node to have disappeared:</i> <br>  wd_heartbeat_deadtime = 15 <br>  <i># Address of the next node:</i> <br>  heartbeat_destination0 = 'pgpool-2' <br>  heartbeat_destination_port0 = 9694 <br>  <i># You can specify on which interface to work heartbeat'u</i> <br>  heartbeat_device0 = '' <br>  <i># Describe the parameters of another node:</i> <br>  other_pgpool_hostname0 = 'pgpool-2' <br>  other_pgpool_port0 = 9999 <br>  other_wd_port0 = 9000 <br>  ... </blockquote><br></div></div><br>  4. <b>pgpool-2</b> <br>  The config is identical to pgpool-1, the descriptions of the neighboring node are changed from pgpool-2 to pgpool-1 <br><br>  In / etc / hosts on both nodes, set the name binding to ip: <br><blockquote>  10.0.3.11 pgpool-1 <br>  10.0.3.12 pgpool-2 <br>  10.0.3.21 db-1 <br>  10.0.3.22 db-2 </blockquote><br>  5. Integration of pgpool to work with our databases <br>  From the pgpool-1 and pgpool-2 side, we create a script from the failover_command parameter that runs when the node is dropped (I have an automatic action performed only when the master node is dropped).  All that it does is actually checked by the master if the node is dropped or not, and if the master creates a trigger file on the slave that automatically switches the slave to READ-WRITE mode, i.e.  makes him a master: <br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash -x FALLING_NODE=$1 # %d OLDPRIMARY_NODE=$2 # %P NEW_PRIMARY=$3 # %H PGDATA=$4 # %R KEY_PATH="/var/lib/postgresql/.ssh/id_rsa" if [ $FALLING_NODE = $OLDPRIMARY_NODE ]; then if [ $UID -eq 0 ] then sudo -u postgres ssh -T -i $KEY_PATH postgres@$NEW_PRIMARY "touch $PGDATA/postgresql.trigger" exit 0; fi ssh -T -i $KEY_PATH postgres@$NEW_PRIMARY "touch $PGDATA/postgresql.trigger" fi; exit 0;</span></span></code> </pre> <br><br>  From the db-1 and db-2 side, we install the pgpool scheme for work: <br><pre> <code class="bash hljs">sudo -u postgres psql -f /usr/share/postgresql/9.3/extension/pgpool-recovery.sql template1</code> </pre><br>  Create a pgpool_remote_start script in $ PGDATA that will start postgresql on the next node [depending on the version of postgresql you use, you may need the second parameter passed by pgpool pointing to the $ PGDATA directory for the node]: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /bin/sh DEST=$1 PGCTL=/usr/bin/pg_ctlcluster KEY_PATH="/var/lib/postgresql/.ssh/id_rsa" ssh -T -i $KEY_PATH postgres@$DEST "$PGCTL 9.3 main stop --force;$PGCTL 9.3 main restart"</span></span></code> </pre><br>  As well as a script from the recovery_1st_stage_command parameter which will synchronize with the current master of new slaves (also lies in $ PGDATA next to pgpool_remote_start): <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /bin/sh datadir=$1 desthost=$2 destdir=$3 KEY_PATH="/var/lib/postgresql/.ssh/id_rsa" PGCTL="/usr/bin/pg_ctlcluster" ssh -T -i $KEY_PATH postgres@$desthost "$PGCTL 9.3 main stop --force" psql -c "SELECT pg_start_backup('Streaming Replication', true)" postgres rsync -C -a -c --delete -e ssh --exclude postgresql.conf --exclude postmaster.pid \ --exclude postmaster.opts --exclude pg_log \ --exclude recovery.conf --exclude recovery.done \ --exclude pg_xlog $datadir/ $desthost:$destdir/ ssh -T -i $KEY_PATH postgres@$desthost "cp $destdir/../recovery.done $destdir/recovery.conf;rm $destdir/postgresql.trigger" psql -c "SELECT pg_stop_backup()" postgres</span></span></code> </pre><br><br>  5. To be able to execute commands related to restarting services and copying data to remote hosts, you need to configure password-free access: <br><blockquote>  pgpool-1 -&gt; db-1, db-2 <br>  pgpool-2 -&gt; db-1, db-2 <br>  db-1 -&gt; db-2 <br>  db-2 -&gt; db-1 <br></blockquote>  You can use host-based ssh, you can generate ssh keys and enable them in authorized_keys. <br>  After setting up access, you need to check it on behalf of the user who will run the scripts while pgpool is running, I have this postgres: <br>  From the host pgpool-1 we perform: <br><pre> <code class="bash hljs">sudo -u postgres ssh -i /path_to_key -T postgres@db-1 id</code> </pre><br>  And so for all the necessary hosts, we check access and update the known_hosts file for ssh. <br><br>  At this stage, a bunch of 4 nodes could already be started for normal operation outside the AWS environment. <br><ul><li>  We start the master host (db-1) </li><li>  Synchronize the slave with it (postgresql is not yet running on it), execute the $ PGDATA directory: <br><pre> <code class="bash hljs">mv main main.bak &amp;&amp; sudo -u postgres pg_basebackup -h 10.0.3.21 -D /var/lib/postgresql/9.3/main -U postgres -v -P &amp;&amp; cp recovery.done main/recovery.conf &amp;&amp; chown postgres:postgres main/recovery.conf</code> </pre>  (recovery.done - the created recovery.conf template which refers to the IP wizard) </li><li>  We start postgresql on the slave: <br><pre> <code class="bash hljs">sudo service postgresql restart</code> </pre></li><li>  We look at the state of replication through “select * from pg_stat_replication”, we see something like this: <br><blockquote>  application_name |  walreceiver <br>  client_addr |  10.0.3.22 <br>  state |  streaming <br>  sent_location |  1 / 2A000848 <br>  write_location |  1 / 2A000848 <br>  flush_location |  1 / 2A000848 <br>  replay_location |  1 / 2A000848 <br>  sync_priority |  0 <br>  sync_state |  async </blockquote>  or simply check for the presence of wal sender / receiver in the process list on db-1 and db-2 hosts. </li></ul><br>  After launching, the first pgpool that is launched pulls the virtual address from delegate_IP over itself by executing the command from the if_up_cmd parameter (by default there is just ifconfig). <br>  Record in logs: <br><blockquote>  wd_escalation: escalated to master pgpool successfully </blockquote>  After a while, running the second pgpool in the logs, we see that the neighboring pgpool node was successfully identified and the bundle worked: <br><blockquote>  find_primary_node: primary node id is 0 </blockquote>  The status of the pool can be viewed by one of the pcp_ * commands - pcp_pool_status, pcp_node_info, or by querying via pgpool of the show pool_nodes;, show pool_pools; nodes <br>  All these commands, as well as the statuses of the nodes in the pool, are very well described in the pgpool documentation - <a href="http://www.pgpool.net/docs/pgpool-II-3.3.2/doc/pgpool-en.html">www.pgpool.net/docs/pgpool-II-3.3.2/doc/pgpool-en.html</a> <br><br>  If you disable the first pgpool, the second would drag the delegate_ip over to itself with a command from the if_up_cmd parameter. <br>  When the db-1 or db-2 bend falls, the command from the failover_command parameter is executed. <br>  To return the backend to the pool, use the pcp_attach_node and pcp_recovery_node commands. <br><br><h5>  AWS Staff: </h5><br>  What happens in AWS?  Everything is the same except that the IP address must be previously assigned to the network interface through the “Assign a secondary private address” setting in the Network Intefaces menu.  For Amazon Linux about which I wrote earlier, it is possible to automatically assign this address to a running instance and further crawl it between pgpool-1 and pgpool-2 if necessary (I personally did not test amazon linux, it would be very interesting to find out how smooth it all works ).  In the case of an image unadapted for AWS, I need to use additional scripts from the <b>ec2-api-tools set</b> . <br>  The latest version of api-tools is better to download from <a href="http://aws.amazon.com/developertools/351">amazon</a> . <br>  To work ec2-api-tools need Java, set - apt-get install default-jre <br>  The unpacked api-tools archive in aws / bin will contain scripts for managing aws through the console. <br>  But to work with amazon api, you must have an authorization key. <br>  The process of obtaining authentication data is described in detail on amazon here - <a href="http://docs.aws.amazon.com/IAM/latest/UserGuide/ManagingCredentials.html">docs.aws.amazon.com/IAM/latest/UserGuide/ManagingCredentials.html</a> and then <a href="http://docs.aws.amazon.com/IAM/latest/UserGuide/ManagingUserCerts.html">docs.aws.amazon.com/IAM/latest/UserGuide/ManagingUserCerts.html</a> <br>  On the first link we will learn how to create a user with keys and assign him the necessary group through the IAM menu ( <a href="https://console.aws.amazon.com/iam/home%3F">console.aws.amazon.com/iam/home?#users</a> when creating a key in open form is shown to the owner once if you do not have time to write it - it is necessary to generate another).  Amazon, when first attempting to create a key, strongly recommends creating an individual user in the IAM menu for this purpose, instead of creating a key under the account of the AWS administrative account. <br>  In the second link, we will learn how to create your certificate and register it all in the same IAM AWS menu: <br><blockquote>  openssl genrsa 1024&gt; private-key.pem <br>  openssl pkcs8 -topk8 -nocrypt -inform PEM -in private-key.pem -out private-key-in-PCKS8-format.pem <br>  openssl req -new -x509 -nodes -sha1 -days 3650 -key private-key.pem -outform PEM&gt; certificate.pem </blockquote><br>  The content of certificate.pem is uploaded to AWS in IAM.  Certificates can be managed through the IAM Security Credentials menu: <br><img src="https://habrastorage.org/getpro/habr/post_images/3fa/6a8/89d/3fa6a889d04633b4afc6ee570bd26633.jpg"><br><br>  After all these manipulations, we have: <br>  certificate.pem for EC2_CERT parameter <br>  private-key-in-PCKS8-format.pem for EC2_PRIVATE_KEY, AWS_ACCESS_KEY and AWS_SECRET_KEY. <br><br>  You can start using ec2-api-tools. <br>  For this, I created an if.sh script that will drag delegate_IP for pgpool between instances.  The script as parameters receives the action that must be performed with the interface (up / down) and the desired ip address for the interface.  Next, the script calculates the subnet for the entered IP (I use / 24 and I just cut off the last octet, so who doesn’t have the mask / 24, the script will have to be finished).  I consider the subnet because  On instances, two interfaces are used - the main one and the management, in order to understand which of them needs to hang the secondary ip. <br><br><div class="spoiler">  <b class="spoiler_title">Script if.sh:</b> <div class="spoiler_text"><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh if test $# -eq 0 then echo "This scripts adds and removes ip to subinterfaces and to AWS VPC configuration." echo "Don't forget to set variables inside this script." echo echo Usage: $0' [up|down] IP_ADDRESS' echo exit 1 fi #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #CORRECT VALUES MUST BE SET PRIOR TO RUN THIS SCRIPT #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #Proxy if used: export EC2_JVM_ARGS='-Dhttp.proxySet=true -Dhttps.proxySet=true -Dhttp.proxyHost=xxxx -Dhttp.proxyPort=3128 -Dhttps.proxyHost=xxxx -Dhttps.proxyPort=3128' #Path to unpacked ec2-api from http://s3.amazonaws.com/ec2-downloads/ec2-api-tools.zip export EC2_HOME=/opt #Path to java export JAVA_HOME=/usr #Path to generated private key &amp; cert (READ http://docs.aws.amazon.com/IAM/latest/UserGuide/ManagingUserCerts.html) export EC2_PRIVATE_KEY=/opt/private-key-in-PCKS8-format.pem export EC2_CERT=/opt/certificate.pem #User access &amp; secret key (READ http://docs.aws.amazon.com/IAM/latest/UserGuide/ManagingCredentials.html) export AWS_ACCESS_KEY=YOUR_ACCESS_KEY export AWS_SECRET_KEY=YOUR_SECRET_KEY #Region for this EC2 instance REGION=YOUR_REGION #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! AWS_PATH=$EC2_HOME VIP=$2 subnet () { SUB=`echo $VIP | awk '{ split($0,a,"."); print a[1]"."a[2]"."a[3]"."; }'` SUBNET=`$AWS_PATH/bin/ec2-describe-subnets --region $REGION | grep -F $SUB | awk '{print $2}'` echo Subnet-id: $SUBNET if [ -z "$SUBNET" ]; then echo "Wrong subnet!" exit 1; fi Instance_ID=`/usr/bin/curl --silent http://169.254.169.254/latest/meta-data/instance-id` echo Instance_ID=$Instance_ID ENI_ID=`$AWS_PATH/bin/ec2-describe-instances $Instance_ID --region $REGION | cut -f 2,3 | grep $SUBNET | awk '{print $1}'` echo ENI_ID=$ENI_ID } if_up () { subnet /usr/bin/sudo /sbin/ifconfig eth1:0 inet $VIP netmask 255.255.255.255 $AWS_PATH/bin/ec2-assign-private-ip-addresses -n $ENI_ID --secondary-private-ip-address $VIP --allow-reassignment --region $REGION } if_down (){ subnet /usr/bin/sudo /sbin/ifconfig eth1:0 down $AWS_PATH/bin/ec2-unassign-private-ip-addresses -n $ENI_ID --secondary-private-ip-address $VIP --region $REGION } case $1 in [uU][pP]) if_up break ;; [dD][oO][wW][nN]) if_down break ;; *) echo "Up/Down command missed!" exit 1 esac /usr/sbin/service networking restart &gt; /dev/null 2&gt;&amp;1</span></span></code> </pre><br></div></div><br>  To manage real elastic IP, you can use ec2-associate-address and ec2-unassign-private-ip-addresses. <br><br>  Actually, these movements had to be performed in order to make friends a pgpool that does not work on an Amazon Linux instance, with AWS. </div><p>Source: <a href="https://habr.com/ru/post/213409/">https://habr.com/ru/post/213409/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../213399/index.html">Disassembling and Taming Tube Guitar Sound</a></li>
+<li><a href="../2134/index.html">Altimo sold Golden Telecom to its Cypriot “daughter”</a></li>
+<li><a href="../21340/index.html">"Office 2.0" - the first coworking office in Kiev</a></li>
+<li><a href="../213403/index.html">Applying a Poisson transform for seamless image overlay</a></li>
+<li><a href="../213405/index.html">Weather station with Ethernet and tablet as a display device</a></li>
+<li><a href="../21341/index.html">Does anyone know what it is with gum?</a></li>
+<li><a href="../213411/index.html">Unpacking, editing and packaging of DVR firmware and IP cameras from Xiong Mai</a></li>
+<li><a href="../213413/index.html">The trouble with web security or the most secure bank of America</a></li>
+<li><a href="../213415/index.html">Google Maps v2 for Android: Pop-up window with full redraw and input event support</a></li>
+<li><a href="../213417/index.html">Smart video player or just gesture recognition</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
