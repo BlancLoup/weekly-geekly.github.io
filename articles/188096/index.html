@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Failover Master-Slave Cluster on PostgreSQL</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Greetings, habrozhiteli! 
+ In this article I want to share the experience of deploying a Master-slave cluster on a PostgreSQL DBMS. Fault tolerance is...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Failover Master-Slave Cluster on PostgreSQL</h1><div class="post__text post__text-html js-mediator-article">  Greetings, habrozhiteli! <br>  In this article I want to share the experience of deploying a Master-slave cluster on a PostgreSQL DBMS.  Fault tolerance is achieved using the pgpool-II (failover, online recovery) features. <br>  pgpool is an excellent tool for scaling and load distribution between servers and, I think, few people know about the automatic creation of failover on the slave server when the master fails and how to add new capacity to an already running cluster without shutting down the entire cluster. <br><a name="habracut"></a><br><br><h5>  Cluster layout and machine requirements </h5><br>  The figure shows a typical master-slave cluster scheme. <br><img src="https://habrastorage.org/storage2/69a/3f0/d2d/69a3f0d2d6f5636e0007c55d938bc6ca.png" alt="image"><br>  A cluster must contain 1 master server (Master), at least 1 slave (Slave), 1 scaling node (Balancer). <br>  When each of the servers must have a Linux distribution installed (I have Red Hat 6.1 installed), the gcc compiler must be installed on the scaling node. <br>  PostgreSQL version 9.0.1, pgpool-II 3.0.5.  You can use other versions of the DBMS and pgpool.  In this case, refer to the documentation. <br><br><h5>  Setting up a remote connection between cluster servers </h5><br>  Online recovery and failover require setting up a remote connection via SSH without a password.  To do this, you need to create the SSH keys of the <code>postgres</code> user and distribute them to the <code>postgres</code> users on each of the servers. <br>  <b>An important point!</b>  For online recovery, it is necessary that when opening a remote session, you can switch to another remote session (i.e., you can implement the following SSH transition mechanism without a password: the scaling node — the master server — the slave server and the scaling node — the slave server — the master server). <br>  For failover, you need to create an SSH key of the <code>root</code> on the scaling node and send the master and slave servers to <code>postgres</code> users. <br>  This step is important when setting up, so make sure that you can connect from a remote session of one of the servers to another. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h5>  Configure Streaming Replication </h5><br>  First you need to open the reception / transmission of data on port 5432 (standard PostgreSQL port) in iptables. <br>  Edit the master server's <code>$PGDATA/postgresql.conf</code> configuration file as follows: <br><pre> <code class="bash hljs">listen_addresses = <span class="hljs-string"><span class="hljs-string">'*'</span></span> wal_level = hot_standby max_wal_senders = 2 wal_keep_segments = 32 <span class="hljs-comment"><span class="hljs-comment">#hot_standby = on</span></span></code> </pre><br>  I note the importance of the last line.  The fact is that it will be used in the recovery script of the slave node, so it must be changed as described above. <br>  Next, add lines for replication in <code>$PGDATA/pg_hba.conf</code> : <br><pre> <code class="bash hljs">host replication postgres 192.168.100.2/32 trust host replication postgres 192.168.100.3/32 trust</code> </pre><br>  postgres is a database administrator who will perform replication and other admin tricks.  With these lines we allowed replication of both the slave and the master server. <br>  Then we overload the leading server: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># service postgresql restart</span></span></code> </pre><br>  Stop the slave server (if it was started earlier): <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># service postgresql stop</span></span></code> </pre><br>  Now you can begin to replicate. <br>  On the <b>master</b> server by the <code>postgres</code> user, we create a backup database and send it to the slave server: <br><pre> <code class="bash hljs">$ psql -c <span class="hljs-string"><span class="hljs-string">"SELECT pg_start_backup('stream');"</span></span> $ rsync -a /var/lib/pgsql/data/ 192.168.100.3:/var/lib/pgsql/data/ --exclude postmaster.pid $ psql -c <span class="hljs-string"><span class="hljs-string">"SELECT pg_stop_backup();"</span></span></code> </pre><br>  After that, on the <b>slave</b> we create the replication config <code>$PGDATA/recovery.conf</code> : <br><pre> <code class="bash hljs">standby_mode = <span class="hljs-string"><span class="hljs-string">'on'</span></span> primary_conninfo = <span class="hljs-string"><span class="hljs-string">'host=192.168.100.2 port=5432 user=postgres'</span></span> trigger_file = <span class="hljs-string"><span class="hljs-string">'failover'</span></span></code> </pre><br>  The <code>trigger_file</code> parameter is responsible for the way in which PostgreSQL searches for a file in order to switch to master mode.  In this case, PostgreSQL searches for a file along the path <code>$PGDATA/failover</code> . <br>  Next, you need to enable the "hot spare" on the slave server: <br><pre> <code class="bash hljs">$ sed -i <span class="hljs-string"><span class="hljs-string">'s/#hot_standby = on/hot_standby = on/'</span></span> /var/lib/pgsql/data/postgresql.conf</code> </pre><br>  Then you need to start the slave server: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># service postgresql start</span></span></code> </pre><br><br>  Replication activity can be verified as follows: <br>  Run the command on the master server <br><pre> <code class="bash hljs">$ ps aux | grep sender</code> </pre><br>  It should display approximately the following: <br><pre> <code class="bash hljs">2561 ? Ss 0:00 postgres: wal sender process postgres 192.168.100.3(33341) streaming 0/2031D28</code> </pre><br>  Similarly on the slave server: <br><pre> <code class="bash hljs">$ ps aux | grep receiver</code> </pre><br>  It will issue the following: <br><pre> <code class="bash hljs">1524 ? Ss 0:00 postgres: wal reciever process streaming 0/2031D28</code> </pre><br><br><h5>  General setting of the scaling node </h5><br>  Change the configuration file <code>/etc/pgpool-II/pgpool.conf</code> : <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#      listen_addresses = '*' #        backend_hostname0 = '192.168.100.3' backend_port0 = 5432 backend_weight0 = 1 backend_data_directory0 = '/var/lib/pgsql/data' #        backend_hostname1 = '192.168.100.2' backend_port1 = 5432 backend_weight1 = 1 backend_data_directory1 = '/var/lib/pgsql/data' #  pool_hba.conf    enable_pool_hba = true</span></span></code> </pre><br>  Next, in <code>/etc/pgpool-II/pool_hba.conf</code> add information about client authorization: <br><pre> <code class="bash hljs">host all all 127.0.0.1/32 trust host all all 192.168.100.2/32 trust host all all 192.168.100.3/32 trust</code> </pre><br>  Reboot pgpool: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># service pgpool restart</span></span></code> </pre><br><br><h5>  Setup automatic failover </h5><br>  The mechanism for creating an automatic failover is as follows: <br><ol><li>  On the worker (master and slave) servers, the <code>pgpool-walrecrunning()</code> procedure is performed, which determines which server is the master and which slave. </li><li>  pgpool connects remotely to production servers and checks DBMS process activity.  If not, pgpool invokes a script that creates a failover on the slave node in the event of a master server failure. </li><li>  After that, pgpool disconnects from the fallen node and restarts all client applications connected to it. </li></ol><br>  And now setting: <br>  On the scaling node we change the config pgpool <code>/etc/pgpool-II/pgpool.conf</code> : <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># ,     failover_command = '/etc/pgpool-II/failover.sh %d %H /var/lib/pgsql/data/failover' # ,    health_check_user = 'postgres' #    "-" master_slave_mode = true #     ,    '' master_slave_sub_mode = 'stream' #   pgpool      ,        replication_mode = false #   ,        load_balance_mode = true</span></span></code> </pre><br>  I'll tell you a little more about the parameter <code>failover_command</code> .  The parameters specified in this line are passed to the parameters <code>%d</code> - the identifier of the fallen node (according to <code>backend_hostname</code> in <code>pgpool.conf</code> ), <code>%H</code> - the IP of the new master server. <br>  Actually the script itself <code>failover.sh</code> : <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /bin/bash # ID   FAILED_NODE=$1 # IP   NEW_MASTER=$2 #     TRIGGER_FILE=$3 if [ $FAILED_NODE = 1 ]; then echo "    " exit 1 fi echo "    " echo "  : $NEW_MASTER" ssh -T postgres@$NEW_MASTER touch $TRIGGER_FILE exit 0</span></span></code> </pre><br>  You need to create this script in the pgpool <code>/etc/pgpool-II/</code> directory and issue permissions 755. <br>  Now we need to compile the pgpool procedures.  The src package pgpool in the <code>sql/pgpool-walrecrunning</code> contains the source code for the procedure we need.  To compile it, you need PostgreSQL header files, after which you can use the <code>make</code> command and get <code>pgpool-walrecrunning.so</code> and the SQL download request for this procedure <code>pgpool-walrecrunning.sql</code> . <br>  The procedure needs to be copied to the directory on each working server <code>/usr/lib64/pgsql/</code> , which is called <code>$libdir</code> , the sql file in <code>/usr/share/pgsql/</code> . <br>  We load into the database on the master server: <br><pre> <code class="bash hljs">psql -f /usr/share/pgsql/pgpool-walrecrunning.sql -d postgres</code> </pre><br>  There is no need to upload this procedure to the database on the slave server: it will be available due to the replication configured earlier. <br>  That's all. <br><br>  Server status can be determined using the query <pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SHOW</span></span> pool_nodes;</code> </pre>  having previously logged into the <code>psql</code> client on the scaling node. <br>  Sample query output: <pre> <code class="bash hljs"> hostname | port | status | lb_weight ----------------------------------------------------- 192.168.100.3 | 5432 | 2 | 0.500000 192.168.100.2 | 5432 | 2 | 0.500000 (2 rows)</code> </pre><br>  Server status 2 means that the server is active and available for requests.  If one of the servers fails, the status will change to 3. <br><br>  You can test the automatic failover mechanism as follows: <br><ol><li>  Disable master server </li><li>  Run the query SHOW pool_nodes;  on the zoom node </li><li>  View pgpool logs for script execution. </li><li>  Ensure that the slave server can accept write requests after the script is executed. </li></ol><br><br><h5>  Online recovery </h5><br>  Probably, this mechanism is the most difficult in terms of debug, but it is also a powerful tool when administering the database.  The operation of this mechanism is as follows: there is a working cluster, we want to turn on the slave server that fell earlier, but the data stored on it does not correspond to the data in the cluster.  This mechanism allows us to add another slave server in real time without stopping the cluster and carrying out any additional actions during its configuration. <br>  Online recovery works as follows: <br><ol><li>  The scaling node starts the slave server recovery procedure. </li><li>  This procedure on the master server runs a script that performs automatic replication between the master and the slave server. </li><li>  After successful replication, the database on the master server is remotely started using the standard PostgreSQL <code>PGCTL</code> utility <code>PGCTL</code> </li><li>  pgpool restarts, detects the slave server and includes it in the cluster </li></ol><br>  Go to the setting. <br>  Add the following lines to <code>/etc/pgpool-II/pgpool.conf</code> : <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># ,   recovery_user = 'postgres' #    recovery_password = '123456' # ,       $PGDATA recovery_1st_stage_command = 'basebackup.sh'</span></span></code> </pre><br>  Add <code>postgres</code> password hash: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># pg_md5 123456 &gt;&gt; /etc/pgpool-II/pcp.conf</span></span></code> </pre><br>  123456 is a clear <code>postgres</code> password.  In addition, in addition to the password hash, you need to specify the user name, to whom this hash belongs,  The file must contain the string <code>postgres:enrypted_password</code> . <br>  On the master node create a <code>basebackup.sh</code> script <code>basebackup.sh</code> following content: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash #    $PGDATA    PRIMARY_DATA=$1 # IP-  ,     SLAVE_IP=$2 #    $PGDATA    SLAVE_DATA=$3 #  IP       recovery.conf PRIMARY_IP=$(ifconfig eth0| sed -n '2 {s/^.*inet addr:\([0-9.]*\) .*/\1/;p}') #        TMP_DIR=/var/lib/pgsql/tmp #         (    - ) cd $PRIMARY_DATA rm -f recovery.* failover # ,         cat postgresql.conf | grep '#hot_standby = on' #  ,    if [ $? = 1 ] then sed -i 's/hot_standby = on/#hot_standby = on/' postgresql.conf #    /usr/bin/pg_ctl restart -D $PGDIR fi #    ssh -T postgres@$SLAVE_IP "/usr/bin/pg_ctl stop -D $SLAVE_DATA" #  backup     psql -c "SELECT pg_start_backup('Streaming Replication', true)" postgres #    rsync -a $PRIMARY_DATA/ $SLAVE_IP:$SLAVE_DATA/ --exclude postmaster.pid --exclude postmaster.opts #        mkdir $TMP_DIR cd $TMP_DIR #   postgresql.conf   hot_standby cp $PRIMARY_DATA/postgresql.conf $TMP_DIR/ sed -i 's/#hot_standby = on/hot_standby = on/' postgresql.conf #   recovery.conf echo "standby_mode = 'on'" &gt; recovery.conf echo "primary_conninfo = 'host=$PRIMARY_IP port=5432 user=postgres'" &gt;&gt; recovery.conf echo "trigger_file = 'failover'" &gt;&gt; recovery.conf #        ssh -T postgres@$SLAVE_IP rm -f $SLAVE_DATA/recovery.* #    scp postgresql.conf postgres@$SLAVE_IP:$SLAVE_DATA/postgresql.conf scp recovery.conf postgres@$SLAVE_IP:$SLAVE_DATA/recovery.conf #  backup psql -c "SELECT pg_stop_backup()" postgres #      cd .. rm -fr $TMP_DIR</span></span></code> </pre><br>  I emphasize that this script should be in the <code>$PGDATA</code> directory.  Script assign rights to 755. <br>  On the slave and master server in the <code>$PGDATA</code> directory create a script <code>pgpool_remote_start</code> ( <b>It is with this name!</b> ) With the following content: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /bin/bash if [ $# -ne 2 ] then echo " ,  " exit 1 fi SLAVE_IP=$1 SLAVE_DIR=$2 PGCTL=/usr/bin/pg_ctl ssh -T $SLAVE_IP $PGCTL -w -D $SLAVE_DIR start 2&gt;/dev/null 1&gt;/dev/null &lt; /dev/null &amp;</span></span></code> </pre><br>  It will allow you to remotely start DBMS processes. <br>  Next, on the scaling node, you need to compile the <code>pgpool-recovery.so</code> stored procedure located along the <code>sql/pgpool-recovery</code> src path of the pgpool package.  Similarly, send it to the working servers and download the procedure to the database: <br><pre> <code class="bash hljs">$ psql -f /usr/share/pgsql/pgpool-recovery.sql -d template1</code> </pre><br>  This completes the online recovery setting. <br><br>  To enable a new slave server in a cluster, you must perform the following steps: <br><ol><li>  Run base on new master node </li><li>  On the scaling node, execute the server recovery command: <code>pcp_recovery_node 20 192.168.100.4 9898 postgres 123456 1</code> </li></ol><br>  Learn more about <code>pcp_recovery_node</code> .  This command implements server recovery to cluster.  <code>20</code> is the number of attempts to connect to the slave server, <code>192.168.100.4</code> is the IP node of the scaling node, <code>9898</code> is the <code>9898</code> port of the scaling node commands, <code>postgres</code> is the name of the recovery user, <code>123456</code> is its password, <code>1</code> is the ID of the node being restored. <br>  This completes the online recovery setup. <br><br>  You can test these two mechanisms according to the following plan: <br><ol><li>  Create a test database on the master server.  Make sure it replicates to the slave. </li><li>  Simulate master server failure by disabling it </li><li>  Make sure that the failover worked and the slave server became the new master. </li><li>  Make changes to the database on the slave server </li><li>  Start the fallen master server and make it slave by performing online recovery </li></ol><br><br>  Thus, the mechanisms described above make it possible to secure the Master-Slave cluster and simplify the work of the database administrator during its restoration. <br><br>  PS I hope this post has helped someone.  Comments and additions are welcome!  Thank you for attention. </div><p>Source: <a href="https://habr.com/ru/post/188096/">https://habr.com/ru/post/188096/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../188086/index.html">HackPoint. The experience of self-organization of the provincial hackathon from scratch</a></li>
+<li><a href="../188088/index.html">Container java-server code with the support of a permanent connection</a></li>
+<li><a href="../188090/index.html">Creating TMG Internet traffic reports based on MS Reporting Services</a></li>
+<li><a href="../188092/index.html">Android component from scratch</a></li>
+<li><a href="../188094/index.html">Order in the photo and video archives using the technique and a pair of scripts</a></li>
+<li><a href="../188098/index.html">Relations enikeyschika and people in work</a></li>
+<li><a href="../188102/index.html">Simple client and server authorization of an Ajax site user using the VKontakte API</a></li>
+<li><a href="../188104/index.html">Configuring WebSVN on Windows for integration into Jira with support for SVN authorization and Delphi source encoding</a></li>
+<li><a href="../188106/index.html">Django development server and HTTPS testing</a></li>
+<li><a href="../188108/index.html">Articles about a portable Linux server for newbies - are they needed?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

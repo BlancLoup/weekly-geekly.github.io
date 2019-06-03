@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Sum optimization in PostgreSQL</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Consider the situation: there is a statistical table with columns-identifiers and columns-counters. It is required to sum up the counters for a certai...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Sum optimization in PostgreSQL</h1><div class="post__text post__text-html js-mediator-article">  Consider the situation: there is a statistical table with columns-identifiers and columns-counters.  It is required to sum up the counters for a certain subset.  At the same time, we are not interested in how we choose the set of interest to us - there are a lot of books and articles written about indices and partitioning.  We will assume that all data have already been selected in the most optimal way and will learn <b>how to summarize faster</b> . <br><br>  This is not the first place that needs to be optimized, if the request slows down, rather the last.  The following ideas are meaningfully applied when the execution plan (explain) is seemingly perfect and the mosquito in it does not weaken the nose, but I want to “squeeze” a little more. <br><a name="habracut"></a><br>  Let's make a test table and write 10 million records into it: <br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> s ( d <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>, browser_id <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>, banner_id <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>, views <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>, clicks <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>, primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(d, browser_id, banner_id) ); <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> s <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> d, browser_id, banner_id, succ + insucc, succ <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> d, browser_id, banner_id, (<span class="hljs-built_in"><span class="hljs-built_in">array</span></span>[<span class="hljs-number"><span class="hljs-number">0</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>,<span class="hljs-number"><span class="hljs-number">50</span></span>,<span class="hljs-number"><span class="hljs-number">500</span></span>])[<span class="hljs-keyword"><span class="hljs-keyword">ceil</span></span>(random()*<span class="hljs-number"><span class="hljs-number">4</span></span>)] succ, (<span class="hljs-built_in"><span class="hljs-built_in">array</span></span>[<span class="hljs-number"><span class="hljs-number">0</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>,<span class="hljs-number"><span class="hljs-number">400</span></span>,<span class="hljs-number"><span class="hljs-number">400000</span></span>])[<span class="hljs-keyword"><span class="hljs-keyword">ceil</span></span>(random()*<span class="hljs-number"><span class="hljs-number">4</span></span>)] insucc <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> generate_series(<span class="hljs-keyword"><span class="hljs-keyword">now</span></span>() - <span class="hljs-built_in"><span class="hljs-built_in">interval</span></span> <span class="hljs-string"><span class="hljs-string">'99 day'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">now</span></span>(), <span class="hljs-string"><span class="hljs-string">'1 day'</span></span>) d <span class="hljs-keyword"><span class="hljs-keyword">cross</span></span> <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">999</span></span>) banner_id <span class="hljs-keyword"><span class="hljs-keyword">cross</span></span> <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">99</span></span>) browser_id )_;</code> </pre> <br>  Date, id-shnik and primary key are given only for decency - the task we will have is simple, to sum up the entire table.  Strange generation of values ​​for views and clicks is needed to simulate a real situation in which values ​​are often both zero and rather large. <br><br>  So let's get started.  All time measurements will be done when the query is re-executed to eliminate the influence of the cold cache. <br>  I did not conduct honest benchmarks, I ran it several times, took the average and rounded it off.  The machine is weak, you will be faster! 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Method 1: "In the forehead" </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(clicks) <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> s;</code> </pre> <br>  9 seconds. <br><br><h4>  Method 2: Change Type </h4><br>  We will recreate our table, while doing the counters we will do the type numeric: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> s ( d <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>, browser_id <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>, banner_id <span class="hljs-built_in"><span class="hljs-built_in">int</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>, views <span class="hljs-built_in"><span class="hljs-built_in">numeric</span></span>, clicks <span class="hljs-built_in"><span class="hljs-built_in">numeric</span></span>, primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(d, browser_id, banner_id) );</code> </pre><br>  8 seconds.  It would seem that the numeric type should be more cumbersome, since it allows storage of numbers of very large sizes and therefore is far from machine representation.  In fact, it turns out to be faster. <br><br>  The solution is as follows: sum, taking as input bigint or numeric, returns numeric in both cases.  This is done to avoid overflow.  When we immediately give a numeric entry, we avoid implicit conversion. <br><br>  <i>First note: if we have enough for an int counter (and it can take values ​​up to ~ 2 billion), then work with it will be even faster.</i>  <i>Sum in this case returns bigint.</i> <i><br><br></i>  <i>Second note: ordinary arithmetic operations (+, -, *, /) with the numeric type work more slowly than with bigint.</i>  <i>And sum is faster with numeric.</i> <br><br><h4>  Method 3: do not count zeros </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(clicks) <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> s <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> clicks &lt;&gt; <span class="hljs-number"><span class="hljs-number">0</span></span>;</code> </pre><br>  This method gives acceleration up to 7 seconds.  But it has a drawback: when summing up values ​​from several columns, it is not clear how to apply it, especially if the columns are reset independently. <br><br><h4>  Method 4: replace zeros with nulls </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">nullif</span></span>(licks, <span class="hljs-number"><span class="hljs-number">0</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> s;</code> </pre><br>  Same 7 seconds, but the method works better than the previous one when summing up several columns. <br><br>  The reason is that sum, as a strict aggregate function, ignores incoming nulls. <br><br>  <i>Methods 3 and 4 are appropriate when there is a significant number of zeros in the column (at least 10%, and preferably half).</i> <br><br><h4>  Method 5: replace zeros with nulls directly in the table </h4><br>  This method of optimization is somewhat "unethical": we suggest brazenly trampling the semantics of null.  But it works. <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> s2 (<span class="hljs-keyword"><span class="hljs-keyword">like</span></span> s <span class="hljs-keyword"><span class="hljs-keyword">including</span></span> all); <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> s2 <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> d, browser_id, banner_id, <span class="hljs-keyword"><span class="hljs-keyword">nullif</span></span>(views, <span class="hljs-number"><span class="hljs-number">0</span></span>), <span class="hljs-keyword"><span class="hljs-keyword">nullif</span></span>(clicks, <span class="hljs-number"><span class="hljs-number">0</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> s;</code> </pre><br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(clicks) <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> s2;</code> </pre><br>  6 seconds.  Apparently, the reason lies in the fact that postgres stores nulls in the bitmap and therefore the size of the tupl'a decreases. <br><br>  Perhaps the reader will be surprised to ask: why did we not immediately throw away the columns with zeros when sampling, for example, using a partial index? <br>  And we will explain: there are many columns in real tables, and the zeros in them are located independently. <br><br>  Links to documentation: <ol><li>  <a href="http://www.postgresql.org/docs/9.1/static/datatype-numeric.html">Numeric types</a> </li><li>  <a href="http://www.postgresql.org/docs/9.1/static/functions-aggregate.html">Sum aggregate function</a> </li><li>  <a href="http://www.postgresql.org/docs/9.1/static/sql-createaggregate.html">User-defined aggregate functions, strictness</a> </li></ol><br></div><p>Source: <a href="https://habr.com/ru/post/186788/">https://habr.com/ru/post/186788/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../186778/index.html">Be wary of generalizations</a></li>
+<li><a href="../186780/index.html">Meet Intel Integrated Performance Primitives 8.0</a></li>
+<li><a href="../186782/index.html">Relay of 50 quineas</a></li>
+<li><a href="../186784/index.html">Metric # 15 - Podcast on technologies and design of interfaces and services</a></li>
+<li><a href="../186786/index.html">DVRs as an attempt to solve all the problems of tech companies</a></li>
+<li><a href="../186792/index.html">CloudEngine. Application for leadership from Huawei. Part 1</a></li>
+<li><a href="../186794/index.html">"Pioneers" of the moon race</a></li>
+<li><a href="../186796/index.html">Extended “Hello! World "on the Flask microform</a></li>
+<li><a href="../186800/index.html">PHDays III CTF: An Inside Look (Part 2)</a></li>
+<li><a href="../186804/index.html">Microsoft Smart Watch: Empire Strikes Back</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>We make web sites for PHP from scratch. Part 2. IPC</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="After writing my previous article Making web sockets for PHP from scratch, I realized that the community has some interest in the topic I raised. 
+
+ I...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>We make web sites for PHP from scratch. Part 2. IPC</h1><div class="post__text post__text-html js-mediator-article">  After writing my previous article <a href="http://habrahabr.ru/company/ifree/blog/209864/">Making web sockets for PHP from scratch,</a> I realized that the community has some interest in the topic I raised. <br><br>  In the last article, I promised to describe: <br><ul><li>  running multiple processes to handle connections </li><li>  interprocess communication </li><li>  process master splitter </li><li>  proxying a web socket using nginx </li><li>  launch from console </li><li>  integration with your framework on the example of yii </li><li>  demonstration </li></ul><br><br>  And, as usual, the resulting code and the link to the demo chat at the end of the article. <br><a name="habracut"></a><br><h4>  Run multiple processes to handle connections </h4><br>  For a simple web socket server to work, a single process is enough, but to increase the number of simultaneous connections (and bypass the limit of 1024 simultaneous connections), as well as to use the resources of the entire processor (and not just one core), it is necessary that the web socket server uses several processes (optimally - number of processes = number of processor cores). 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      To run multiple processes, we will use the <code>pcntl_fork()</code> function.  It creates a new process (child), which is almost a complete copy of the parent process that performs this call. <br>  After calling <code>pcntl_fork()</code> algorithm forks: in case of successful execution of the function <code>pcntl_fork()</code> it returns the PID of the child process to the parent, and NULL to the child.  If the creation of the fork fails, the <code>pcntl_fork()</code> function returns a value of −1). <br><br><pre> <code class="php hljs">$pid = pcntl_fork(); <span class="hljs-comment"><span class="hljs-comment">//  //        if ($pid == -1) { //      } elseif ($pid) { //      } else { //      ,  PID      getmypid() }</span></span></code> </pre><br><br>  About the difference of the parent process from the child can be read on <a href="http://ru.wikipedia.org/wiki/Fork">Wikipedia</a> . <br><br>  We can create as many child processes as we need in a loop: <br><br><pre> <code class="php hljs">$childs = <span class="hljs-keyword"><span class="hljs-keyword">array</span></span>(); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> ($i=<span class="hljs-number"><span class="hljs-number">0</span></span>; $i&lt;<span class="hljs-number"><span class="hljs-number">4</span></span>; $i++) { $pid = pcntl_fork(); <span class="hljs-comment"><span class="hljs-comment">//  if ($pid == -1) { die("error: pcntl_fork"); } elseif ($pid) { //  $childs[] = $pid; //   PID,     :) } else { //  break; //  ,        } }</span></span></code> </pre><br><br><h4>  Interprocess communication </h4><br>  For the interaction between the parent and child processes, we will use sockets, namely the associated sockets: <br>  The <code>stream_socket_pair()</code> function creates a pair of related indistinguishable stream sockets.  Thus, we can write to one socket, and read data from the second. <br><br><pre> <code class="php hljs">$pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP); <span class="hljs-comment"><span class="hljs-comment">//     fwrite($pair[0], ''); //    fread($pair[1], mb_strlen('')); //  </span></span></code> </pre><br><br>  Now we combine this code with forks and we get: <br><br><pre> <code class="php hljs">$pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP); <span class="hljs-comment"><span class="hljs-comment">//   $pid = pcntl_fork(); //  //        if ($pid == -1) { die("error: pcntl_fork"); } elseif ($pid) { //  fclose($pair[0]); //      $child = $pair[1]; //       } else { //  fclose($pair[1]); //      $parent = $pair[0]; //       }</span></span></code> </pre><br><br>  The resulting code for creating multiple child processes: <br><br><pre> <code class="php hljs">$parent = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; $childs = <span class="hljs-keyword"><span class="hljs-keyword">array</span></span>(); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> ($i=<span class="hljs-number"><span class="hljs-number">0</span></span>; $i&lt;<span class="hljs-number"><span class="hljs-number">5</span></span>; $i++) { $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP); <span class="hljs-comment"><span class="hljs-comment">//   $pid = pcntl_fork(); //  if ($pid == -1) { die("error: pcntl_fork"); } elseif ($pid) { //  fclose($pair[0]); //      $childs[] = $pair[1]; //       } else { //  fclose($pair[1]); //      $parent = $pair[0]; //       break; //  ,        } }</span></span></code> </pre><br>  As a result of the operation of this code in the parent, the <code>$childs</code> array will contain all the sockets to communicate with the children, and the descendants will use <code>$parent</code> to communicate with the <code>$parent</code> . <br><br><h4>  Separation of processes into masters and workers </h4><br>  Since the child processes in our implementation are not directly related to each other and can only interact through the parent, it is advisable to separate the responsibilities between the parent and the descendants: <br><ul><li>  the parent will be responsible for the interaction between the child processes (will be the master) </li><li>  child processes will do all the work (they will be workers) </li></ul><br>  Also, a worker with us will be engaged in sending messages from scripts from the pages of the site or from the crown.  To do this, we will create an additional socket, and add it to the array of listening sockets.  For example, you can create a unix socket: <br><pre> <code class="php hljs">$service = stream_socket_server(<span class="hljs-string"><span class="hljs-string">'unix:///tmp/websocket.sock'</span></span>, $errorNumber, $errorString);</code> </pre><br><br><h4>  Proxying webboxes using nginx </h4><br>  Nginx supports proxying of websockets since version 1.3.13.  Thanks to nginx, you can handle connections to the webbox server on the same port as the site, as well as limit the number of open webboxes from one ip and other buns you like. <br><br>  An example of an nginx config that allows it: <br><pre> <code class="nginx hljs"><span class="hljs-attribute"><span class="hljs-attribute">limit_conn_zone</span></span> <span class="hljs-variable"><span class="hljs-variable">$binary_remote_addr</span></span> zone=perip:<span class="hljs-number"><span class="hljs-number">10m</span></span>; <span class="hljs-section"><span class="hljs-section">server</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">listen</span></span> <span class="hljs-number"><span class="hljs-number">5.135.163.218:80</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">server_name</span></span> sharoid.ru; <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> / { <span class="hljs-attribute"><span class="hljs-attribute">limit_conn</span></span> perip <span class="hljs-number"><span class="hljs-number">5</span></span>; <span class="hljs-comment"><span class="hljs-comment">#  5   1 ip proxy_pass http://127.0.0.1:8000; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 3600s; #    } }</span></span></code> </pre><br><br><h4>  Run from console </h4><br>  <code>php websocket.php</code> command <code>php websocket.php</code> or <code>./websocket.php</code> (after giving permission to execute) <br>  If you use <code>nohup</code> , for example, <code>nohup ./websocket.php &amp;</code> , then the script will continue to work after closing the console. <br><br>  By default, there are two restrictions on the number of connections per process. <br><ul><li>  The first is at the operating system level: in one process, more than 1024 connections cannot be opened.  To process more simultaneous connections, execute the command: <code>ulimit -n 65535</code> , and if the user has insufficient privileges, then <code>sudo sh -c "ulimit -n 65535 &amp;&amp; exec su $LOGNAME"</code> .  The current value can be viewed using the command <code>ulimit -n</code> </li><li>  The second is with the <code>stream_select()</code> function: it does not accept more than 1024 connections.  It is more complicated here - you need to recompile php with an increased <code>FD_SETSIZE</code> </li></ul><br>  As I already wrote, these restrictions can be circumvented using child processes (workers). <br><br><h4>  Integration with your framework on the example of yii </h4><br>  Since our master listens on an additional socket to communicate with our scripts (in the example above there was <code>unix:///tmp/websocket.sock</code> ), we can connect to this socket in any place of our website or in the crown and send a message that the master will send all workers, and they, in turn, all customers: <br><pre> <code class="php hljs">$service = stream_socket_client (<span class="hljs-string"><span class="hljs-string">'unix:///tmp/websocket.sock'</span></span>, $errno, $errstr); fwrite($service, <span class="hljs-string"><span class="hljs-string">' '</span></span>);</code> </pre><br>  Using the yii component, it will look like this: <br><pre> <code class="php hljs">Yii::app()-&gt;websocket-&gt;send(<span class="hljs-string"><span class="hljs-string">' '</span></span>);</code> </pre><br><div class="spoiler">  <b class="spoiler_title">More for yii</b> <div class="spoiler_text">  Download the <a href="https://github.com/morozovsk/websocket">extension</a> , put it in the <code>extensions/websocket</code> <br>  We put Websocket.php, WebsocketMasterHandler.php and WebsocketWorkerHandler.php from the folder sample / yii in the components folder. <br>  In the <code>commands</code> folder we put from WebsocketCommand.php from the sample / yii folder. <br>  In the main.php and console.php configs we insert into the components section: <br><pre> <code class="php hljs"><span class="hljs-string"><span class="hljs-string">'websocket'</span></span> =&gt; <span class="hljs-keyword"><span class="hljs-keyword">array</span></span>( <span class="hljs-string"><span class="hljs-string">'class'</span></span> =&gt; <span class="hljs-string"><span class="hljs-string">'Websocket'</span></span>, <span class="hljs-comment"><span class="hljs-comment">//'websocket' =&gt; 'tcp://127.0.0.1:8000', //'localsocket' =&gt; 'tcp://127.0.0.1:8001',// unix:///tmp/mysock //'workers' =&gt; 1 ),</span></span></code> </pre><br>  We also insert into the config console.php in the import section: <br><pre> <code class="php hljs"><span class="hljs-string"><span class="hljs-string">'ext.websocket.*'</span></span></code> </pre><br></div></div><br><br><h4>  Demonstration </h4><br>  <a href="http://sharoid.ru/chat2.html">Demo chat 2.0 (added list of users, added restriction: 1 message per second from a single IP)</a> <br>  It used the functions described above, and also corrected the shortcomings revealed after the publication of the previous article. <br>  <a href="http://sharoid.ru/chat.html">Demo Chat 1.0 (no user list, no limit)</a> <br><br>  I designed all source codes in the form of library and laid out on <a href="https://github.com/morozovsk/websocket">github</a> <br><br>  <b>Update:</b> If this topic is interesting to the community, the next article will be about how to make a simple game in which all participants will be on the same playing field and interact with each other in real time (the demo is almost ready). <br><br>  <b>The third part of the article: <a href="http://habrahabr.ru/company/ifree/blog/211504/">From chat to game: Battle City</a></b> </div><p>Source: <a href="https://habr.com/ru/post/210228/">https://habr.com/ru/post/210228/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../210218/index.html">Enabling PostgreSQL replication on Jelastic platform in InfoboxCloud cloud</a></li>
+<li><a href="../210220/index.html">Qualcomm bought out patents for webOS, iPAQ from HP</a></li>
+<li><a href="../210222/index.html">LinkMeUp. Release 11. Cisco TAC, CEF, FIB</a></li>
+<li><a href="../210224/index.html">IPv6 theory and practice: packet types and autoconfiguration</a></li>
+<li><a href="../210226/index.html">Analyzing the source code with cppcheck</a></li>
+<li><a href="../210234/index.html">We consider likes in real life or how to properly evaluate an employee (concept)</a></li>
+<li><a href="../210236/index.html">Pavel Durov sold his stake in VK. Now officially</a></li>
+<li><a href="../210238/index.html">Four methods for downloading images from a website using Python</a></li>
+<li><a href="../210240/index.html">How statistics help make Yandex.Probki better</a></li>
+<li><a href="../210248/index.html">Neurosystem: a revolution of consciousness</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

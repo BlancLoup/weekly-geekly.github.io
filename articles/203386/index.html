@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Query optimization. Basics of EXPLAIN in PostgreSQL (Part 2)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I keep publishing the author's rework Understanding EXPLAIN from Guillaume Lelarge. 
+ Once again I will note that some of the information is omitted f...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Query optimization. Basics of EXPLAIN in PostgreSQL (Part 2)</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/f6c/287/17a/f6c28717a7325185814bec4274d95bb9.jpg"><br>  I keep publishing the author's rework <a href="http://www.dalibo.org/_media/understanding_explain.pdf">Understanding EXPLAIN</a> from Guillaume Lelarge. <br>  Once again I will note that some of the information is omitted for brevity, so I strongly recommend that you familiarize yourself with the original. <br><h5>  Previous parts: </h5><br>  <a href="http://habrahabr.ru/post/203320/">Part 1</a> <br><a name="habracut"></a><br><h4>  Cache </h4><br>  What happens at the physical level when we execute our query?  We will understand.  My server is up on Ubuntu 13.10.  OS-level disk caches are used. <br>  I stop PostgreSQL, forcibly fix the changes in the file system, clear the caches, start PostgreSQL: <br><pre><code class="bash hljs">&gt; sudo service postgresql-9.3 stop &gt; sudo sync &gt; sudo su - <span class="hljs-comment"><span class="hljs-comment"># echo 3 &gt; /proc/sys/vm/drop_caches # exit &gt; sudo service postgresql-9.3 start</span></span></code> </pre> <br>  Now the caches are cleared, we try to execute the query with the option BUFFERS <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">ANALYZE</span></span>,BUFFERS) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..18334.10 rows = 1000010 width = 37) (actual time = 0.525..734.754 rows = 1000010 loops = 1) <br>  Buffers: shared read = 8334 <br>  Total runtime: 1253.177 ms <br>  (3 rows) <br></blockquote><br>  The table is read in parts - in blocks.  The cache is empty.  The table is completely read from the disk.  For this, we had to count 8334 blocks. <br>  <code>Buffers: shared read</code> - the number of blocks read from the disk. <br><br>  Repeat last request <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">ANALYZE</span></span>,BUFFERS) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..18334.10 rows = 1000010 width = 37) (actual time = 0.173..693.000 rows = 1000010 loops = 1) <br>  Buffers: shared hit = 32 read = 8302 <br>  Total runtime: 1208.433 ms <br>  (3 rows) <br></blockquote><br>  <code>Buffers: shared hit</code> - the number of blocks read from the PostgreSQL cache. <br>  If you repeat this query several times, you will see how PostgreSQL takes more and more data from the cache each time.  With each request, PostgreSQL fills its cache. <br>  Cache reads are faster than disk reads.  You can notice this trend by tracking the <code>Total runtime</code> value. <br>  The cache size is determined by the <code>shared_buffers</code> constant in the <code>postgresql.conf</code> file. <br><br><h4>  WHERE </h4><br>  Add a condition to the request <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &gt; <span class="hljs-number"><span class="hljs-number">500</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..20834.12 rows = 999522 width = 37) <br>  Filter: (c1&gt; 500) <br>  (2 rows) <br></blockquote><br>  There are no indices on the table.  When executing the query, each record in the table is sequentially read ( <code>Seq Scan</code> ).  Each record is compared with the condition <code>c1 &gt; 500</code> .  If the condition is met, the entry is entered into the result.  Otherwise, it is discarded.  <code>Filter</code> means exactly this behavior. <br>  The value of <code>cost</code> , which is logical, has increased. <br>  The expected number of rows of the result - <code>rows</code> - decreased. <br>  The <a href="http://www.dalibo.org/_media/understanding_explain.pdf">original</a> explains why <code>cost</code> takes just such a value, and how the expected number of rows is calculated. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      It's time to create indexes. <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> foo(c1); <span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &gt; <span class="hljs-number"><span class="hljs-number">500</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..20834.12 rows = 999519 width = 37) <br>  Filter: (c1&gt; 500) <br>  (2 rows) <br></blockquote><br>  The expected number of rows has changed.  Clarified.  Otherwise, nothing new.  What about the index? <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">ANALYZE</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &gt; <span class="hljs-number"><span class="hljs-number">500</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..20834.12 rows = 999519 width = 37) (actual time = 0.572..848.895 rows = 999500 loops = 1) <br>  Filter: (c1&gt; 500) <br>  Rows Removed by Filter: 510 <br>  Total runtime: 1330.788 ms <br>  (4 rows) <br></blockquote><br>  Only 510 lines out of more than one million have been filtered.  I had to count more than 99.9% of the table. <br><br>  Forcibly force the use of the index, prohibiting Seq Scan: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> enable_seqscan <span class="hljs-keyword"><span class="hljs-keyword">TO</span></span> <span class="hljs-keyword"><span class="hljs-keyword">off</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">ANALYZE</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &gt; <span class="hljs-number"><span class="hljs-number">500</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Index Scan using foo_c1_idx on foo (cost = 0.42..34623.01 rows = 999519 width = 37) (actual time = 0.178..1018.045 rows = 999500 loops = 1) <br>  Index Cond: (c1&gt; 500) <br>  Total runtime: 1434.429 ms <br>  (3 rows) <br></blockquote><br>  <code>Index Scan</code> , <code>Index Cond</code> instead of <code>Filter</code> - the index <code>foo_c1_idx</code> is used. <br>  When sampling almost the entire table, using the index only increases the <code>cost</code> and run time of the query.  Planner is not stupid! <br><br>  Do not forget to cancel the ban on the use of Seq Scan: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> enable_seqscan <span class="hljs-keyword"><span class="hljs-keyword">TO</span></span> <span class="hljs-keyword"><span class="hljs-keyword">on</span></span>;</code> </pre><br><br>  Change the query: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &lt; <span class="hljs-number"><span class="hljs-number">500</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Index Scan using foo_c1_idx on foo (cost = 0.42..25.78 rows = 491 width = 37) <br>  Index Cond: (c1 &lt;500) <br>  (2 rows) <br></blockquote><br>  Here the planner decided to use the index. <br><br>  Complicate the condition.  Use the text field. <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &lt; <span class="hljs-number"><span class="hljs-number">500</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> c2 <span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> <span class="hljs-string"><span class="hljs-string">'abcd%'</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Index Scan using foo_c1_idx on foo (cost = 0.42..27.00 rows = 1 width = 37) <br>  Index Cond: (c1 &lt;500) <br>  Filter: (c2 ~ abcd% ':: text) <br>  (3 rows) <br></blockquote><br>  As you can see, the index <code>foo_c1_idx</code> for the condition <code>c1 &lt; 500</code> .  For <code>c2 ~~ 'abcd%'::text</code> , a filter is used. <br>  Note that the <a href="http://www.postgresql.org/docs/9.3/static/functions-matching.html">POSIX format of</a> the LIKE operator is used in the output of the results. <br><br>  If only a text field is provided: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">ANALYZE</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c2 <span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> <span class="hljs-string"><span class="hljs-string">'abcd%'</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..20834.12 rows = 100 width = 37) (actual time = 14.497 ..412.030 rows = 10 loops = 1) <br>  Filter: (c2 ~ abcd% ':: text) <br>  Rows Removed by Filter: 1000000 <br>  Total runtime: 412.120 ms <br>  (4 rows) <br></blockquote><br>  Expected, <code>Seq Scan</code> . <br><br>  Build an index on <code>c2</code> : <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> foo(c2); <span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">ANALYZE</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c2 <span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> <span class="hljs-string"><span class="hljs-string">'abcd%'</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Seq Scan on foo (cost = 0.00..20834.12 rows = 100 width = 37) (actual time = 20.992..424.946 rows = 10 loops = 1) <br>  Filter: (c2 ~ abcd% ':: text) <br>  Rows Removed by Filter: 1000000 <br>  Total runtime: 425.039 ms <br>  (4 rows) <br></blockquote><br>  Again <code>Seq Scan</code> ?  The index is not used because I have a base for text fields using the UTF-8 format. <br>  When creating an index in such cases, use the <code>text_pattern_ops</code> operator <code>text_pattern_ops</code> : <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> foo(c2 text_pattern_ops); <span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c2 <span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> <span class="hljs-string"><span class="hljs-string">'abcd%'</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Bitmap Heap Scan on foo (cost = 4.58..55.20 rows = 100 width = 37) <br>  Filter: (c2 ~ abcd% ':: text) <br>  -&gt; Bitmap Index Scan on foo_c2_idx1 (cost = 0.00 ..4.55 rows = 13 width = 0) <br>  Index Cond: ((c2 ~&gt; = ~ 'abcd' :: text) AND (c2 ~ &lt;~ 'abce' :: text)) <br>  (4 rows) <br></blockquote><br>  Hooray!  Happened! <br>  <code>Bitmap Index Scan</code> - the <code>foo_c2_idx1</code> index is used to determine the records we need, and then PostgreSQL crawls into the table itself: ( <code>Bitmap Heap Scan</code> ) - to make sure that these records actually exist.  This behavior is related to PostgreSQL versioning. <br><br>  If you choose not the entire line, but only the field on which the index is built <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXPLAIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> c1 <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> foo <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> c1 &lt; <span class="hljs-number"><span class="hljs-number">500</span></span>;</code> </pre><br><blockquote>  QUERY PLAN <br>  - Index Only Scan using foo_c1_idx on foo (cost = 0.42..25.78 rows = 491 width = 4) <br>  Index Cond: (c1 &lt;500) <br>  (2 rows) <br></blockquote><br>  <code>Index Only Scan</code> runs faster than <code>Index Scan</code> due to the fact that you do not need to read the entire table row: <code>width=4</code> . <br><br><h4>  Summary </h4><br><ul><li>  Seq Scan - reads the entire table. </li><li>  Index Scan - uses an index for WHERE conditions, reads a table when selecting rows. </li><li>  Bitmap Index Scan - first Index Scan, then sample control by the table.  Effective for a large number of lines. </li><li>  Index Only Scan - the fastest.  Only the index is read. </li></ul><br><br>  <a href="http://habrahabr.ru/post/203484/">Part 3</a> </div><p>Source: <a href="https://habr.com/ru/post/203386/">https://habr.com/ru/post/203386/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../203366/index.html">9th Habravstrecha in Kiev</a></li>
+<li><a href="../203368/index.html">Android In-app purchasing: paid ad disconnection in your application</a></li>
+<li><a href="../203372/index.html">Say thanks to WINAMP • thxwinamp.com</a></li>
+<li><a href="../203374/index.html">Someone made a $ 160 million bitcoin transaction</a></li>
+<li><a href="../203376/index.html">Home all-in-one server - success story</a></li>
+<li><a href="../203394/index.html">Achiver: what's what</a></li>
+<li><a href="../203396/index.html">Preparing video for sound design. Which codec to choose</a></li>
+<li><a href="../203398/index.html">There is an error in almost all implementations of binary search and merge sort</a></li>
+<li><a href="../203400/index.html">The digest of interesting materials from the world of web development and IT for the last week No. 84 (November 16 - 23, 2013)</a></li>
+<li><a href="../203402/index.html">ThL W8s - a powerful smartphone with glass protection Gorilla Glass 3</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

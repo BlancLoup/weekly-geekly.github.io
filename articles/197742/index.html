@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How not to lose data in PostgreSQL</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="PostgreSQL offers several options for backing up data. About all of them have already been told more than once, including in the habr. But basically i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How not to lose data in PostgreSQL</h1><div class="post__text post__text-html js-mediator-article">  PostgreSQL offers several options for backing up data.  About all of them have already been told more than once, including in the habr.  But basically it tells about the technical features of the methods.  I want to try to tell you about the general backup strategy, combining all the methods into an effective system that will help you save all the data and reduce the number of dead nerve cells in critical situations. <br>  Input data: PostgreSQL 9.2 server, Base size&gt; 100Gb. <br><a name="habracut"></a><br><h5>  Backup options </h5><br>  As follows from the <a href="http://www.postgresql.org/docs/9.2/static/backup.html">manuals</a> , there are 3 methods for backing up data: <br><ul><li>  Stream replication </li><li>  Copying DB Files </li><li>  SQL Dumps </li></ul><br>  They all have their own characteristics, so we use all these methods. <br><br><h5>  Stream replication </h5><br>  Configuring stream replication is well described in articles <a href="http://habrahabr.ru/post/106872/">here</a> and <a href="http://habrahabr.ru/post/173623/">here</a> .  The point of this replication is that if the main server falls, then the slave can quickly be made a master and work with it, because  on the slave is a complete copy of the database. <br>  In stream replication, WAL files are important.  These are files, from where the slave pulls in the missing data, if there are no more on the master.  From here there is a need to keep these WAL files longer.  We store these files for 8 days. <br>  The directory with WAL files must be accessible to both the master (for writing) and the slave (for reading).  To ensure this, we created a glusterFS-based shared storage, which was mounted on both servers.  Thus, firstly, greater reliability is achieved (when the wizard drops, wal-files will be available for the slave), and secondly, it is possible to quickly create additional slaves, which also need these wal. <br>  The bottom line: streaming replication protects against the failure of the main server, while almost no data is lost. <br><br><h5>  Copying DB Files </h5><br>  With the server crashed, we figured out, now let's deal with the human factor, when for some reason the data in the tables are deleted, either the tables themselves or the database of the baths.  In this case, you will have to restore the data from the backup.  Another copy of the database may be required to test the application.  Such a copy can be done in two ways - dump the database or copy the entire directory with the data.  For a long time, we used the first option - dumped the database to a file.  But the dump has a big minus - the <s>process locks the tables, and other processes can no longer work with them</s> ( <b>UPD</b> : pg_dump does not lock the tables. However, it creates a large load on the database).  For large databases, this is critical. <br>  Now we use the pg_basebackup utility to back up the database, which essentially copies all the database files into one large archive. <br>  We keep 4 weekly copies and 6 months.  Copies are stored on the same GlusterFS repository.  We create copies in such a way that they are self-sufficient, that is, they work immediately after deployment, without the need to upload additional WAL files.  Therefore, we can easily deploy a database, for example, three months old. <br>  It is noteworthy that the pg_basebackup utility can be run (under certain conditions) on the slave server, so creating backups does not in any way load the wizard. <br>  In order for pg_basebackup to work on the slave, you need to enable saving of WAL files, to do this, set options in postgresql.conf: <br><pre><code class="bash hljs">wal_level = hot_standby wal_keep_segments = 1000</code> </pre> <br>  1000 is the number of wal-files that postgreSQL stores on disk.  You may need to decrease or increase this parameter.  The fact is that pg_basebackup simply archives the contents of the database, however during archiving some data will already change, and this changed PostgreSQL data will later be pulled from WAL files when restored.  For this pg_basebackup saves to the archive also all existing WAL files.  Thus, in order for everything to be successful, it is necessary that all WAL files be available from the moment pg_basebackup starts working until it is completed.  If the required WAL files are deleted, pg_basebackup will fail with an error.  The desired amount of wal_keep_segments can be determined empirically. <br>  To create a backup copy of the database, we run pg_basebackup with the following parameters: <br><pre> <code class="bash hljs">/usr/bin/pg_basebackup -U postgres -D /tmp/pg_backup -Ft -z -Xf</code> </pre><br>  -F tells us to save everything to one file, -z to archive, -Xf to include WAL files in the archive.  Without the inclusion of WAL files, the backup will work, but when restoring Postgres it will be required to provide the missing WAL files. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Backup we do on the crown on Saturdays like this script: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash mkdir /tmp/pg_backup /usr/bin/pg_basebackup -U postgres -D /tmp/pg_backup -Ft -z -Xf WEEK=$(date +"%V") MONTH=$(date +"%b") let "INDEX = WEEK % 5" test -e /collector/db-backup/base.${INDEX}.tar.gz &amp;&amp; rm /collector/db-backup/base.${INDEX}.tar.gz cp /tmp/pg_backup/base.tar.gz /collector/db-backup/base.${INDEX}.tar.gz test -e /collector/db-backup/base.${MONTH}.tar.gz &amp;&amp; rm /collector/db-backup/base.${MONTH}.tar.gz ln /collector/db-backup/base.${INDEX}.tar.gz /collector/db-backup/base.${MONTH}.tar.gz test -e /collector/db-backup/base.last.tar.gz &amp;&amp; rm /collector/db-backup/base.last.tar.gz ln /collector/db-backup/base.${INDEX}.tar.gz /collector/db-backup/base.last.tar.gz rm -r /tmp/pg_backup</span></span></code> </pre><br>  This creates a file with 3 suffixes: with the number of the week, with the name of the month and the official last. <br>  To restore the database from a copy, you need to stop PostgreSQL, delete (or transfer) the old data from the data directory, unpack the contents of the archive and start the server.  There is one interesting point.  Since pg_basebackup was done on the slave, the recovery.conf file will also be unpacked with the data.  So, if we want to restore data to the last possible state, then this file must be left, in this case, after starting the server, Postgres will start pulling WAL files from the location specified in recovery.conf.  If you take the last weekly backup, then we will have all the necessary WAL files (since we store them for 8 days), and we can restore the database to the last normal state. <br>  If we need data as at the time of the backup, then before starting the database, we need to delete the recovery.conf file. <br><br>  We also use backup copies for test purposes, and the correctness of creating a backup is checked for one. <br>  The name base.last.tar.gz is used by us to restore the latest copy to the test database.  Our test database is restored every night with this script: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash /etc/init.d/postgresql stop rm -r /data/* tar -zxf /collector/db-backup/base.last.tar.gz -C /data/ rm /data/recovery.conf /etc/init.d/postgresql start</span></span></code> </pre><br><br>  The bottom line: copying the database at the file level will protect against software failures and human errors.  When restoring the database from the backup, the latest data will be lost. <br><br><h5>  SQL Dumps </h5><br>  We haven't done a full SQL dump of a large database for a long time, but we do dump dump tables, 1 table - 1 file.  This allows you to quickly restore data in cases where only one table is corrupted - no need to unpack the entire database from the backup. <br>  PostgreSQL provides us with statistics on the number of changes in the tables, and every night we look at which tables have been changed and dumped.  Statistics look like this: <br> <code>select schemaname,relname,n_tup_ins+n_tup_upd+n_tup_del from pg_stat_user_tables ;</code> <br>  The bottom line: a SQL dump will help recover minor errors.  In this case, the data will be relevant at the time of the dump. <br><br><h5>  In conclusion </h5><br>  As you can see, in order to protect yourself as much as possible against data loss, you can and should use all the features of PostgreSQL, especially since it is not so difficult. </div><p>Source: <a href="https://habr.com/ru/post/197742/">https://habr.com/ru/post/197742/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../197730/index.html">Mail.Ru: Russian Developers Cup - accepting applications</a></li>
+<li><a href="../197732/index.html">BlackBerry: you can continue to count on us</a></li>
+<li><a href="../197736/index.html">How I completed Habrahabr</a></li>
+<li><a href="../197738/index.html">Our partners: Powerbot history</a></li>
+<li><a href="../197740/index.html">Facebook XSS Story</a></li>
+<li><a href="../197744/index.html">OpenVPN: creating a server on Windows</a></li>
+<li><a href="../197746/index.html">Installing DBforBix for Zabbix under Debian</a></li>
+<li><a href="../197750/index.html">Description of VHDL Memory Blocks</a></li>
+<li><a href="../197754/index.html">Create a solar system simulator</a></li>
+<li><a href="../197756/index.html">We build your Gmail with courtesans and preference</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

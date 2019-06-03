@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Migration of PROXMOX VE 3.0 to software RAID1</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This material describes the process of migrating the newly installed Proxmox 3.0 hypervisor to software RAID1. Proxmox developers in their wiki write ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Migration of PROXMOX VE 3.0 to software RAID1</h1><div class="post__text post__text-html js-mediator-article"><img align="left" src="https://habrastorage.org/storage2/299/dea/03d/299dea03da78122b48612c255b9d887f.jpg"><br>  This material describes the process of migrating the newly installed Proxmox 3.0 hypervisor to software RAID1.  Proxmox developers in their <a href="http://pve.proxmox.com/wiki/Software_RAID">wiki</a> write that this solution is not officially supported and not recommended for use.  Instead, it is proposed to use solutions on tested hardware raid controllers.  Nevertheless, several manuals on this topic and practice of successful use of softraid together with Proxmox can be found online.  Unfortunately, most of these manuals cannot be called step-by-step guides to action: they all contain certain errors that prevent you from achieving the desired result.  Taking one of these <a href="http://dominicpratt.de/proxmox-ve-3-0-software-raid">manuals</a> as a basis, I tried to correct this situation.  The solution below was tested several times in steps, first in a virtual machine, and then used to migrate data on real hardware.  The result is a working how-to, which is offered to your attention. <br><a name="habracut"></a><br>  Before starting the migration, we have the following: <br><ul><li>  Server with two HDDs of the same capacity (/ dev / sda and / dev / sdb).  Disks are not in RAID'e. </li><li>  Proxmox 3.0 is installed from scratch to the first HDD (/ dev / sda) </li><li>  The system has all the latest updates installed (aptitude update &amp;&amp; aptitude upgrade) </li></ul>  After the migration is completed, both HDDs will be merged into Soft RAID1, while we will save the data that was on the disk before the migration. <br><br>  Migration will occur in several stages: <br>  0. Install the necessary software. <br>  1. Preparation of disks for transfer to RAID1. <br>  2. Transfer / boot to / dev / md0. <br>  3. Modify / etc / fstab. <br>  4. Modification of Grub2. <br>  5. Transfer LVM to / dev / md1, transfer the source disk to RAID1. <br><br><h5>  0. Install the necessary software. </h5><br>  We put mdadm and screen.  When installing, mdadm will ask which modules to include when booting.  Answer “all”.  It is not necessary to set the screen, but it will help us to make sure at the 5th stage, when we transfer LVM. <br><pre><code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># aptitude install mdadm screen</span></span></code> </pre> <br><h5>  1. Preparation of disks for transfer to RAID1. </h5><br>  Copy the sda ​​disk partitioning to sdb.  Hereinafter I give the full output of commands so that at every step you can check the result. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># sfdisk -d /dev/sda | sfdisk -f /dev/sdb Checking that no-one is using this disk right now ... OK Disk /dev/sdb: 4177 cylinders, 255 heads, 63 sectors/track sfdisk: ERROR: sector 0 does not have an msdos signature /dev/sdb: unrecognized partition table type Old situation: No partitions found New situation: Units = sectors of 512 bytes, counting from 0 Device Boot Start End #sectors Id System /dev/sdb1 * 2048 1048575 1046528 83 Linux /dev/sdb2 1048576 67108863 66060288 8e Linux LVM /dev/sdb3 0 - 0 0 Empty /dev/sdb4 0 - 0 0 Empty Warning: partition 1 does not end at a cylinder boundary Warning: partition 2 does not start at a cylinder boundary Warning: partition 2 does not end at a cylinder boundary Successfully wrote the new partition table Re-reading the partition table ... If you created or changed a DOS partition, /dev/foo7, say, then use dd(1) to zero the first 512 bytes: dd if=/dev/zero of=/dev/foo7 bs=512 count=1 (See fdisk(8).)</span></span></code> </pre><br>  Mark the sdb disk partitions as “Linux raid auto”. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># sfdisk -c /dev/sdb 1 fd Done root@kvm0:~# sfdisk -c /dev/sdb 2 fd Done</span></span></code> </pre><br>  To make sure that there is no information on the disk about previously created RAID-arrays, we do the following. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># mdadm --zero-superblock /dev/sdb1 mdadm: Unrecognised md component device - /dev/sdb1 root@kvm0:~# mdadm --zero-superblock /dev/sdb2 mdadm: Unrecognised md component device - /dev/sdb2</span></span></code> </pre>  If the disk is clean, then we see the above messages.  Otherwise, the output of the command will be empty. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Create a RAID array. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># mdadm --create -l 1 -n 2 /dev/md0 missing /dev/sdb1 --metadata=1.1 mdadm: array /dev/md0 started. root@kvm0:~# mdadm --create -l 1 -n 2 /dev/md1 missing /dev/sdb2 --metadata=1.1 mdadm: array /dev/md1 started.</span></span></code> </pre><br>  Add array information to mdadm.conf <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># cp /etc/mdadm/mdadm.conf /etc/mdadm/mdadm.conf_orig root@kvm0:~# mdadm --examine --scan &gt;&gt; /etc/mdadm/mdadm.conf</span></span></code> </pre><br><h5>  2. Transfer / boot to / dev / md0. </h5><br>  Create a file system on / dev / md0.  Mount it in / mnt / md0 and copy the contents of / boot there. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># mkfs.ext3 /dev/md0 mke2fs 1.42.5 (29-Jul-2012) Filesystem label= OS type: Linux Block size=1024 (log=0) Fragment size=1024 (log=0) Stride=0 blocks, Stripe width=0 blocks 131072 inodes, 522944 blocks 26147 blocks (5.00%) reserved for the super user First data block=1 Maximum filesystem blocks=67633152 64 block groups 8192 blocks per group, 8192 fragments per group 2048 inodes per group Superblock backups stored on blocks: 8193, 24577, 40961, 57345, 73729, 204801, 221185, 401409 Allocating group tables: done Writing inode tables: done Creating journal (8192 blocks): done Writing superblocks and filesystem accounting information: done root@kvm0:~# mkdir /mnt/md0 root@kvm0:~# mount /dev/md0 /mnt/md0 root@kvm0:~# cp -ax /boot/* /mnt/md0</span></span></code> </pre><br><h5>  3. Modify / etc / fstab. </h5><br>  We comment in / etc / fstab to mount the boot-partition through the UUID and prescribe the mount of the partition via / dev / md0. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># sed -i 's/^UUID/#UUID/' /etc/fstab root@kvm0:~# echo '/dev/md0 /boot ext3 defaults 0 1' &gt;&gt; /etc/fstab</span></span></code> </pre><br>  As a result, / etc / fstab should look like this. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># cat /etc/fstab # &lt;file system&gt; &lt;mount point&gt; &lt;type&gt; &lt;options&gt; &lt;dump&gt; &lt;pass&gt; /dev/pve/root / ext3 errors=remount-ro 0 1 /dev/pve/data /var/lib/vz ext3 defaults 0 1 #UUID=eb531a48-dea8-4356-9b56-8aa800f14d68 /boot ext3 defaults 0 1 /dev/pve/swap none swap sw 0 0 proc /proc proc defaults 0 0 /dev/md0 /boot ext3 defaults 0 1</span></span></code> </pre><br><br>  Reboot. <br><br><h5>  4. Modification of Grub2. </h5><br>  Add support for RAID1. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># echo 'GRUB_DISABLE_LINUX_UUID=true' &gt;&gt; /etc/default/grub root@kvm0:~# echo 'GRUB_PRELOAD_MODULES="raid dmraid"' &gt;&gt; /etc/default/grub root@kvm0:~# echo 'GRUB_TERMINAL=console' &gt;&gt; /etc/default/grub root@kvm0:~# echo raid1 &gt;&gt; /etc/modules root@kvm0:~# echo raid1 &gt;&gt; /etc/initramfs-tools/modules</span></span></code> </pre><br>  Install the bootloader on both disks. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># grub-install /dev/sda --recheck Installation finished. No error reported. root@kvm0:~# grub-install /dev/sdb --recheck Installation finished. No error reported. root@kvm0:~# update-grub Generating grub.cfg ... Found linux image: /boot/vmlinuz-2.6.32-20-pve Found initrd image: /boot/initrd.img-2.6.32-20-pve Found memtest86+ image: /memtest86+.bin Found memtest86+ multiboot image: /memtest86+_multiboot.bin done root@kvm0:~# update-initramfs -u update-initramfs: Generating /boot/initrd.img-2.6.32-20-pve</span></span></code> </pre><br><h5>  5. Transfer LVM to / dev / md1, transfer the source disk to RAID1. </h5><br>  Add the boot partition on the source disk / dev / sda to RAID1. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># sfdisk -c /dev/sda 1 fd Done root@kvm0:~# mdadm --add /dev/md0 /dev/sda1 mdadm: added /dev/sda1</span></span></code> </pre><br>  Now we need to transfer the data from the / dev / sda2 LVM partition to / dev / md1.  Transferring data using pvmove takes quite a long time, so further actions are performed in the screen. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># screen bash root@kvm0:~# pvcreate /dev/md1 Writing physical volume data to disk "/dev/md1" Physical volume "/dev/md1" successfully created root@kvm0:~# vgextend pve /dev/md1 Volume group "pve" successfully extended root@kvm0:~# pvmove /dev/sda2 /dev/md1 /dev/sda2: Moved: 2.0% /dev/sda2: Moved: 14.5% /dev/sda2: Moved: 17.5% /dev/sda2: Moved: 19.2% /dev/sda2: Moved: 20.3% /dev/sda2: Moved: 24.7% /dev/sda2: Moved: 31.4% /dev/sda2: Moved: 32.5% /dev/sda2: Moved: 43.6% /dev/sda2: Moved: 63.3% /dev/sda2: Moved: 81.4% /dev/sda2: Moved: 100.0% root@kvm0:~# vgreduce pve /dev/sda2 Removed "/dev/sda2" from volume group "pve"</span></span></code> </pre><br>  Add the second partition of the source disk to RAID1. <br><pre> <code class="bash hljs">root@kvm0:~<span class="hljs-comment"><span class="hljs-comment"># sfdisk --change-id /dev/sda 2 fd Done root@kvm0:~# mdadm --add /dev/md1 /dev/sda2 mdadm: added /dev/sda2</span></span></code> </pre><br>  We pour a cup of coffee and watch the array synchronization through cat / proc / mdstat. <br>  This completes the migration of Proxmox 3.0 VM to software RAID1. <br><br>  URLs: <br>  <a href="http://pve.proxmox.com/wiki/Software_RAID">pve.proxmox.com/wiki/Software_RAID</a> <br>  <a href="http://pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_Wheezy">pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_Wheezy</a> <br>  <a href="http://dominicpratt.de/proxmox-ve-3-0-software-raid/">dominicpratt.de/proxmox-ve-3-0-software-raid</a> <br>  <a href="http://www.howtoforge.com/proxmox-2-with-software-raid">www.howtoforge.com/proxmox-2-with-software-raid</a> <br>  <a href="http://www.howtoforge.com/how-to-set-up-software-raid1-on-a-running-system-incl-grub2-configuration-debian-squeeze">www.howtoforge.com/how-to-set-up-software-raid1-on-a-running-system-incl-grub2-configuration-debian-squeeze</a> </div><p>Source: <a href="https://habr.com/ru/post/186818/">https://habr.com/ru/post/186818/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../186800/index.html">PHDays III CTF: An Inside Look (Part 2)</a></li>
+<li><a href="../186804/index.html">Microsoft Smart Watch: Empire Strikes Back</a></li>
+<li><a href="../186806/index.html">OpenMCAPI: simultaneous launch of Linux and RTOS on multi-core processors</a></li>
+<li><a href="../186812/index.html">Moving beyond the boundaries of the Windows 8 Modern-Application container</a></li>
+<li><a href="../186814/index.html">Elon Musk will soon present the project of a new system of passenger transport Hyperloop</a></li>
+<li><a href="../186820/index.html">Test the galaxy for strength</a></li>
+<li><a href="../186822/index.html">Is Scalaxy dead yet?</a></li>
+<li><a href="../186824/index.html">A Google employee is the first person Microsoft has paid for a found vulnerability in IE11</a></li>
+<li><a href="../186826/index.html">PayPal comes to Russia</a></li>
+<li><a href="../186828/index.html">Defining MIME Types</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

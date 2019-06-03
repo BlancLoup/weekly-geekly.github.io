@@ -1,0 +1,306 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Transferring data between servers using LVM and iSCSI</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The issue of scaling resources of dedicated servers is fraught with a number of difficulties: adding memory or disks is impossible without downtime, a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Transferring data between servers using LVM and iSCSI</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/75b/604/8d5/75b6048d578096107a0949c780d481a0.png" alt="aquarium-PR-332-4"><br><br>  The issue of scaling resources of dedicated servers is fraught with a number of difficulties: adding memory or disks is impossible without downtime, and the upgrade of the disk subsystem often involves the complete transfer of all data (the amount of which can be very large) from the old server to the new one.  Simply moving disks from one server to another very often also turns out to be impossible: the reason for this may be interface incompatibility, the use of different RAID controllers, the geographical distance of servers from each other, etc.  Copying the data over the network can take a very long time, during which the service is idle.  How can I transfer data to a new server, minimizing the downtime of services? <br><br>  We have been thinking about this issue for a long time, and today we are presenting to the wide audience a solution that seems to us the most successful. <br><a name="habracut"></a><br><img src="https://habrastorage.org/getpro/habr/post_images/744/c40/827/744c408277636f999adea8b81f75a82d.png" alt="LVM_v3" width="800" height="600"><br>  The procedure for transferring data using the method described in this article consists of the following steps: <br><ol><li>  The new server is loaded from external media, block devices are prepared: disks are partitioned, RAID arrays are created; </li><li>  block devices of the new server are exported via iSCSI - iSCSI targets are created; </li><li>  On the old server, the iSCSI initiator is started and connected to the targets on the new server.  On the old server, block devices of the new server appear and become available; </li><li>  on the old server, the block device of the new server is added to the LVM group; </li><li>  data is copied to the block device of the new server using data mirroring in LVM; </li><li>  old server is shutting down; </li><li>  on a new server, still loaded from external media, a file system transferred to it is mounted, the necessary edits are made to the settings; </li><li>  The new server reboots from the disks, after which all services are started. </li></ol><br>  If there are problems with the new server, it turns off.  The old server is turned on, all services continue to work on the old server. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The method proposed by us is suitable for all OSs where LVM is used for logical partitions and it is possible to install iSCSI target and initiator.  On the server on which we carried out an experimental test of the proposed methodology, the Debian Wheezy OS was installed.  Other operating systems may use other programs and commands, but the procedure will be the same. <br><br>  All operations were carried out on a server with disk layout, which is standard for our servers during an unattended OS installation.  If your server uses a different disk layout, some command parameters will need to be changed. <br><br>  <em>Our data transfer method is designed for experienced users who know well what LVM, mdraid, iSCSI are.</em>  <em>We warn that errors in commands can lead to complete or partial data loss.</em>  <em>Before embarking on the transfer of data, it is necessary to save backup copies of important information on external storage or storage.</em> <br><br><h2>  We are preparing a new server </h2><br>  If you transfer data to a server with a different hardware configuration (special attention should be paid to the disk controller), install the same OS distribution on the new server as on the old one, as well as the drivers needed for operation.  Check that all devices are detected and working.  Save / write down the necessary actions, in the future they will need to be performed in the transferred system, so that the new server can boot after the transfer. <br><br>  Then load the new server from external media.  We recommend to our clients to boot into Selectel Rescue using the server’s load management menu. <br>  When the download is complete, connect to the new server via SSH.  Set the new server to be its future hostname.  This is necessary if you intend to use mdraid on the new server: when creating a RAID array, the hostname will be saved in the RAID metadata on all the disks it contains. <br><br><pre> # hostname cs940
+</pre><br>  Next, you should mark the disks.  In our case, each server will have two main partitions on each disk.  The first sections will be used to build RAID1 for / boot, the second - to build RAID10 under LVM Physical Volume, on which the main data will be placed. <br><br><pre> # fdisk / dev / sda
+ Command (m for help): p
+ ...
+ Device Boot Start End Blocks Id System
+ / dev / sda1 * 2048 2099199 1048576 fd Linux raid autodetect
+ / dev / sda2 2099200 1953525167 975712984 fd Linux raid autodetect
+ Command (m for help): w
+</pre><br>  To make everything easier and faster, you can only mark the first disk, and copy the markup to the others.  Then create the RAID arrays using the mdadm utility. <br><br><pre> # sfdisk -d / dev / sda |  sfdisk / dev / sdb -f
+ # mdadm - create / dev / md0 - level = 1 - raid devices = 4 / dev / sda1 / dev / sdb1 / dev / sdc1 / dev / sdd1
+ # mdadm - create / dev / md1 - level = 10 - apply-devices = 4 / dev / sda2 / dev / sdb2 / dev / sdc2 / dev / sdd2
+ # mdadm --examine --scan
+  ARRAY / dev / md / 0 metadata = 1.2 UUID = e9b2b8e0: 205c12f0: 2124cd91: 35a3b4c8 name = cs940: 0
+  ARRAY / dev / md / 1 metadata = 1.2 UUID = 4be6fb41: ab4ce516: 0ba4ca4d: e30ad60b name = cs940: 1
+</pre><br>  Then install and configure iSCSI target for copying RAID-arrays over the network.  We used tgt. <br><br><pre> # aptitude update
+ # aptitude install tgt
+</pre><br>  If at launching tgt there are errors loading the missing nuclear modules, do not worry: we will not need them. <br><br><pre> # tgtd
+ librdmacm: couldn't read ABI version.
+ librdmacm: assuming: 4
+ CMA: unable to get RDMA device list
+ (null): iser_ib_init (3263) Failed to initialize RDMA;  load kernel modules?
+ (null): fcoe_init (214) (null)
+ (null): fcoe_create_interface (171) no interface specified.
+</pre><br>  The next step is setting up LUNs.  When creating a LUN, you need to specify the IP of the old server from which the connection to the target will be allowed. <br><br><pre> # tgt-setup-lun -n tgt0 -d / dev / md0 10.0.0.1
+ # tgt-setup-lun -n tgt1 -d / dev / md1 10.0.0.1
+ # tgt-admin -s
+</pre><br>  The new server is ready, let's move on to the preparation of the old server. <br><br><h2>  Preparing the old server and copying data </h2><br>  Now connect to the old server via SSH.  Install and configure the iSCSI initiator, and then connect the block devices exported from the new server to it: <br><br><pre> # apt-get install open-iscsi
+</pre><br>  Add authorization data to the configuration file: without them, the initiator will not work. <br><br><pre> # nano /etc/iscsi/iscsid.conf
+ node.startup = automatic
+ node.session.auth.username = MY-ISCSI-USER
+ node.session.auth.password = MY-ISCSI-PASSWORD
+ discovery.sendtargets.auth.username = MY-ISCSI-USER
+ discovery.sendtargets.auth.password = MY-ISCSI-PASSWORD
+</pre><br>  Further operations take a lot of time;  To avoid unpleasant consequences if they are interrupted when you close SSH, use the screen utility.  With its help, we will create a virtual terminal to which you can connect via SSH and disconnect without terminating the running commands: <br><br><pre> # apt-get install screen
+ # screen
+</pre><br>  Then we connect to the portal and get a list of available targets;  we indicate the current IP address of the new server: <br><br><pre> # iscsiadm - mode discovery - type sendtargets - portal 10.0.0.2
+ 10.0.0.2:3260.1 iqn.2001-04.com.cs940-tgt0
+ 10.0.0.2:3260.1 iqn.2001-04.com.cs940-tgt1
+</pre><br>  Then we connect all available targets and LUNs;  as a result of this command, we will see a list of new block devices: <br><br><pre> # iscsiadm --mode node --login
+ Logging in to [iface: default, target: iqn.2001-04.com.cs940-tgt0, portal: 10.0.0.2,3260] (multiple)
+ Logging in to [iface: default, target: iqn.2001-04.com.cs940-tgt1, portal: 10.0.0.2,3260] (multiple)
+ Login to [iface: default, target: iqn.2001-04.com.cs940-tgt0, portal: 10.0.0.2,3260] successful.
+ Login to [iface: default, target: iqn.2001-04.com.cs940-tgt1, portal: 10.0.0.2,3260] successful.
+</pre><br>  iSCSI devices in the system have the same names as regular SATA / SAS.  But at the same time, the two manufacturers have different manufacturer names: for iSCSI devices, it is indicated as IET. <br><br><pre> # cat / sys / block / sdc / device / vendor
+ IET
+</pre><br>  Now you can begin to transfer data.  First, unmount the boot and copy it to the new server: <br><br><pre> 
+ # umount / boot
+ # cat / sys / block / sdc / size
+ 1999744
+ # cat / sys / block / md0 / size
+ 1999744
+ # dd if = / dev / md0 of = / dev / sdc bs = 1M
+ 976 + 1 records in
+ 976 + 1 records out
+ 1023868928 bytes (1.0 GB) copied, 19.6404 s, 52.1 MB / s
+</pre><br>  <b>Attention!</b>  From now on, do not activate VG and do not run any LVM utilities on the new server.  Simultaneous operation of two LVMs with the same block device can cause data corruption or loss. <br><br>  Now we proceed to the transfer of data.  Add a RAID10 array exported from a new server to VG: <br><br><pre> # vgextend vg0 / dev / sdd
+ # pvs
+  PV VG Fmt Attr PSize PFree
+  / dev / md1 vg0 lvm2 a-- 464.68g 0
+  / dev / sdd vg0 lvm2 a-- 1.82t 1.82t
+</pre><br>  Do not forget that / dev / sdd is / dev / md1, exported from a new server loaded into Rescue: <br><br><pre> # lvs
+  LV VG Attr
+  root vg0 -wi-ao-- 47.68g
+  swap_1 vg0 -wi-ao-- 11.44g
+  var vg0 -wi-ao-- 405.55g
+</pre><br>  Now we create a copy for each logical volume on the new server using the lnconvert command.  The --corelog option will allow you to do without a separate block device under the mirror logs. <br><br><pre> # lvconvert -m1 vg0 / root --corelog / dev / sdd
+  vg0 / root: Converted: 0.0%
+  vg0 / root: Converted: 1.4%
+  ...
+  vg0 / root: Converted: 100.0% 
+</pre><br>  Since the creation of an LVM mirror image makes all write operations synchronous, the speed of the channel between servers, open-iSCSI performance (500 MB / s), and network latency will affect the speed of the recording.  After creating copies of all logical volumes, make sure that all of them are synchronized: <br><br><pre> # lvs
+  LV VG Attr
+  root vg0 mwi-aom- 47.68g 100.00
+  swap_1 vg0 mwi-aom- 11.44g 100.00
+  var vg0 mwi-aom- 405.55g 100.00
+</pre><br>  At this stage, all data is copied and the old server is synchronizing data with the new remote server.  To minimize changes in the file system, you need to stop all application services (database service, web server, etc.). <br><br>  By stopping all important services, we disable iSCSI devices and eliminate a copy of LVM that has become inaccessible.  After disabling iSCSI devices on the old server, numerous I / O error messages will be issued, but this should not be a cause for concern: all data is stored on the LVM, which is above the block devices. <br><br><pre> # iscsiadm - mode session -u
+ # vgreduce vg0 --removemissing --force
+ # lvs
+  LV VG Attr
+  root vg0 -wi-ao-- 47.68g
+  swap_1 vg0 -wi-ao-- 11.44g
+  var vg0 -wi-ao-- 405.55g
+</pre><br>  Now you can turn off the old server.  All the data remained on it, and in case of any problems with the new server, they can always be used. <br><br><pre> # poweroff
+</pre><br><br><h2>  Starting a new server </h2><br>  After transferring the data, the new server needs to be prepared for self-loading and running. <br>  Connect via ssh, stop the iSCSI target and activate a copy of LVM: <br><br><pre> # tgtadm --lld iscsi --mode target --op delete --tid 1
+ # tgtadm --lld iscsi --mode target --op delete --tid 2
+
+ # pvscan
+</pre><br>  Now we exclude from LVM a copy from the old server;  We do not pay attention to messages about the absence of the second half. <br><br><pre> # vgreduce vg0 --removemissing --force
+  Couldn't find device with uuid 1nLg01-fAuF-VW6B-xSKu-Crn3-RDJ6-cJgIax.
+  Unable to determine mirror sync status of vg0 / swap_1.
+  Unable to determine mirror sync status of vg0 / root.
+  Unable to determine mirror sync status of vg0 / var.
+  Wrote out consistent volume group vg0
+</pre><br>  Making sure that all the logical volumes are in place, activate them: <br><br><pre> # lvs
+  LV VG Attr
+  root vg0 -wi ----- 47.68g
+  swap_1 vg0 -wi ----- 11.44g
+  var vg0 -wi ----- 405.55g
+
+ # vgchange -ay
+  3 logical volume (s) in volume group "vg0" now active
+</pre><br>  It is also advisable to check the file systems on all logical volumes: <br><br><pre> # fsck / dev / mapper / vg0-root
+</pre><br>  Further we will execute chroot in the copied system and we will make final changes.  This can be done using the infiltrate-root script available in Selectel Rescue: <br><br><pre> # infiltrate-root / dev / mapper / vg0-root
+</pre><br>  Further, all actions on the server are performed from chroot.  Perform a mount of all file systems from fstab (by default, chroot mounts only the root filesystem): <br><br><pre> Chroot: / # mount -a
+</pre><br>  Now let's update the information about the RAIDs on the new server in the mdadm settings file.  Remove from there all the data about the old RAID-arrays (lines starting with “ARRAY”) and add new ones: <br><br><pre> Chroot: / # nano /etc/mdadm/mdadm.conf
+ Chroot: / # mdadm --examine --scan &gt;&gt; /etc/mdadm/mdadm.conf
+</pre><br>  An example of a valid mdadm.conf: <br><br><pre> Chroot: / # cat /etc/mdadm/mdadm.conf
+ DEVICE partitions
+
+ # auto-create devices with Debian standard permissions
+ CREATE owner = root group = disk mode = 0660 auto = yes
+
+ # automatically tag new system
+ HOMEHOST 
+
+ # instruct the monitoring daemon where to send mail alerts
+ MAILADDR root
+
+ # definitions of existing MD arrays
+ ARRAY / dev / md / 0 metadata = 1.2 UUID = 2521ca82: 2a52a408: 565fab6c: 43ba944e name = cs940: 0
+ ARRAY / dev / md / 1 metadata = 1.2 UUID = 6240c2db: b4854bd7: 4c4e1510: d37e5010 name = cs940: 1
+</pre><br>  After that, you need to update the initramfs so that it can find and boot from new RAID arrays.  Also install the GRUB boot loader on the disks and update its configuration: <br><br><pre> Chroot: / # update-initramfs -u
+ Chroot: / # grub-install / dev / sda --recheck
+ Installation finished.  No error reported.
+ Chroot: / # grub-install / dev / sdb --recheck
+ Installation finished.  No error reported.
+ Chroot: / # update-grub
+ Generating grub.cfg ...
+ Found linux image: /boot/vmlinuz-3.2.0-4-amd64
+ Found initrd image: /boot/initrd.img-3.2.0-4-amd64
+ done
+</pre><br>  Delete the udev file with matching network interface names and MAC addresses (with the next boot it will be recreated): <br><br><pre> Chroot: / # rm /etc/udev/rules.d/70-persistent-net.rules
+</pre><br>  Now the new server is ready for download: <br><br><pre> Chroot: / # umount -a
+ Chroot: / # exit
+</pre><br>  Change the boot order to boot from the first hard disk in the server management menu and reboot it: <br><br><pre> # reboot
+</pre><br>  Now we’ll check with the KVM console that the server has booted, and check the server’s access by IP address.  If there are any problems with the new server, you can return to the old server. <br><br>  <em>Do not load the old and new servers into the working OS at the same time: they will be loaded with the same IP, which can lead to loss of access and other problems.</em> <br><br><h2>  File system adaptation after migration </h2><br>  All data is transferred, all services are working and further actions can be performed without haste.  In our example, data was migrated to a server with a large amount of disk space.  All this disk space now needs to be used.  To do this, first expand the physical partition, then the logical partition and, finally, the file system as a whole: <br><br><pre> # pvresize / dev / md1
+ # pvs
+  PV VG Fmt Attr PSize PFree
+  / dev / md1 vg0 lvm2 a-- 1.82t 1.36t
+ # vgs
+  VG #PV #LV #SN Attr VSize VFree
+  vg0 1 3 0 wz - n- 1.82t 1.36t
+ # lvextend / dev / vg0 / var / dev / md1
+  Extending logical volume var to 1.76 TiB
+  Logical volume var successfully resized
+ # lvs
+  LV VG Attr
+  root vg0 -wi-ao-- 47.68g
+  swap_1 vg0 -wi-ao-- 11.44g
+  var vg0 -wi-ao-- 1.76t
+
+ # xfs_growfs / var
+ meta-data = / dev / mapper / vg0-var isize = 256 agcount = 4, agsize = 26578176 blks
+          = sectsz = 512 attr = 2
+ data = bsize = 4096 blocks = 106312704, imaxpct = 25
+          = sunit = 0 swidth = 0 blks
+ naming = version 2 bsize = 4096 ascii-ci = 0
+ log = internal bsize = 4096 blocks = 51910, version = 2
+          = sectsz = 512 sunit = 0 blks, lazy-count = 1
+ realtime = none extsz = 4096 blocks = 0, rtextents = 0
+ data blocks changed from 106312704 to 472291328
+
+ # df -h
+ Filesystem Size Used Avail Use% Mounted on
+ rootfs 47G 660M 44G 2% /
+ udev 10M 0 10M 0% / dev
+ tmpfs 1.6G 280K 1.6G 1% / run
+ / dev / mapper / vg0-root 47G 660M 44G 2% /
+ tmpfs 5.0M 0 5.0M 0% / run / lock
+ tmpfs 3.2G 0 3.2G 0% / run / shm
+ / dev / md0 962M 36M 877M 4% / boot
+ / dev / mapper / vg0-var 1.8T 199M 1.8T 1% / var
+</pre><br><br><h2>  Conclusion </h2><br>  Despite its complexity, the approach we have described has several advantages.  Firstly, it allows you to avoid long server idle time - all services continue to work while copying data.  Secondly, in case of any problems with the new server, the old one is ready for a quick start.  Thirdly, it is universal and does not depend on what services are running on the server. <br><br>  In a similar way, you can migrate under other operating systems - CentOS, OpenSUSE, etc. Naturally, in this case there may be differences in some nuances (OS preparation for starting on a new server, setting up the bootloader, initrd, etc.). <br><br>  We are well aware that the method proposed by us can hardly be considered ideal.  We will be grateful for any comments and suggestions for its improvement.  If any of our readers can offer their own solution to the problem of transferring data without stopping the servers, we will be happy to read it. <br><br>  Readers who are not able to comment on posts on Habré, we invite to our <a href="http://slc.tl/4f7cb">blog</a> . </div><p>Source: <a href="https://habr.com/ru/post/209444/">https://habr.com/ru/post/209444/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../209432/index.html">OwnCloud's own corporate cloud with NGINX on the frontend and several backend servers</a></li>
+<li><a href="../209434/index.html">Japanese space agency JAXA is going to hunt space junk with a network in February</a></li>
+<li><a href="../209436/index.html">About logging in Node.js</a></li>
+<li><a href="../209438/index.html">Attack with your time server: NTP amplification attack (CVE-2013-5211)</a></li>
+<li><a href="../209442/index.html">Components. Make & watch</a></li>
+<li><a href="../209446/index.html">We study the internal kitchen of the Linux kernel using / proc for quick diagnosis and problem solving</a></li>
+<li><a href="../209450/index.html">The future of IT within companies: less, better, cheaper</a></li>
+<li><a href="../209452/index.html">US authorities seized another 29655 bitcoins ($ 28 million) from Silk Road servers</a></li>
+<li><a href="../209454/index.html">Laboratories for penetration testing "Test.lab"</a></li>
+<li><a href="../209458/index.html">Google showed the dynamics of the popularity of music trends over the past 64 years</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

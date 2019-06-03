@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>JBoss 7 Cluster - Load Balancing with Apache</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the last article, we configured the replication of user sessions to all nodes of the JBoss cluster. In itself, such an action does not improve faul...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>JBoss 7 Cluster - Load Balancing with Apache</h1><div class="post__text post__text-html js-mediator-article">  <i>In the <a href="http://habrahabr.ru/post/189588/">last article,</a> we configured the replication of user sessions to all nodes of the JBoss cluster.</i>  <i>In itself, such an action does not improve fault tolerance, and in order to use the resulting functionality, a load balancer is required, which will distribute external calls between cluster nodes.</i>  <i>To distribute the load between the sites will be Apache web server, in accordance with the recommendations in the documentation for JBoss.</i>  <i>All the information in the article is available in various sources, but it is scattered, and I did not come across a single resource where everything would be gathered in one place, with a description of the solution of problems that may arise in practice (I personally had it, so I share the recipes) .</i>  <i>The article does not claim to be complete, rather the opposite - the minimum configuration is described.</i>  <i>It is intended both for specialists who are interested in specific configurations and settings, and for people far from this topic, but who are interested in what clustering is.</i> <a name="habracut"></a><br><br><h5>  General principles of work </h5><br>  <i>Professionals familiar with clustering principles may skip this section</i> .  For clarity, I will consider a specific situation that many people encounter: the existing system, consisting of a single application server, switches to a cluster solution.  The best option in such cases is not to try to immediately embrace the immense, but to build a minimal working configuration: two application servers in a cluster, and in front of them a web server as an interface (frontend) to clients. <br><br>  The scheme of work is as follows: all requests previously sent directly to the http / https JBoss connector should now contact the web server (Apache).  Apache is configured to “know” that there are two application servers behind it.  When the client first accesses the System, the web server selects one of the application servers ( <b>Node-1</b> ) and redirects the request to it.  A session is created, a cookie is added to it, which is then used by the web server to “paste” all subsequent requests of the same client to the selected application server.  <b>Node-1</b> processing client requests, when creating / changing a session, replicates its state to the other nodes of the cluster, where they hang as dead goods, so far without bringing any benefit. <br><div class="spoiler">  <b class="spoiler_title">Read more about Sessions.</b> <div class="spoiler_text">  Simplified.  A session is an object created on the JBoss side with various attributes.  A session has an identifier that is sent to the browser when a session is created, and each time the client accesses the server, the browser is sent back to the server (usually in the form of a cookie).  The server by identifier finds the session and processes the request in the context of the data of the found session.  The task of replication in a cluster is to transfer session data to other nodes so that when a client accesses it, any other node could, just like Node-1, find a session (and data stored in it) by identifier and process the client's request in its context. </div></div>  In the case of the "fall" of the <b>Node-1</b> , the next time the client accesses, Apache detects that the server is unavailable, and redirects the request to another node ( <b>Node-2</b> ).  This is where the “dead weight” begins to be used - the session, the state of which is already on all nodes of the cluster.  The request is processed by <b>Node-2</b> , and Apache sticks a session to it, i.e.  all subsequent user requests are now immediately sent to the <b>Node-2</b> . <br><img src="https://habrastorage.org/storage2/82c/6c9/a77/82c6c9a77c81e7f8d72c24bcdbd9a2f8.jpg"><br><h5>  Basic configuration </h5><br>  If session replication is already configured on the JBoss side, then no additional configuration is required, everything that is needed ( <a href="http://ru.wikipedia.org/wiki/Apache_JServ_Protocol">AJP</a> connector) is already configured in the default configuration.  Requires <a href="httpd.apache.org/download.cgi">download</a> and install Apache HTTP Server (installation process is beyond the scope of this article).  All configuration is done by editing the conf / httpd.conf file. <br><ol><li>  <b>Connecting modules</b> .  Uncomment or add the following lines: <br><pre><code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">LoadModule</span></span> proxy_module modules/mod_proxy.so LoadModule proxy_ajp_module modules/mod_proxy_ajp.so LoadModule proxy_balancer_module modules/mod_proxy_balancer.so LoadModule headers_module modules/mod_headers.so</code> </pre> <br>  The mod_proxy.so, mod_proxy_ajp.so, and mod_proxy_balancer.so modules are required for the load balancer.  If the system does not have the concept of "session", then they are enough.  I, for example, worked with a system that processed requests via web services, these are single hits that are not related to each other, so the sessions were not created.  In our case, there are users and their sessions, so you need to add the mod_headers.so module, which allows you to track session data transmitted by the browser. <br></li><li>  <b>Adjust balancing</b> .  Add the following lines: <br><pre> <code class="hljs pgsql">NameVirtualHost <span class="hljs-number"><span class="hljs-number">192.168</span></span><span class="hljs-number"><span class="hljs-number">.1</span></span><span class="hljs-number"><span class="hljs-number">.0</span></span>:<span class="hljs-number"><span class="hljs-number">80</span></span> &lt;VirtualHost <span class="hljs-number"><span class="hljs-number">192.168</span></span><span class="hljs-number"><span class="hljs-number">.1</span></span><span class="hljs-number"><span class="hljs-number">.0</span></span>:<span class="hljs-number"><span class="hljs-number">80</span></span>&gt; <span class="hljs-keyword"><span class="hljs-keyword">Header</span></span> <span class="hljs-keyword"><span class="hljs-keyword">add</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Set</span></span>-Cookie "ROUTEID=.%{BALANCER_WORKER_ROUTE}e; path=/" env=BALANCER_ROUTE_CHANGED &lt;Proxy balancer://ajp-<span class="hljs-keyword"><span class="hljs-keyword">cluster</span></span>&gt; BalancerMember ajp://<span class="hljs-number"><span class="hljs-number">192.168</span></span><span class="hljs-number"><span class="hljs-number">.1</span></span><span class="hljs-number"><span class="hljs-number">.1</span></span>:<span class="hljs-number"><span class="hljs-number">8009</span></span> route=node1 BalancerMember ajp://<span class="hljs-number"><span class="hljs-number">192.168</span></span><span class="hljs-number"><span class="hljs-number">.1</span></span><span class="hljs-number"><span class="hljs-number">.2</span></span>:<span class="hljs-number"><span class="hljs-number">8009</span></span> route=node2 ProxySet stickysession=ROUTEID &lt;/Proxy&gt; &lt;<span class="hljs-keyword"><span class="hljs-keyword">Location</span></span> /&gt; ProxyPass balancer://ajp-<span class="hljs-keyword"><span class="hljs-keyword">cluster</span></span>/ &lt;/<span class="hljs-keyword"><span class="hljs-keyword">Location</span></span>&gt; &lt;/VirtualHost&gt;</code> </pre> <br>  Instead of <i>192.168.1.0,</i> specify the address of Apache. <br>  In the <b>Proxy</b> section, specify the list of addresses of the AJP-connectors of the cluster nodes, one occurrence of <b>BalancerMember</b> for each node.  In the default JBoss 7 configuration, the AJP connector listens on port 8009. The <b>route</b> parameter assigns a unique host name used only by Apache itself, i.e.  it is not necessary to match the names specified at the start of JBoss ( <i>the jboss.node.name parameter</i> ).  There is no need to change anything else, the cluster is ready to be launched and tested. <div class="spoiler">  <b class="spoiler_title">Configuration Details</b> <div class="spoiler_text">  The " <b>Header add Set-Cookie</b> " directive works in conjunction with the " <b>ProxySet stickysession</b> " directive as follows.  When the client first accesses Apache, after the balancer chooses which node it will be redirected, a cookie with the name " <b>ROUTEID</b> " is added to the user's session, the value of which is the identifier of the selected node (node1 / node2 in the configuration above).  On subsequent client calls, Apache no longer needs to “think” about which node was previously selected, Cookie explicitly tells the web server to which node the request should be redirected to.  The “Header” directive is responsible for the existence of the cookie in the session, and the “ProxySet stickysession” directive for using it when routing to “stick” the session to a specific node.  If your server does not work with sessions (for example, as in my example above, only web services), then the Header and ProxySet directives are not needed. <br></div></div><div class="spoiler">  <b class="spoiler_title">JSESSIONID</b> <div class="spoiler_text">  Many configuration examples suggest using the session identifier JSESSIONID as a node token.  It seems logical because  This identifier is used in most Java web applications.  Example with <a href="httpd.apache.org/docs/2.2/mod/mod_proxy_balancer.html">apache.org</a> : <pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">ProxyPass</span></span> /test balancer://mycluster stickysession=JSESSIONID|jsessionid scolonpathdelim=On &lt;Proxy balancer://mycluster&gt; BalancerMember http://192.168.1.50:80 route=node1 BalancerMember http://192.168.1.51:80 route=node2 &lt;/Proxy&gt;</code> </pre>  Just say: for JBoss, this does not work, at least in the default configuration.  This method assumes that the Cookie value with the name JSESSIONID, formed on the application server side, consists of two parts: the session identifier is supplemented with the server identifier, they are separated by a dot.  JBoss 7 forms a simple JSESSIONID Cookie, which contains only a session identifier, the value of which is randomly generated and does not carry any meaning. <br>  Thus, the main differences from the configuration I described are as follows: <br><ul><li>  In the configuration described in the article, the node ID and the session ID are in different Cookies, here two values ​​are combined into one Cookie. </li><li>  In the configuration described in the article, the node identifier is formed on the balancer side (it is logical: who uses it forms), and the session ID is on the application server side (the same principle: the session identifier is needed by JBoss, not Apache).  Here both values ​​are generated on the server side of the application (or the web server on the backend). </li></ul><br></div></div><br></li></ol><br><h5>  SSL Setup (HTTPS) </h5><br>  If before clustering you used encryption when communicating with the client, communicating with it via the HTTPS protocol, then certificate settings were made on the JBoss side, in the HTTPS connector configuration.  When switching to a cluster solution, Apache must manage the certificates. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <div class="spoiler">  <b class="spoiler_title">General principles</b> <div class="spoiler_text">  The process is as follows: HTTPS requests from the client are sent to the Apache web server, decrypted and transmitted to the application server in open form via the AJP protocol.  The response from the application server is also transmitted to the web server in open form, encrypted there and transmitted to the client via the HTTPS protocol.  Thus, between the Apache and JBoss there is a so-called “demilitarized zone”, i.e.  an environment closed from external unauthorized access in which trusting relationships are configured between servers that do not require additional protection against unauthorized access at the application level.  Only Apache should be accessible from the outside, on the HTTPS port (usually, 443), everything else should be tightly closed. <br><img src="https://habrastorage.org/storage2/188/15c/553/18815c5531b24463569005dd8a89738d.png"></div></div><br>  Web server settings in conf / httpd.conf: <br><ol><li>  <b>Intercept port 443</b> .  The Apache web server in the default configuration "listens" only to port 80. In order for it to listen on port 443, add the line: <br><pre> <code class="hljs pgsql"><span class="hljs-keyword"><span class="hljs-keyword">Listen</span></span> <span class="hljs-number"><span class="hljs-number">443</span></span></code> </pre> </li><li>  <b>Connecting modules</b> .  Uncomment or add the following line: <br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">LoadModule</span></span> ssl_module modules/mod_ssl.so</code> </pre> <br></li><li>  <b>Adjust balancing</b> .  Add the following lines: <br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">NameVirtualHost</span></span> <span class="hljs-number"><span class="hljs-number">192.168.1.0:443</span></span> &lt;VirtualHost <span class="hljs-number"><span class="hljs-number">192.168.1.0:443</span></span>&gt; Header add Set-Cookie <span class="hljs-string"><span class="hljs-string">"ROUTEID=.%{BALANCER_WORKER_ROUTE}e; path=/"</span></span> env=BALANCER_ROUTE_CHANGED &lt;Proxy balancer://ajp-cluster&gt; BalancerMember ajp://192.168.1.1:8009 route=node1 BalancerMember ajp://192.168.1.2:8009 route=node2 ProxySet stickysession=ROUTEID &lt;/Proxy&gt; &lt;Location /&gt; ProxyPass balancer://ajp-cluster/ &lt;/Location&gt; ProxyRequests <span class="hljs-literal"><span class="hljs-literal">off</span></span> SSLEngine <span class="hljs-literal"><span class="hljs-literal">on</span></span> SSLCertificateFile c:/Apache2/conf/my.cer SSLCertificateKeyFile c:/Apache2/conf/my.key &lt;/VirtualHost&gt;</code> </pre><br></li></ol><br>  In addition to the previous configuration, you need to specify the paths to the certificate and private key that are used by your server to encrypt traffic. <br><br>  The above configuration of Apache 2.2, starting with version 2.4, should add the modules mod_lbmethod_byrequests.so and mod_slotmem_shm.so, and delete NameVirtualHost ads, they are no longer needed. <br><div class="spoiler">  <b class="spoiler_title">Problems with certificates and their solution</b> <div class="spoiler_text">  When setting up encryption on the JBoss side, one file was required containing a key and a certificate, for example, in the PKCS # 12 format.  Apache requires splitting into two files, in one file a certificate, in the other - the private key.  In addition, Apache has two limitations: <br><ol><li>  Only PEM is recognized.  You can find out if your <b>key</b> matches this format by opening the key file with a text editor.  The content should contain the lines "----- BEGIN PRIVATE KEY -----" and "----- END PRIVATE KEY -----", the length of the lines between them should not exceed 64 characters.  The same applies to the <b>certificate</b> , with the strings, respectively, "----- BEGIN CERTIFICATE -----" and "----- END CERTIFICATE -----". </li><li>  Building Apache under Windows does not know how to open password-protected keystores. </li></ol><br>  All of the above problems are solved using the utility <a href="http://slproweb.com/products/Win32OpenSSL.html">Openssl</a> .  From your key store file and the certificate used in JBoss, you should extract the key and certificate into separate files, while converting it to the correct format and removing the password protection.  Here is an example of the key conversion from the PKCS # 12 format (other formats are supported, Google will help you): <br><pre> <code class="hljs tex">openssl pkcs12 -nocerts -nodes -in C:<span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">key</span></span></span></span>.p12 -out C:<span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">Apache</span></span></span></span>2<span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">conf</span></span></span></span><span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">my</span></span></span></span>.key openssl pkcs12 -clcerts -nokeys -nodes -in C:<span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">key</span></span></span></span>.p12 -out C:<span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">Apache</span></span></span></span>2<span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">conf</span></span></span></span><span class="hljs-tag"><span class="hljs-tag">\</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">my</span></span></span></span>.cer</code> </pre> <br>  <b>ATTENTION!</b>  Do not forget to delete the received my.key file from your computer after transferring it to the industrial server, since  it is unprotected and may be compromised. </div></div><br><h5>  Conclusion </h5><br>  After applying the solution described in the article, in principle, you can remove the description of the HTTP / HTTPS connectors as unnecessary from the JBoss settings.  now all external calls will come through an AJP connector.  This will significantly increase server security, especially for scanning utilities that pay special attention to these protocols. <br><br><h5>  PS </h5><br>  The proposed clustering option partially solves the problem of load balancing and fault tolerance.  For a full configuration, there is not enough clustering of DBMS and duplication of a single entry point - Apache.  The configuration of the hardware infrastructure is also very important: duplication of networks and routers, server components, uninterrupted power supply and so on.  Nevertheless, this article will help develop the system on the 80/20 principle, i.e.  through small costs get a significant increase in performance and fault tolerance.  In my practice, I was not able to meet the solutions in which we went further, except clustering of the DBMS occurred, but if I happen to encounter, I will definitely write about it.  If your services are highly critical, then the solution I proposed is only the first step. <br><br>  There is a <a href="http://habrahabr.ru/post/129377/">similar article</a> on Habré, I recommend to get acquainted with it as well.  Despite the thematic similarity, my article is noticeably different, and, in my opinion, has every right to exist.  I tried to lucidly talk about how and at the expense of which everything works, the contents of the configuration and batch files are simply posted there.  In addition, in the article by reference, Apache uses <b>mod_jk</b> for balancing, I have <b>mod_proxy</b> .  Stackoverflow <a href="http://stackoverflow.com/questions/1081918/apache-to-tomcat-mod-jk-vs-mod-proxy">writes</a> that the main disadvantage of mod_jk is " <i>Need to build and maintain a separate module</i> ".  This is exactly what our system administrators have encountered in practice, who have never been able to install this module on Apache for AIX, so if you have a similar problem, you can try the mod_proxy that comes with Apache and, in my opinion, is easier to configure . </div><p>Source: <a href="https://habr.com/ru/post/190196/">https://habr.com/ru/post/190196/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../190186/index.html">Perl6 - Operator Overloading</a></li>
+<li><a href="../190188/index.html">This is our fault ... Get over it</a></li>
+<li><a href="../190190/index.html">The development of Ubi Interactive and Microsoft turns any surface into a touchscreen display.</a></li>
+<li><a href="../190192/index.html">Conditions of long-term work of employees in the company. Case Notamedia</a></li>
+<li><a href="../190194/index.html">New Trending page on GitHub</a></li>
+<li><a href="../190200/index.html">Test.it v1.1.0 released - what’s next?</a></li>
+<li><a href="../190202/index.html">πfs is a revolutionary file system with no data storage.</a></li>
+<li><a href="../190208/index.html">Package of games, books and films based on the works of Lovecraft</a></li>
+<li><a href="../190210/index.html">The consequences of the fall of the “Chelyabinsk meteorite”: a video model from NASA</a></li>
+<li><a href="../190212/index.html">Algorithmization of justice</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

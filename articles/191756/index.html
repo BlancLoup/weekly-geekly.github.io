@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>IMAP on boost :: asio</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Initially, our own IMAP server used an own-designed epoll reactor. As always, in the process of exploitation and growth of load, remarks are slowly co...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>IMAP on boost :: asio</h1><div class="post__text post__text-html js-mediator-article">  Initially, our own <a href="http://habrahabr.ru/company/mailru/blog/151001/">IMAP server</a> used an own-designed epoll reactor.  As always, in the process of exploitation and growth of load, remarks are slowly coming up, as a result of which technical debt begins to accumulate over time and development slows down. <br><br>  In our case there were also original architectural notes. <br><br><ul><li>  The flow serving the reactor was not controlled in any way and the race-condition could occur upon receipt of control signals.  On the other hand, it is impossible to stop or slow down this flow, therefore possible ways of circumvention looked unacceptable. </li><li>  The reactor did not know how to work in full-duplex mode.  This limited its use to only interactive protocols, such as IMAP.  However, between servers, we often use the IProto protocol, which implies full-duplex communication. </li></ul>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The lyrical digression about IProto: the protocol is very simple: a header of three fields of type uint32_t: command, packet number, data length.  At the expense of the field "package number" the server can respond to requests in any order, and the client can wait for a response in an asynchronous style and send the next request.  In Mail.Ru Group it is used everywhere - starting with our Tarantool, and ending with the anti-brutfors service. <br><br>  Therefore, it was decided to make a test version using boost :: asio.  In this post I will talk about moving to the reactor boost :: asio, its advantages and the pitfalls that we encountered. <br><br><a name="habracut"></a>  Why did you choose boost :: asio?  As a rule, an asynchronous application means not only polling sockets with epoll.  In a real application, we still need timers, threads, RC prevention strategies, correct work with SSL, native support for IPv6.  boost :: asio allows you to do it all in a C ++ style in a natural way. <br><br>  <b>Process of moving</b> <br><br>  Replacing the reactor was quite simple.  This helped several factors. <br><br><ul><li>  In the old reactor, the read / write points were strictly standardized, since  They were called from the reactor itself, so it was easy to arrange read / write callouts.  There are, of course, exceptions, in particular, the processing of literals and FETCH commands, which need to limit the size of the write buffer. </li><li>  The timers worked separately from the reactor itself, so it was completely replaced by the native for asio deadline_timer. </li><li>  The asio :: strand is used as an RC prevention strategy. </li><li>  boost :: asio uses OpenSSL, which, as we know, is a generally accepted standard.  In addition, the stream encryption speed for OpenSSL is significantly higher than that of other libraries ( <a href="http://panthema.net/2008/0714-cryptography-speedtest-comparison/">proof</a> ). </li></ul><br><br>  Some things have been removed completely, for example, the functionality of collecting statistics.  This was a deliberate step: to fulfill the direct duties of the server, this is not necessary, statistics are collected on the fly logs, plus sending UDP to the graphit, plus atomic variables to monitor the internal state of the server. <br><br>  In general, the increase in the stability and responsiveness of the server was already evident in the first release version, which, of course, pleased.  Of course, not everything was so rosy - there were some problems.  For example, with asio :: strand, with setting up the proper self-destruction of connection objects, with “heavy” operations APPEND, COPY, FETCH, with boost :: asio :: streambuf, which does not like to give memory.  But first things first. <br><br>  <b>Server structure</b> <br><br>  The structure is most similar to <a href="&amp;xid=17259,15700022,15700186,15700190,15700253&amp;usg=ALkJrhjORT6xM4qnLQc0QL-Etj4s0edg1A#boost_asio.examples.">HTTP Server 3</a> of examples of boost :: asio. <br>  Events are served by a thread pool, which runs one instance io_service :: run.  This allows you to achieve higher server responsiveness, because  any free thread can execute an event handler if it is ready to execute. <br><br>  The connection status with each client is maintained by its own class instance, which implements the basic functions of receiving / transmitting / tracking timeouts.  Then state classes are inherited from it according to RFC: unauthorized, authorized.  The base class contains instances of deadline_timer classes for tracking connection timeouts, a socket descriptor (in our case, this is asio :: ssl :: stream, because SSL encryption is encapsulated in it), asio :: strand to prevent simultaneous triggering of event handlers (since they are methods of the same class, it is necessary to prevent the race condition). <br><br>  There is a separate class Listener, which is engaged in listening to ports, accepting connections to them, installing SSL handshake.  Its handlers are triggered in the same thread pool. <br><br>  Various "heavy" operations are performed in a special way.  It is undesirable to block strand for a long time, and the commands can be quite long (for example, COPY).  Therefore, a workaround is used to start this work in an RC-safe mode, but at the same time not to block the strand.  When receiving a command, the server simply checks that all the parameters are correct, remembers them, turns off all the events that can cause RC, and then via io_service :: post, calls the method that actually performs the action.  It turns out that the action takes place in deattached-mode, without interfering with its blocking to perform other requests. <br><br>  The FETCH command also works in a special way.  The point is that the output of a command can be quite large, so for “slow” clients the write buffer may “hang” for a long time, which eats the memory on the server.  In addition, if you form the answer completely, and then send it, the delay until the first answer becomes quite large.  Therefore, the handler tries to send in chunks of 1 MB, but if the letter is larger, we do not cut it into pieces, since  This greatly complicates the process with no visible advantages.  On the other hand, while this 1 MB is sent to the client, we can prepare and put in the right format the next piece of the answer. <br><br><img src="https://habrastorage.org/storage3/fef/973/0c4/fef9730c40b693fff0979518c7293f13.png"><br><br>  <b>How asio behaves under load</b> <br><br>  In short - great.  Usually on one front end there are about 40 thousand client connections.  Plus, a certain amount - to internal services: databases, storages, etc.  Not all of them are controlled by the asio reactor, but for now this is sufficient.  CPU rarely goes beyond 10-20%.  With memory, not everything is so smooth: with the number of connections, its consumption is 6–7 GB, mainly due to the severity of some protocol commands and the use of SSL memory. <br><br>  Probably many have heard of <a href="http://www.kegel.com/c10k.html">the 10K problem</a> .  So, for asio, this is absolutely not a problem, especially if your libraries and subsystems are able to work in non-blocking mode.  Perhaps this is the most important point of the application on asio and asynchronous applications in general.  When this moment is resolved, you can serve hundreds of thousands of connections, of course, if you have enough memory and CPU.  So I think that in the modern world it is reasonable to talk about the C100K or C1M problem. <br><br>  <b>And in fact…</b> <br><br>  Did we encounter the pitfalls when introducing asio?  Of course yes.  But, in my opinion, they are pretty easy to get around.  Let's start in order. <br><br>  The first is asio :: strand.  For those who do not know - this is such a helper who knows how to wrap callbacks with his logic;  it does not allow to call bellies in different threads that were wrapped with a single strand.  This ensures that event handlers are safe in a multithreaded environment.  But this cheese was not free, but the point is this: strand inside themselves use the so-called <a href="">“strand implementations”</a> , and their number is sewn up at the compilation stage.  The latter, in turn, contain mutexs.  What does this lead to?  Suppose we have connections A, B, C, and the number of “strand implementations” is 2. If one of the connections, for example A, has a long operation, then connections B and C at the time of allocation of the trend for them can get into the same implementation, as A. Then all their handlers will block until A completes the operation.  In this sense, a simple mutex on connection handlers would be more efficient.  Awareness of this problem did not come immediately, but the solution is very simple - when compiling we put down the defaines BOOST_ASIO_ENABLE_SEQUENTIAL_STRAND_ALLOCATION and BOOST_ASIO_STRAND_IMPLEMENTATIONS equal to the expected number of connections.  For some reason, this feature is not documented anywhere except in the strand_service code itself.  Of course, if all the protocols used are non-blocking and the application is true-asynchronous, such a problem is unlikely to be relevant, but in our case there are legacy libraries operating in blocking mode, so (so far) you have to look for workarounds. <br><br>  There are also some features related to read / write buffers.  If you use asio :: streambuf, you need to understand that this buffer does not like to give memory - you have to reckon with this and make some detour movements.  Somewhat frustrating that there is no native concurrent write buffer.  For protocols like our IProto, this would be a very useful feature - the protocol implies a very large number of small packets.  Another of the drawbacks is that there is no protection against RC when writing to a socket, so it’s not necessary to do parallel async_write in SSL mode (and in the usual one too!);  Again, you need to organize a queue, or a mechanism for switching write buffers, or just somehow prevent parallel calls.  And here again there are additional problems: if the peer is gone, the write buffer can continue to grow until the current async_write understands that there is no more feast.  This can consume your memory, which, of course, again will affect the maximum of open connections. <br><br>  Perhaps this is obvious to many, but still I would like to emphasize it separately: 10 thousand connections "out" is not the same as 10 thousand connections on any internal service, where only "their" go .  In the first case, unbelievable things can happen, the struggle with which presents the greatest difficulty.  These can be strange clients who manage to disconnect before the SSL handshake is completed.  There may be terribly slow ones that download a 40 MB letter to you at a speed of 256 Kbps.  It sounds simple, but the APPEND command accepts the body of the letter as a literal;  this means that while the letter is not uploaded, the command has not yet been given and must somehow be in memory, and the memory, as we know, is not rubber.  In the case of the FETCH command, the opposite is true: if the client has a slow reception rate and you want to send 1 MB, this piece of data is in your memory until it is sent. <br><br>  Therefore, if your service is looking "out", you need to consider a lot of factors.  Such proven libraries as asio remove a lot of problems from you, which you can learn about only “in battle”. <br><br>  <b>Conclusion, server development plans</b> <br><br>  In general, we are satisfied.  The service began to work more stable, process more connections, much less crash. <br>  Further development of the server is inevitable - we plan to improve stability, expand support for rfc extensions, including IDLE;  I think boost :: asio will easily help us with this.  So far it is difficult to imagine how many connections could be in the IDLE state at the same time, but I suppose a lot.  Perhaps the effect of this will not be so great, since many mobile clients (and now most of them) do not know IDLE.  But it will be quite easy to do this on asio, therefore from the side of the IMAP server this is not at all a complicated development. <br>  Also on the way are new internal services, which by their nature are asynchronous, and communication with them takes place via our favorite IProto protocol, which will allow less blocking and, therefore, process requests faster. <br><br>  Have questions?  Ask!  Have a rewarding experience?  Share in the comments! <br><br>  <i>Albert Galimov,</i> <i><br><br></i>  <i>Mail Backend Group Programmer</i> </div><p>Source: <a href="https://habr.com/ru/post/191756/">https://habr.com/ru/post/191756/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../191744/index.html">GetThemAll or take the best from the Internet!</a></li>
+<li><a href="../191746/index.html">Rights holders and the Internet - from dispute to the market. Yandex Position</a></li>
+<li><a href="../191748/index.html">Preparing your environment and compiling Shareaza today</a></li>
+<li><a href="../191750/index.html">Google Translate: a guide for the complete idiot</a></li>
+<li><a href="../191754/index.html">In the Windows Phone Store for $ 19</a></li>
+<li><a href="../191758/index.html">Moto X officially went on sale</a></li>
+<li><a href="../191762/index.html">Various methods for loading associations in Ruby on Rails</a></li>
+<li><a href="../191764/index.html">Installing and using Archipel for managing virtual machines</a></li>
+<li><a href="../191766/index.html">MiniJava programming language compiler</a></li>
+<li><a href="../191772/index.html">The funniest comments in the source code</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

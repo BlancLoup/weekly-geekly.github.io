@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Scale a real-life project database using SQL Azure Federations. Part 2: Baseline</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Last time, we looked at the theoretical part of SQL Azure Federations. What you should think about and what to consider when migrating to using SQL Az...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Scale a real-life project database using SQL Azure Federations. Part 2: Baseline</h1><div class="post__text post__text-html js-mediator-article">  <a href="http://habrahabr.ru/company/epam_systems/blog/192984/">Last time,</a> we looked at the theoretical part of SQL Azure Federations.  What you should think about and what to consider when migrating to using SQL Azure Federations.  I note that the essence is not even in the technology itself.  If there is a database scaling task, no matter using Federations, MySQL Cluster or another method, the first thing to think about is the database architecture.  The database that needs to be scaled must first be architecturally oriented towards this. <br><br>  So back to our project.  The subject area of ​​the database is personal finance accounting.  The database diagram is shown in the figure. <br><br><img src="https://habrastorage.org/storage3/d9a/b3f/4b3/d9ab3f4b38c15e392af5cc8d884cb19b.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      As we can see the database is quite simple.  Each object of the system is an entity with basic properties (Id, Name, Description).  Specific entities are Account (inherited from it: Bank account, Credit card), Category of expenses (inherited from it: Budget, as well as child categories) and Account transactions. <br><br>  In addition to the tables, the database contains some logic for adding entities to the database (framed in the form of stored procedures), as well as a couple of View, for displaying the results of typical database queries. <br><br>  The SQL source code of the database creation script can be found <a href="https://docs.google.com/file/d/0B8RUH2YFlwy8ckxqVUc3RjgxT2c/edit%3Fusp%3Dsharing">here</a> . <br><br><img src="https://habrastorage.org/storage3/44f/3b0/d21/44f3b0d215e24ba5e8ab5dfc60bcd432.png"><br><br>  It is clear that in a real project the number of artifacts in the database can be an order of magnitude greater, but even migrating such a small database can reveal the main rakes that can be encountered when using SQL Azure Federations. <br><a name="habracut"></a><br><h5>  Analysis </h5><br>  Before rushing to migrate a database to use SQL Azure Federations, you must determine which data in the database is logically independent.  What kind of data can be distributed across different databases.  In essence, it is necessary to choose a table whose data will be divided into several databases, the so-called federated table. <br><br><img src="https://habrastorage.org/storage3/d9a/b3f/4b3/d9ab3f4b38c15e392af5cc8d884cb19b.png"><br><br>  If we look at the structure of the database, the basic entity table (Entity) comes first.  The script for creating this table is as follows: <br> <code>CREATE TABLE Entity (</code> <br> <code>[Id] INTEGER NOT NULL PRIMARY KEY IDENTITY(1,1),</code> <br> <code>[Name] NVARCHAR(MAX) NOT NULL,</code> <br> <code>[Description] NVARCHAR(MAX) NOT NULL,</code> <br> <code>)</code> <br> <br>  At first glance, this table is ideal for splitting.  However, it is not.  Yes, it does not contain foreign keys, has a fairly simple structure, and the number of records stored in it is maximum.  However, according to the logic of the database, this table is associated with the data of the "tables-heirs".  That is, all entities created in the system have an entry in the entity table. <br><br>  Consider this example.  Suppose we split the data by a range of identifiers (fieldID) of entities.  Suppose records with ID 1-50 are stored in the first shard, 51-100 - in the second, and so on. <br><br><img src="https://habrastorage.org/storage3/699/42a/2b7/69942a2b7c109ec6ffe0ce8239d0f531.png"><br><br>  The user is trying to add a new entry to the Operations table.  Let it be data on the purchase of a package of milk.  The account entity ID is assumed to be 1, the expense category ID is 6. Also suppose that there are already 50 entries in the first database, which means the new entry should get the identifier equal to 51, that is, get into the second shard. <br><br>  A request to add new data to the table will look like this: <br> <code>USE FEDERATION Entities(EntityId = 51) WITH RESET, FILTERING = OFF</code> <br> <code>GO</code> <br> <code>INSERT INTO Operation VALUES (</code> <br> <code>51, -- EntityId</code> <br> <code>1, -- AccountId</code> <br> <code>6, -- CategoryId</code> <br> <code>GETDATE(), -- Date</code> <br> <code>10, -- Amount</code> <br> <code>'USD' -- Currency</code> <br> <code>)</code> <br> <br>  The request will be executed absolutely correctly.  Let's try now to get a list of all transactions for this account (ID = 1).  In the database for this there is a corresponding view.  Its code is as follows: <br> <code>SELECT</code> <br> <code>Account_Entity.Description AS 'Account',</code> <br> <code>Operation_Entity.Name AS 'Operation',</code> <br> <code>Operation_Entity.Description,</code> <br> <code>Operation.Amount,</code> <br> <code>Operation.Currency,</code> <br> <code>Operation.Date</code> <br> <code>FROM</code> <br> <code>Operation</code> <br> <code>INNER JOIN Entity AS Operation_Entity ON Operation.EntityId = Operation_Entity.Id</code> <br> <code>INNER JOIN Account ON Operation.AccountId = Account.Id</code> <br> <code>INNER JOIN Entity AS Account_Entity ON Account.EntityId = Account_Entity.Id</code> <br> <code>INNER JOIN Category ON Operation.CategoryId = Category.Id</code> <br> <code>INNER JOIN Entity AS Category_Entity ON Category.EntityId = Category_Entity.Id</code> <br> <code>WHERE</code> <br> <code>Account.Id = 1</code> <br> <br>  As we remember, the data of one account is stored on different shards.  Therefore, in order for this query to return correct results, it must be performed on each shard separately. <br> <code>USE FEDERATION Entities(EntityId = 1) WITH RESET, FILTERING = OFF</code> <br> <code>GO</code> <br> <code>...</code> <br> <code>USE FEDERATION Entities(EntityId = 51) WITH RESET, FILTERING = OFF</code> <br> <code>GO</code> <br> <code>...</code> <br> <br>  I think it is not necessary to explain what a huge blow to the performance of the application from this approach.  Even if the simplest query now needs to be executed twice!  It is obvious that the entity table (Entity) does not suit us. <br><br>  If we recall the multi-tenant approach to database design, when each user works with his own database and their data does not overlap, the question arises.  Is it possible to implement something like this in SQL Azure Federations?  Where each shard will contain data of one user (Account).  Indeed, this approach will be quite logical.  From the point of view of business logic, it would look like this: <br><br>  Suppose one program is used by several family members.  Each of them keeps a budget separately.  Also let's say the husband keeps his accounting, his wife - his.  Thus, the husband’s data (AccountId = 1) does not overlap with the wife’s data (AccountId = 2).  In this case, splitting into shards according to the table of accounts seems quite logical. <br><br><img src="https://habrastorage.org/storage3/8c9/b29/9a1/8c9b299a10bfd9410c7e79ba1134e6af.png"><br><br>  Adding a new account will correspond to adding a shard.  Frequent operations, such as: working with a list of categories, operations, etc., will not lead to a drop in performance. <br> <code>USE FEDERATION Accounts(AccountId = 1) WITH RESET, FILTERING = OFF</code> <br> <code>GO</code> <br> <br>  After the execution of such a request, it is immediately clear with the data of which user we are currently working.  So the same operation will be performed only once. <br><br>  So, we have considered two options for partitioning an existing database.  Now we have decided on which field we will logically separate data from different databases.  Next time we will directly distribute the data to different shards.  Do not switch!  All the good start to the new work week.  Thanks for attention! </div><p>Source: <a href="https://habr.com/ru/post/193874/">https://habr.com/ru/post/193874/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../193858/index.html">Nokia Amber update is already available</a></li>
+<li><a href="../193864/index.html">Employee Card Design for the Sharepoint 2013 Telephone Directory in Worklite Portal</a></li>
+<li><a href="../193866/index.html">Adobe OpenSource - Topcoat CSS Library</a></li>
+<li><a href="../193870/index.html">StableBit DrivePool - disk array with file duplication</a></li>
+<li><a href="../193872/index.html">Development plans for High Performance Computing School at Innopolis University became known.</a></li>
+<li><a href="../193876/index.html">CodeBender.cc - Arduino programming from a browser</a></li>
+<li><a href="../193878/index.html">Where dreams lead</a></li>
+<li><a href="../193880/index.html">A passion for programming. Chapter 4. Be the worst</a></li>
+<li><a href="../193882/index.html">Infection on the site - history by example</a></li>
+<li><a href="../193886/index.html">The birth of magic from the spirit of the torrent protocol (scheme of the organization of a free uncensored indestructible information network)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

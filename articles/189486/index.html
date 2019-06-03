@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How GIL works in Ruby. Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Last time, I suggested looking at the MRI code to figure out how to implement GIL and answer the remaining questions. What we will do today. 
+
+  The d...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How GIL works in Ruby. Part 2</h1><div class="post__text post__text-html js-mediator-article">  <a href="http://habrahabr.ru/post/189320/">Last time,</a> I suggested looking at the MRI code to figure out how to implement GIL and answer the remaining questions.  What we will do today. <br><br> <a href="http://www.flickr.com/photos/kellyskustompinstriping/6844608535/"><img src="https://habrastorage.org/storage2/7e0/d58/f91/7e0d58f918d086a046ab097e7a63da87.jpg" align="right"></a>  The draft version of this article was full of pieces of C code, however, because of this, the essence was lost in details.  In the final version, there is almost no code, and for fans of digging into the source code, I left links to the functions I mentioned. <br><br><h2>  In the previous series </h2><br>  After the <a href="http://habrahabr.ru/post/189320/">first part,</a> there are two questions: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li> Does GIL <b><code>array &lt;&lt; nil</code></b> atomic operation? </li><li>  Does GIL make Ruby code thread safe? </li></ol><br>  The first question can be answered by looking at the implementation, so let's start with it. <br><a name="habracut"></a><br>  Last time, we dealt with the following code: <br><br><pre> <code class="ruby hljs">array = [] <span class="hljs-number"><span class="hljs-number">5</span></span>.times.map <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> Thread.new <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> <span class="hljs-number"><span class="hljs-number">1000</span></span>.times <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> array &lt;&lt; <span class="hljs-literal"><span class="hljs-literal">nil</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>.each(&amp;<span class="hljs-symbol"><span class="hljs-symbol">:join</span></span>) puts array.size</code> </pre><br>  Assuming the array is thread-safe, it is logical to expect that as a result we will get an array with five thousand elements.  Since in reality the array is not thread-safe, when running code on JRuby or Rubinius, the result is different from the expected (an array with less than five thousand elements). <br><br>  <b>MRI gives the expected result, but is it a coincidence or a pattern?</b>  Let's start the study with a small piece of Ruby code. <br><br><pre> <code class="ruby hljs">Thread.new <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> array &lt;&lt; <span class="hljs-literal"><span class="hljs-literal">nil</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span></code> </pre><br><h2>  Let's start with </h2><br>  To understand what is happening in this piece of code, you need to look at how the MRI creates a new thread, mainly on the code in the <b><code>thread*.c</code></b> files. <br><br>  First of all, a new native thread is created inside the <b><code>Thread.new</code></b> implementation, which will be used by the Ruby stream.  After this, the <a href=""><b><code>thread_start_func_2</code></b></a> function is <a href=""><b><code>thread_start_func_2</code></b></a> .  Take a look at it, without particularly going into details. <br><br><img src="https://habrastorage.org/storage2/b58/2d2/db6/b582d2db68114af500e2591ca377fc7c.png"><br><br>  Not all code is important for us now, so I selected those parts that are interesting to us.  At the beginning of the function, a new thread captures GIL, before waiting for it to be released.  Somewhere in the middle of the function, the block with which the <b><code>Thread.new</code></b> method was called is <b><code>Thread.new</code></b> .  In the end, the lock is released and the native thread completes its work. <br><br>  In our case, a new thread is created in the main thread, which means that we can assume that at the moment the GIL is being held by it.  Before proceeding, the new thread must wait until the main thread releases the lock. <br><br>  Let's see what happens when a new thread tries to capture GIL. <br><br><pre> <code class="hljs php"><span class="hljs-keyword"><span class="hljs-keyword">static</span></span> void gvl_acquire_common(rb_vm_t *vm) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (vm-&gt;gvl.acquired) { vm-&gt;gvl.waiting++; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (vm-&gt;gvl.waiting == <span class="hljs-number"><span class="hljs-number">1</span></span>) { rb_thread_wakeup_timer_thread_low(); } <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (vm-&gt;gvl.acquired) { native_cond_wait(&amp;vm-&gt;gvl.cond, &amp;vm-&gt;gvl.lock); }</code> </pre><br>  This is part of the <a href=""><b><code>gvl_acquire_common</code></b></a> function, which is called when a new thread tries to capture a GIL. <br><br>  First, it checks if the lock is already held.  If held, the <b><code>waiting</code></b> attribute is incremented.  In the case of our code, it becomes equal to <b><code>1</code></b> .  The next line should check if the <b><code>waiting</code></b> <b><code>1</code></b> attribute is not equal.  It is equal, so the next line wakes up the time stream. <br><br>  The time stream ensures that the MRI threads work, avoiding the situation in which one of them constantly holds the GIL.  But before proceeding to the description of the time stream, let's deal with GIL. <br><br><img src="https://habrastorage.org/storage2/7eb/af1/eb3/7ebaf1eb3bd3a3276be98a7814cc0d08.png" align="left">  I have already mentioned several times that there is a native stream behind each thread in the MRI.  This is true, but this scheme assumes that the MRI flows work in parallel, as well as the native ones.  GIL prevents this.  Let's add to the scheme and make it more close to reality. <br><br><img src="https://habrastorage.org/storage2/4bd/bc7/fd8/4bdbc7fd81677a1e9869f7298c56336d.png" align="right">  To enable the native stream, the Ruby stream must first capture the GIL.  GIL serves as an intermediary between Ruby streams and corresponding native threads, significantly limiting parallelism.  In the previous scheme, Ruby streams could use native streams in parallel.  The second scheme is closer to reality in the case of MRI - only one thread can hold GIL at some point in time, so parallel execution of the code is completely excluded. <br><br>  For the development team, MRI <b>GIL protects the internal state of the system</b> .  Thanks to GIL, internal data structures do not require locks.  If two threads cannot change the shared data at the same time, the race condition is impossible. <br><br>  For you as a developer, the writing above means that concurrency in MRI is very limited. <br><br><h2>  Timer flow </h2><br>  As I said, the timer stream prevents the GIL from being held permanently by one thread.  The timer stream is the native stream for internal needs of the MRI, it does not have a corresponding Ruby stream.  It starts when the interpreter is started in the <a href=""><b><code>rb_thread_create_timer_thread</code></b></a> function. <br><br>  When the MRI has just started and only the main thread is running, the timer stream is sleeping.  But as soon as a thread starts to wait for GIL to be released, the timer stream wakes up. <br><br><img src="https://habrastorage.org/storage2/a0f/a49/b42/a0fa49b42bf8f72eaf30d514decf45b9.png"><br><br>  This diagram more precisely illustrates how GIL is implemented in MRI.  The thread on the right has just started and, since only it is waiting for GIL to be released, it wakes up the timer stream. <br><br>  Every 100 ms, the timer thread sets the flag to interrupt the thread that is currently holding the GIL using the <b><code>RUBY_VM_SET_TIMER_INTERRUPT</code></b> macro.  These details are important for understanding whether the expression <b><code>array &lt;&lt; nil</code></b> atomic. <br><br>  This is similar to the concept of time slicing in the OS, if you are familiar with it. <br><br>  Setting the flag does not immediately interrupt the stream (if it were, it would be safe to say that the expression <b><code>array &lt;&lt; nil</code></b> not atomic). <br><br><h2>  Interrupt flag handling </h2><br>  In the depths of the <b><code>vm_eval.c</code></b> file is the code for handling the method call in Ruby.  It sets the environment for the method call and calls the required function.  At the end of the <a href=""><b><code>vm_call0_body</code></b></a> function, just before returning the method value, the interrupt flag is checked. <br><br>  If the thread interrupt flag is set, the code execution is suspended before returning the value.  Before you run any other Ruby code, the current thread releases the GIL and calls the <b><code>sched_yield</code></b> function.  <b><code>sched_yield</code></b> is a system function that requests the OS scheduler to resume the next thread in the queue.  After that, the interrupted stream tries to capture GIL again, before waiting for it until another stream releases it. <br><br>  Here is the answer to the first question: <b><code>array &lt;&lt; nil</code></b> is an atomic operation.  Thanks to the GIL, all Ruby methods implemented exclusively in C are atomic. <br><br>  That is, this code: <br><br><pre> <code class="ruby hljs">array = [] <span class="hljs-number"><span class="hljs-number">5</span></span>.times.map <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> Thread.new <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> <span class="hljs-number"><span class="hljs-number">1000</span></span>.times <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> array &lt;&lt; <span class="hljs-literal"><span class="hljs-literal">nil</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>.each(&amp;<span class="hljs-symbol"><span class="hljs-symbol">:join</span></span>) puts array.size</code> </pre><br>  guaranteed to give the expected result, being launched at the MRI <i>(we are talking only about the predictability of the length of the array, there are no guarantees about the order of elements - lane comment)</i> <br><br>  <b>But keep in mind that this does not follow from the Ruby-code</b> .  If you run this code on another implementation that does not have GIL, it will produce an unpredictable result.  It is useful to know what GIL provides, but writing code that relies on GIL is not a good idea.  Doing this, you find yourself in a situation like <a href="http://ru.wikipedia.org/wiki/Vendor_lock-in">vendor loku</a> . <br><br>  GIL does not provide a public API.  There is no documentation or specification on GIL.  One day, an MRI development team can change the behavior of GIL or even get rid of it.  That's why writing code that depends on GIL in its current implementation is not a good idea. <br><br><h2>  What about the methods implemented in Ruby? </h2><br>  So we know that <b><code>array &lt;&lt; nil</code></b> is an atomic operation.  In this expression, one <b><code>Array#&lt;&lt;</code></b> method is called, to which a constant is passed as a parameter and implemented on C. Context switching, if it happens, does not lead to data integrity violation - this method in any case will release GIL only before completion. <br><br>  What about something like that? <br><br><pre> <code class="ruby hljs">array &lt;&lt; User.find(<span class="hljs-number"><span class="hljs-number">1</span></span>)</code> </pre><br>  Before calling the <b><code>Array#&lt;&lt;</code></b> method, you need to calculate the value of the parameter, that is, call <b><code>User.find(1)</code></b> .  As you may know, <b><code>User.find(1)</code></b> in turn invokes many methods written in Ruby. <br><br>  But GIL only makes atomic methods implemented in C. There are no guarantees for Ruby methods. <br><br>  Is the call to <b><code>Array#&lt;&lt;</code></b> still atomic in the new example?  Yes, but do not forget that you still need to execute the right-hand expression.  In other words, you first need to make a call to the <b><code>User.find(1)</code></b> method, which is not atomic, and only then the value returned by it will be passed to <b><code>Array#&lt;&lt;</code></b> . <br><br><h2>  What does all this mean to me? </h2><br>  In the <a href="http://habrahabr.ru/post/189320/">first part of the</a> article, we saw what could happen if the context switch had to be somewhere in the middle of a function.  GIL prevents such situations - even if a context switch occurs, other threads will not be able to continue execution, as they will have to wait for the GIL to be released.  <b>All this happens only under the condition that the method is implemented in C, does not refer to the Ruby code, and does not release GIL itself</b> ( <i>in the comments to the original article give an example - adding an element to the associative array (Hash) implemented in C is not atomic, because Ruby code to get a hash of the element - note.</i> ) <br><br>  GIL makes it impossible to race inside the implementation of MRI, but it does not make Ruby code thread-safe.  It can be said that GIL is just an MRI feature designed to protect the internal state of the interpreter. <br><br>  <i>The translator will be happy to hear comments and constructive criticism.</i> </div><p>Source: <a href="https://habr.com/ru/post/189486/">https://habr.com/ru/post/189486/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../189472/index.html">The first release on the Opera Developer channel</a></li>
+<li><a href="../189474/index.html">US court found Bitcoin currency</a></li>
+<li><a href="../189476/index.html">Designing a planet comfortable for earthlings</a></li>
+<li><a href="../189480/index.html">Need to start small</a></li>
+<li><a href="../189484/index.html">ARMs for the smallest</a></li>
+<li><a href="../189488/index.html">What to do if “kin will not” or how to bypass the site blocking by the provider</a></li>
+<li><a href="../189494/index.html">Fiction and documentary films about astronautics</a></li>
+<li><a href="../189496/index.html">Evaluate the idea of ​​your mobile application</a></li>
+<li><a href="../189498/index.html">Apple develops audio hyperlinks</a></li>
+<li><a href="../189500/index.html">A tent with solar panels will charge all the gadgets on a camping trip.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How to force the process to use the new DNS server address from the updated resolv.conf without restarting the process itself</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I work as a Unix system administrator. One day, a ticket from a programmer with a pass from the application-server log in the title: " pgbouncer canno...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How to force the process to use the new DNS server address from the updated resolv.conf without restarting the process itself</h1><div class="post__text post__text-html js-mediator-article">  I work as a Unix system administrator.  One day, a ticket from a programmer with a pass from the application-server log in the title: " <i>pgbouncer cannot connect to server</i> " fell to our service operations department.  Looking at the pgbouncer logs, I saw that lookup fails periodically occur when accessing our DNS.  It was found that this is <i>not</i> due to the work of our DNS servers, but to the unreliability of the UDP protocol itself: sometimes packet loss occurs for various reasons. <br> <a href="http://habrahabr.ru/post/209356/"><img src="https://habrastorage.org/getpro/habr/post_images/0f2/2d5/bc7/0f22d5bc7ab26defeaf9e9e8899bf815.png" alt="image" align="left"></a> <br>  As a result, it was decided to install on each server with pgbouncer'ami caching BIND.  And then an interesting problem arose: pgbouncer <i>did not re-read the</i> /etc/resolv.conf file from the HUP signal and continued to access the old DNS servers.  And reloading the bouncers is absolutely impossible: there are problem projects that are very sensitive to breaking sessions with the base. <br><br>  In this article I will tell you how pgbouncer or <i>any other program</i> that uses the <i>getaddrinfo ()</i> library call can be made to re-read resolv.conf and start using the new DNS server completely painless for clients (without downtime). <a name="habracut"></a><br><br><h5>  Let's get started </h5>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Immediately, I’ll make a reservation that in my case, the pgbouncer was version <u><i>1.5.2</i></u> and compiled with <u><i>libevent-1.4</i></u> under <i>FreeBSD</i> . <br><br>  If you look at the pgbouncer source, you can see the following comment in the <i>dnslookup.c</i> file: <br><pre><code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Available backends: * * udns - libudns * getaddrinfo_a - glibc only * libevent1 - returns TTL, ignores hosts file. * libevent2 - does not return TTL, uses hosts file. */</span></span></code> </pre> <br>  This means that in the case when pgbouncer is compiled from <i>libevent1</i> , the <i>getaddrinfo_a ()</i> function from the standard <i>libc</i> library is used for asynchronous resolv of addresses. <br>  It was experimentally established that asynchronous <i>getaddrinfo_a ()</i> uses the usual function <i>getaddrinfo ()</i> from libc.  We will put a breakpoint on the last function.  This fact will save us from having to compile pgbouncer with debugging symbols, since gdb knows the getaddrinfo function, despite the fact that libc is compiled without debugging symbols. <br><br>  Add to the pgbouncer config a non-existent database that refers to a non-existent domain (useful for tests): <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">test</span></span> = host=test.xaxa.blabla12313212.su user=pgsql dbname=template1 pool_size=10</code> </pre><br>  In a separate window, run pgbouncer: <br><pre> <code class="bash hljs">su -m pgbouncer -c <span class="hljs-string"><span class="hljs-string">'/usr/local/bin/pgbouncer /usr/local/etc/pgbouncer.ini'</span></span></code> </pre><br>  In another window, connect to the process using the gdb debugger: <br><pre> <code class="bash hljs">gdb /usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/pgbouncer `cat /var/run/pgbouncer/pgbouncer.pid`</code> </pre><br>  Put a breakpoint and let the process continue: <br><pre> <code class="bash hljs">(gdb) b getaddrinfo Breakpoint 1 at 0x800f862a4 (gdb) c Continuing.</code> </pre><br>  In another window we will try to connect to our database with a non-existent domain in order to initiate an attempt to resolve a resolve: <br><pre> <code class="bash hljs">su -m pgbouncer -c <span class="hljs-string"><span class="hljs-string">'export PGPASSWORD="123" &amp;&amp; /usr/local/bin/psql -Utest test -h10.9.9.16 -p6000'</span></span>;</code> </pre><br>  In gdb, we see that we hit the bull's eye: <br><pre> <code class="bash hljs">Breakpoint 1, 0x0000000800f862a4 <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> getaddrinfo () from /lib/libc.so.7 (gdb)</code> </pre><br><br><h5>  How does getaddrinfo () work? </h5><br>  Using the manuals and a search engine, it was found that this function, when <i>first</i> called, reads the resolv.conf file, initializes the structure with a bunch of data in memory, among which you can find a list of DNS servers.  Further, the function tries to rezolv address using the <i>first</i> address from the list.  If the DNS server does not respond, the function makes the next DNS server active from the list active.  And so in a circle.  The function reads resolv.conf only <i>once</i> . <br><br>  At first, I wanted to patch the pgbouncer virtual memory by finding 4 bytes of the DNS server address in a <i>network order</i> or <i>host order</i> format.  To do this, even a C memory dumper program was written that allowed you to dump the process memory and search for a specific order of bytes.  But, as it turned out, <i>it is impossible to</i> find these addresses in memory in this form.  Understanding the source getaddinfo () turned out to be beyond my strength: a lot of text and all sorts of <i>goto</i> almost broke my mind.  Besides, I am not a programmer, and C began studying only a month ago. <br><br>  <i>By the way, my program using ptrace and procfs would be suitable for pgbouncer compiled from libevent2: there the ip-addresses of DNS servers are stored just in the form of four bytes.</i>  <i>But the description of this experience is beyond the scope of the article.</i> <br><br><h5>  What to do? </h5><br>  Fortunately, with the help of a search engine, I found the <u><i>res_init ()</i></u> saving function in the standard library: <br><blockquote>  The res_init () routine reads the configuration file (if any; see <br>  resolver (5)) to get the Internet domain name <br>  address of the local name server (s) <br></blockquote><br>  It is this function that is called when getaddrinfo () is first called and initializes the structure we need! <br>  Repeated function call re-initializes the structure and re-reads resolv.conf. <br><br><h5>  Check in practice </h5><br>  Connect with the tracer to our frozen pgbouncer and begin to grep the trace dump file: <br><pre> <code class="bash hljs">ktrace -f out.ktrace -p `cat /var/run/pgbouncer/pgbouncer.pid` kdump -l -f out.ktrace | grep resolv</code> </pre><br>  In the window with gdb, we will call the res_init () function: <br><pre> <code class="bash hljs">(gdb) call res_init() Breakpoint 1, 0x0000000800f862a4 <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> getaddrinfo () from /lib/libc.so.7</code> </pre><br>  In the window with the output of the trace we see: <br><pre> <code class="bash hljs">37933 pgbouncer NAMI <span class="hljs-string"><span class="hljs-string">"/etc/resolv.conf"</span></span></code> </pre><br><br><h5>  Goal achieved </h5><br>  We managed to force the process to re-read resolv.conf, while not dropping the server and not breaking the active tcp states.  At the time of freezing requests are also not lost. <br><br>  If we want the local caching DNS to be used immediately, we need to do the following steps: <br><br><ol><li>  Change the BIND servers in forwarders to new (other) working DNS servers that have not been used in resolv.conf before and will not be used, and then do <i>rndc reload</i> </li><li>  Ban local firewall access to the old DNS-servers (except 127.0.0.1) </li><li>  Initiate the pgbouncer call to a non-existent database server: <br><pre> <code class="bash hljs">su -m pgbouncer -c <span class="hljs-string"><span class="hljs-string">'export PGPASSWORD="123" &amp;&amp; /usr/local/bin/psql -Utest test -h127.0.0.1 -p6000'</span></span>;</code> </pre><br></li><li>  Verify with tcpdump that pgbouncer is accessing 127.0.0.1 on port 53: <br><pre> <code class="bash hljs">tcpdump -n -i lo0 port 53 | grep xaxa <span class="hljs-string"><span class="hljs-string">"&gt; 127.0.0.1.53"</span></span> -</code> </pre><br>  Where <i>xaxa</i> is part of the server name from pgbouncer.conf <br></li><li>  Unblock old DNS in firewall </li><li>  Return the BIND forwarders settings to the original state </li></ol><br><h5>  And last </h5><br>  If you want to repeat my experience, I strongly recommend training on a test bench. <br>  If you want to “bullet” a command in gdb in <b>batch mode</b> , keep in mind that gdb must first be given time to read the characters, and then functions should be called: somehow, because of this, I screwed up a lot, killing one of the Mi working pgbouncer'ov. <br>  I now have batch mode for gdb like this: <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">printf</span></span> <span class="hljs-string"><span class="hljs-string">'shell sleep 3\ncall res_init()\ndetach\nquit\n'</span></span> &gt; /tmp/pb.gdb &amp;&amp; gdb -batch -x /tmp/pb.gdb /usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/pgbouncer `cat /var/run/pgbouncer/test.pid`</code> </pre><br><br>  I hope my experience will help someone a little better understand how the processes work in operating systems. </div><p>Source: <a href="https://habr.com/ru/post/209356/">https://habr.com/ru/post/209356/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../209346/index.html">How I tested the IDE of the company "Multiklet"</a></li>
+<li><a href="../209348/index.html">Recovering LSI RAID Controller firmware</a></li>
+<li><a href="../209350/index.html">Components by TJHolowaychuk</a></li>
+<li><a href="../209352/index.html">Scaling is simple. Part Two - Caching</a></li>
+<li><a href="../209354/index.html">Components. Example</a></li>
+<li><a href="../209360/index.html">Video recordings of reports on the stream “JavaScript on backend” of the FOSS Sea conference</a></li>
+<li><a href="../209362/index.html">14 tools for web design and web development for 2014</a></li>
+<li><a href="../209364/index.html">Tronsmart T1000 - “easy” media player for broadcasting images to the big screen</a></li>
+<li><a href="../209368/index.html">Chef for 21 days. Part two. Creating and using a cookbook</a></li>
+<li><a href="../209372/index.html">Components. Testing Console</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

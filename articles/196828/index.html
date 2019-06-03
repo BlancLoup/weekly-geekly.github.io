@@ -1,0 +1,915 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>We load data in Oracle</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In my previous article, I showed that when using asynchronous requests, the SNMP device scanning rate can reach 9000 requests per second (provided tha...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>We load data in Oracle</h1><div class="post__text post__text-html js-mediator-article">  In my previous <a href="http://habrahabr.ru/post/196308/">article,</a> I showed that when using asynchronous requests, the SNMP device scanning rate can reach 9000 requests per second (provided that we have enough devices to form such a stream of responses).  The question of what to do with this data stream remains open. <br><br>  It is common practice to process monitoring data through <a href="http://en.wikipedia.org/wiki/Relational_database_management_system">RDBMS</a> (such as the <a href="http://www.oracle.com/us/products/database/overview/index.html">Oracle Database</a> ).  But can traditional relational databases handle this load?  Let's try to figure it out. <br><a name="habracut"></a><br><h4>  Tinsmith's Day </h4><br>  Let's start by analyzing the errors usually made by newbies who first encounter Oracle.  The processing of monitoring data may involve quite complex logic, but we will talk about this later.  For now, just try to save the received data to the following table: <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sequence</span></span> test_data_seq;
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_data (
+  <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>             <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  device_id      <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  parameter_id   <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>          varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>),
+  event_date     <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>             <span class="hljs-keyword"><span class="hljs-keyword">default</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sysdate</span></span>    <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>
+);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unique</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_data_pk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_data(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_data <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> pk_test_data primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+</code></pre><br>
+  ID ,     <a href="http://stackoverflow.com/questions/11296361/how-to-create-id-with-auto-increment-on-oracle">online-</a>:<br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-keyword"><span class="hljs-keyword">replace</span></span> <span class="hljs-keyword"><span class="hljs-keyword">trigger</span></span> test_data_bri
+<span class="hljs-keyword"><span class="hljs-keyword">before</span></span> <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span>
+<span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_data
+<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> <span class="hljs-keyword"><span class="hljs-keyword">each</span></span> <span class="hljs-keyword"><span class="hljs-keyword">row</span></span>
+<span class="hljs-keyword"><span class="hljs-keyword">begin</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> test_data_seq.nextval <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> :new.id <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> dual;
+<span class="hljs-keyword"><span class="hljs-keyword">end</span></span>;
+/
+</code></pre><br>
+  :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">   !</b><div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> com.acme.ae.tests.jdbc;
+
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.CallableStatement;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.Connection;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.DriverManager;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.SQLException;
+
+<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String CLASS_NAME = <span class="hljs-string"><span class="hljs-string">"oracle.jdbc.driver.OracleDriver"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_CONN  = <span class="hljs-string"><span class="hljs-string">"jdbc:oracle:thin:@192.168.124.35:1521:orcl"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_NAME  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_PASS  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Connection c = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>;
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException </span></span>{
+		StringBuffer sb = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> StringBuffer();
+		Long timestamp = System.currentTimeMillis(); 
+		<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; i++) {
+			sb.setLength(<span class="hljs-number"><span class="hljs-number">0</span></span>);
+			sb.append(<span class="hljs-string"><span class="hljs-string">"insert into test_data(device_id, parameter_id, value) values ("</span></span>);
+			sb.append(i);
+			sb.append(<span class="hljs-string"><span class="hljs-string">",1,'0')"</span></span>);
+			CallableStatement st = c.prepareCall(sb.toString());
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				st.execute();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				st.close();
+			}
+		}
+		System.out.println(<span class="hljs-number"><span class="hljs-number">1000000L</span></span> / (System.currentTimeMillis() - timestamp));
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> ClassNotFoundException, SQLException </span></span>{
+		Class.forName(CLASS_NAME);
+		c = DriverManager.getConnection(USER_CONN, USER_NAME, USER_PASS);
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">stop</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException  </span></span>{
+		<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (c != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) {
+			c.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span></span>{
+		Test t = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Test();
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				t.start();
+				t.test();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				t.stop();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (Exception e) {
+			System.out.println(e.toString());
+		}
+	}
+}
+</code></pre><br>
+</div></div><br>
+    ,   ,   :<br>
+<br>
+<pre><code class="hljs">614
+</code></pre><br>
+  .    9000.     ?<br>
+<br>
+  (       ):<br>
+<br>
+<ol>
+<li>  <a href="http://my-oracle.it-blogs.com.ua/post-306.aspx">hard parse</a>,       (      ,     <a href="http://habrahabr.ru/post/148151/">sql injection</a>    ,      ,      )</li>
+<li> , JDBC      <a href="http://pic.dhe.ibm.com/infocenter/iseries/v7r1m0/index.jsp%3Ftopic%3D%252Frzaha%252Ftransaut.htm">auto commit</a> (  ,        )</li>
+<li>    <a href="http://asktom.oracle.com/pls/apex/f%3Fp%3D100:11:0::::P11_QUESTION_ID:60122715103602"> </a> SQL  PL/SQL (       ,       )</li>
+<li>  , sequence   <a href="http://docs.oracle.com/cd/B12037_01/server.101/b10759/statements_6014.htm"></a> (    ,         )</li>
+</ol><br>
+     .            ,    :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">test_package.sql</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-keyword"><span class="hljs-keyword">replace</span></span> <span class="hljs-keyword"><span class="hljs-keyword">package</span></span> test_package <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+    <span class="hljs-keyword"><span class="hljs-keyword">procedure</span></span> addData( p_device    <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>
+                     , p_parameter <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>
+                     , p_value     <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span> );
+<span class="hljs-keyword"><span class="hljs-keyword">end</span></span> test_package;
+/
+
+<span class="hljs-keyword"><span class="hljs-keyword">show</span></span> <span class="hljs-keyword"><span class="hljs-keyword">errors</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-keyword"><span class="hljs-keyword">replace</span></span> <span class="hljs-keyword"><span class="hljs-keyword">package</span></span> <span class="hljs-keyword"><span class="hljs-keyword">body</span></span> test_package <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+
+    <span class="hljs-keyword"><span class="hljs-keyword">procedure</span></span> addData( p_device    <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>
+                     , p_parameter <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>
+                     , p_value     <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span> ) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+    <span class="hljs-keyword"><span class="hljs-keyword">begin</span></span>
+      <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> test_data(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>, device_id, parameter_id, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>)
+      <span class="hljs-keyword"><span class="hljs-keyword">values</span></span> (test_data_seq.nextval, p_device, p_parameter, p_value);
+    <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">end</span></span> test_package;
+/
+
+<span class="hljs-keyword"><span class="hljs-keyword">show</span></span> <span class="hljs-keyword"><span class="hljs-keyword">errors</span></span>;
+</code></pre><br>
+</div></div><br>
+<div class="spoiler"><b class="spoiler_title"> </b><div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> com.acme.ae.tests.jdbc;
+
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.CallableStatement;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.Connection;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.DriverManager;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.SQLException;
+
+<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String CLASS_NAME = <span class="hljs-string"><span class="hljs-string">"oracle.jdbc.driver.OracleDriver"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_CONN  = <span class="hljs-string"><span class="hljs-string">"jdbc:oracle:thin:@192.168.124.35:1521:orcl"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_NAME  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_PASS  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">boolean</span></span> AUTO_COMMIT_MODE = <span class="hljs-keyword"><span class="hljs-keyword">true</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String  ADD_DATA_SQL     = 
+			<span class="hljs-string"><span class="hljs-string">"begin test_package.addData(?,?,?); end;"</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Connection c = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>;
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException </span></span>{
+		CallableStatement st = c.prepareCall(ADD_DATA_SQL);
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			Long timestamp = System.currentTimeMillis(); 
+			<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; i++) {
+				st.setInt(<span class="hljs-number"><span class="hljs-number">1</span></span>, i);
+				st.setInt(<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>);
+				st.setString(<span class="hljs-number"><span class="hljs-number">3</span></span>, <span class="hljs-string"><span class="hljs-string">"0"</span></span>);
+				st.execute();
+			}
+			System.out.println(<span class="hljs-number"><span class="hljs-number">1000000L</span></span> / (System.currentTimeMillis() - timestamp));
+		} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+			st.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> ClassNotFoundException, SQLException </span></span>{
+		Class.forName(CLASS_NAME);
+		c = DriverManager.getConnection(USER_CONN, USER_NAME, USER_PASS);
+		c.setAutoCommit(AUTO_COMMIT_MODE);
+	}
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">stop</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException  </span></span>{
+		<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (c != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) {
+			c.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span></span>{
+		Test t = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Test();
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				t.start();
+				t.test();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				t.stop();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (Exception e) {
+			System.out.println(e.toString());
+		}
+	}
+}
+</code></pre><br>
+</div></div><br>
+  ,        .   Oracle ,      SQL,  PL/SQL-.<br>
+<br>
+  :<br>
+<br>
+<pre><code class="hljs">956
+</code></pre><br>
+,    .<br>
+<br>
+<h4>, , !</h4><br>
+     ?     auto commit.    Oracle,         ,   (  )     <a href="http://baks.gaz.ru/oradoc/ora/ora350.htm">ORA-01555</a>. <br>
+<br>
+,      .  -        ,      .  (  )             JDBC.<br>
+<br>
+        ?  , , .   ,   —    ,    .          ,         .<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">   </b><div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> com.acme.ae.tests.jdbc;
+
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.CallableStatement;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.Connection;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.DriverManager;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.SQLException;
+
+<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String CLASS_NAME = <span class="hljs-string"><span class="hljs-string">"oracle.jdbc.driver.OracleDriver"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_CONN  = <span class="hljs-string"><span class="hljs-string">"jdbc:oracle:thin:@192.168.124.35:1521:orcl"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_NAME  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_PASS  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">boolean</span></span> AUTO_COMMIT_MODE = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String  ADD_DATA_SQL     = 
+			<span class="hljs-string"><span class="hljs-string">"begin test_package.addData(?,?,?); end;"</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Connection c = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>;
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException </span></span>{
+		CallableStatement st = c.prepareCall(ADD_DATA_SQL);
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			Long timestamp = System.currentTimeMillis(); 
+			<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; i++) {
+				st.setInt(<span class="hljs-number"><span class="hljs-number">1</span></span>, i);
+				st.setInt(<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>);
+				st.setString(<span class="hljs-number"><span class="hljs-number">3</span></span>, <span class="hljs-string"><span class="hljs-string">"0"</span></span>);
+				st.execute();
+			}
+			c.commit();
+			System.out.println(<span class="hljs-number"><span class="hljs-number">1000000L</span></span> / (System.currentTimeMillis() - timestamp));
+		} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+			st.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> ClassNotFoundException, SQLException </span></span>{
+		Class.forName(CLASS_NAME);
+		c = DriverManager.getConnection(USER_CONN, USER_NAME, USER_PASS);
+		c.setAutoCommit(AUTO_COMMIT_MODE);
+	}
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">stop</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException  </span></span>{
+		<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (c != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) {
+			c.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span></span>{
+		Test t = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Test();
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				t.start();
+				t.test();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				t.stop();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (Exception e) {
+			System.out.println(e.toString());
+		}
+	}
+}
+</code></pre><br>
+</div></div><br>
+     :<br>
+<br>
+<pre><code class="hljs">1524
+</code></pre><br>
+    ,    <a href="http://www.oracle-base.com/articles/misc/temporary-tables.php"> </a>:<br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">drop</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_data;
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">global</span></span> <span class="hljs-keyword"><span class="hljs-keyword">temporary</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_data (
+  device_id      <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  parameter_id   <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>          varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>),
+  event_date     <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>             <span class="hljs-keyword"><span class="hljs-keyword">default</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sysdate</span></span>    <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>
+) <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> <span class="hljs-keyword"><span class="hljs-keyword">commit</span></span> <span class="hljs-keyword"><span class="hljs-keyword">delete</span></span> <span class="hljs-keyword"><span class="hljs-keyword">rows</span></span>;
+</code></pre><br>
+      id,     :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">test_package.sql</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-keyword"><span class="hljs-keyword">replace</span></span> <span class="hljs-keyword"><span class="hljs-keyword">package</span></span> <span class="hljs-keyword"><span class="hljs-keyword">body</span></span> test_package <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+
+    <span class="hljs-keyword"><span class="hljs-keyword">procedure</span></span> addData( p_device    <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>
+                     , p_parameter <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>
+                     , p_value     <span class="hljs-keyword"><span class="hljs-keyword">in</span></span>  <span class="hljs-built_in"><span class="hljs-built_in">number</span></span> ) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+    <span class="hljs-keyword"><span class="hljs-keyword">begin</span></span>
+      <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> test_data(device_id, parameter_id, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>)
+      <span class="hljs-keyword"><span class="hljs-keyword">values</span></span> (p_device, p_parameter, p_value);
+    <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">end</span></span> test_package;
+/
+
+<span class="hljs-keyword"><span class="hljs-keyword">show</span></span> <span class="hljs-keyword"><span class="hljs-keyword">errors</span></span>;
+</code></pre><br>
+</div></div><br>
+          REDO- (      ),       :<br>
+<br>
+<pre><code class="hljs">1779
+</code></pre><br>
+  DML-    ,      2000.   ?<br>
+<br>
+ ! ,            ,       —   ,   .    ,   bulk-,        .<br>
+<br>
+    :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">Bulk </b><div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> com.acme.ae.tests.jdbc;
+
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.CallableStatement;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.Connection;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.DriverManager;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.SQLException;
+
+<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String CLASS_NAME = <span class="hljs-string"><span class="hljs-string">"oracle.jdbc.driver.OracleDriver"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_CONN  = <span class="hljs-string"><span class="hljs-string">"jdbc:oracle:thin:@192.168.124.35:1521:orcl"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_NAME  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_PASS  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">boolean</span></span> AUTO_COMMIT_MODE = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>     BULK_SIZE        = <span class="hljs-number"><span class="hljs-number">10</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String  ADD_DATA_SQL     = 
+			<span class="hljs-string"><span class="hljs-string">"begin test_package.addData(?,?,?); end;"</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Connection c = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>;
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException </span></span>{
+		CallableStatement st = c.prepareCall(ADD_DATA_SQL);
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> bulkSize = BULK_SIZE;
+			Long timestamp = System.currentTimeMillis(); 
+			<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; i++) {
+				st.setInt(<span class="hljs-number"><span class="hljs-number">1</span></span>, i);
+				st.setInt(<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>);
+				st.setString(<span class="hljs-number"><span class="hljs-number">3</span></span>, <span class="hljs-string"><span class="hljs-string">"0"</span></span>);
+				st.addBatch();
+				<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (--bulkSize &lt;= <span class="hljs-number"><span class="hljs-number">0</span></span>) {
+					st.executeBatch();
+					bulkSize = BULK_SIZE;
+				}
+			}
+			<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (bulkSize &lt; BULK_SIZE) {
+				st.executeBatch();
+			}
+			c.commit();
+			System.out.println(<span class="hljs-number"><span class="hljs-number">1000000L</span></span> / (System.currentTimeMillis() - timestamp));
+		} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+			st.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> ClassNotFoundException, SQLException </span></span>{
+		Class.forName(CLASS_NAME);
+		c = DriverManager.getConnection(USER_CONN, USER_NAME, USER_PASS);
+		c.setAutoCommit(AUTO_COMMIT_MODE);
+	}
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">stop</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException  </span></span>{
+		<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (c != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) {
+			c.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span></span>{
+		Test t = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Test();
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				t.start();
+				t.test();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				t.stop();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (Exception e) {
+			System.out.println(e.toString());
+		}
+	}
+}
+</code></pre><br>
+</div></div><br>
+  :<br>
+<br>
+<pre><code class="hljs">1779
+</code></pre><br>
+    . ?<br>
+<br>
+  ,  bulk-    DML- (insert, update, delete).     bulk-  , JDBC  bulk,     -   ,     .<br>
+<br>
+   :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">Bulk insert-</b><div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> com.acme.ae.tests.jdbc;
+
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.CallableStatement;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.Connection;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.DriverManager;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.SQLException;
+
+<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String CLASS_NAME = <span class="hljs-string"><span class="hljs-string">"oracle.jdbc.driver.OracleDriver"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_CONN  = <span class="hljs-string"><span class="hljs-string">"jdbc:oracle:thin:@192.168.124.35:1521:orcl"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_NAME  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_PASS  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">boolean</span></span> AUTO_COMMIT_MODE = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>     BULK_SIZE        = <span class="hljs-number"><span class="hljs-number">10</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String  ADD_DATA_SQL     = 
+			<span class="hljs-string"><span class="hljs-string">"insert into test_data(device_id, parameter_id, value) values (?,?,?)"</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Connection c = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>;
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException </span></span>{
+		CallableStatement st = c.prepareCall(ADD_DATA_SQL);
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> bulkSize = BULK_SIZE;
+			Long timestamp = System.currentTimeMillis(); 
+			<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; i++) {
+				st.setInt(<span class="hljs-number"><span class="hljs-number">1</span></span>, i);
+				st.setInt(<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>);
+				st.setString(<span class="hljs-number"><span class="hljs-number">3</span></span>, <span class="hljs-string"><span class="hljs-string">"0"</span></span>);
+				st.addBatch();
+				<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (--bulkSize &lt;= <span class="hljs-number"><span class="hljs-number">0</span></span>) {
+					st.executeBatch();
+					bulkSize = BULK_SIZE;
+				}
+			}
+			<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (bulkSize &lt; BULK_SIZE) {
+				st.executeBatch();
+			}
+			c.commit();
+			System.out.println(<span class="hljs-number"><span class="hljs-number">1000000L</span></span> / (System.currentTimeMillis() - timestamp));
+		} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+			st.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> ClassNotFoundException, SQLException </span></span>{
+		Class.forName(CLASS_NAME);
+		c = DriverManager.getConnection(USER_CONN, USER_NAME, USER_PASS);
+		c.setAutoCommit(AUTO_COMMIT_MODE);
+	}
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">stop</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException  </span></span>{
+		<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (c != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) {
+			c.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span></span>{
+		Test t = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Test();
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				t.start();
+				t.test();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				t.stop();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (Exception e) {
+			System.out.println(e.toString());
+		}
+	}
+}
+</code></pre><br>
+</div></div><br>
+     :<br>
+<br>
+<pre><code class="hljs">12658
+</code></pre><br>
+,     !  BULK_SIZE  100,      :<br>
+<br>
+<pre><code class="hljs">31250
+</code></pre><br>
+,          …    commit-,       .<br>
+<br>
+<h4> ?</h4><br>
+ .     :<br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/bc7/dca/014/bc7dca0149f79223a03d57fd3bcb0c9e.png" alt="image"><br>
+<br>
+      test_device    test_parameter.        test_state,   test_history     .   ,         null.<br>
+<br>
+ ,      ,   test_parameter_type.    ,        test_history:<br>
+<br>
+<ol>
+<li> 'default'   ( )     ,   test_history     </li>
+<li> 'uptime'      ,   test_history   test_state   ,      (   )</li>
+</ol><br>
+,   ,    .<br>
+<br>
+<div class="spoiler"><b class="spoiler_title"> </b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_device (
+  <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>             <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">name</span></span>           varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>)
+);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unique</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_device_pk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_device(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_device <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> pk_test_device primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_parameter_type (
+  <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>             <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">name</span></span>           varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>)
+);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unique</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_parameter_type_pk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_parameter_type(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_parameter_type <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> pk_test_parameter_type primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_parameter (
+  <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>             <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  type_id        <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">name</span></span>           varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>)
+);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unique</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_parameter_pk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_parameter(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_parameter_fk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_parameter(type_id);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_parameter <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> pk_test_parameter primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_parameter <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> fk_test_parameter <span class="hljs-keyword"><span class="hljs-keyword">foreign</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> (type_id) 
+    <span class="hljs-keyword"><span class="hljs-keyword">references</span></span> test_parameter_type(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_state (
+  device_id      <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  parameter_id   <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>          varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>)                       <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  last_date      <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>             <span class="hljs-keyword"><span class="hljs-keyword">default</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sysdate</span></span>    <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>
+);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unique</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_state_pk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_state(device_id, parameter_id);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_state_fk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_state(parameter_id);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_state <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> pk_test_state primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(device_id, parameter_id);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_state <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> fk_test_state <span class="hljs-keyword"><span class="hljs-keyword">foreign</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> (device_id) 
+    <span class="hljs-keyword"><span class="hljs-keyword">references</span></span> test_device(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_state <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> fk_test_state_parameter <span class="hljs-keyword"><span class="hljs-keyword">foreign</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> (parameter_id) 
+    <span class="hljs-keyword"><span class="hljs-keyword">references</span></span> test_parameter(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sequence</span></span> test_history_seq;
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_history (
+  <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>             <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  device_id      <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  parameter_id   <span class="hljs-built_in"><span class="hljs-built_in">number</span></span>                              <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>          varchar2(<span class="hljs-number"><span class="hljs-number">100</span></span>)                       <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>,
+  event_date     <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>             <span class="hljs-keyword"><span class="hljs-keyword">default</span></span> <span class="hljs-keyword"><span class="hljs-keyword">sysdate</span></span>    <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span>
+);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unique</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_history_pk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_history(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_history_device_fk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_history(device_id);
+
+<span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> test_history_parameter_fk <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> test_history(parameter_id);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_history <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> pk_test_history primary <span class="hljs-keyword"><span class="hljs-keyword">key</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_history <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> fk_test_history_device <span class="hljs-keyword"><span class="hljs-keyword">foreign</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> (device_id) 
+    <span class="hljs-keyword"><span class="hljs-keyword">references</span></span> test_device(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+
+<span class="hljs-keyword"><span class="hljs-keyword">alter</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span> test_history <span class="hljs-keyword"><span class="hljs-keyword">add</span></span>
+  <span class="hljs-keyword"><span class="hljs-keyword">constraint</span></span> fk_test_history_parameter <span class="hljs-keyword"><span class="hljs-keyword">foreign</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> (parameter_id) 
+    <span class="hljs-keyword"><span class="hljs-keyword">references</span></span> test_parameter(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>);
+</code></pre><br>
+</div></div><br>
+<div class="spoiler"><b class="spoiler_title">   </b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">Insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> TEST_PARAMETER_TYPE
+   (<span class="hljs-keyword"><span class="hljs-keyword">ID</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">NAME</span></span>)
+ <span class="hljs-keyword"><span class="hljs-keyword">Values</span></span>
+   (<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-string"><span class="hljs-string">'default'</span></span>);
+<span class="hljs-keyword"><span class="hljs-keyword">Insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> TEST_PARAMETER_TYPE
+   (<span class="hljs-keyword"><span class="hljs-keyword">ID</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">NAME</span></span>)
+ <span class="hljs-keyword"><span class="hljs-keyword">Values</span></span>
+   (<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-string"><span class="hljs-string">'uptime'</span></span>);
+<span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">Insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> TEST_PARAMETER
+   (<span class="hljs-keyword"><span class="hljs-keyword">ID</span></span>, TYPE_ID, <span class="hljs-keyword"><span class="hljs-keyword">NAME</span></span>)
+ <span class="hljs-keyword"><span class="hljs-keyword">Values</span></span>
+   (<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-string"><span class="hljs-string">'status'</span></span>);
+<span class="hljs-keyword"><span class="hljs-keyword">Insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> TEST_PARAMETER
+   (<span class="hljs-keyword"><span class="hljs-keyword">ID</span></span>, TYPE_ID, <span class="hljs-keyword"><span class="hljs-keyword">NAME</span></span>)
+ <span class="hljs-keyword"><span class="hljs-keyword">Values</span></span>
+   (<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-string"><span class="hljs-string">'uptime'</span></span>);
+<span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> test_device(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">name</span></span>)
+<span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">rownum</span></span>, object_name
+<span class="hljs-keyword"><span class="hljs-keyword">from</span></span>   all_objects;
+
+<span class="hljs-keyword"><span class="hljs-keyword">commit</span></span>;
+</code></pre><br>
+</div></div><br>
+,       :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title">  </b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REPLACE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">package</span></span> test_package <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+    <span class="hljs-keyword"><span class="hljs-keyword">procedure</span></span> saveData;                     
+<span class="hljs-keyword"><span class="hljs-keyword">end</span></span> test_package;
+/
+
+<span class="hljs-keyword"><span class="hljs-keyword">show</span></span> <span class="hljs-keyword"><span class="hljs-keyword">errors</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REPLACE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">package</span></span> <span class="hljs-keyword"><span class="hljs-keyword">body</span></span> test_package <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+
+    <span class="hljs-keyword"><span class="hljs-keyword">procedure</span></span> saveData <span class="hljs-keyword"><span class="hljs-keyword">as</span></span>
+    <span class="hljs-keyword"><span class="hljs-keyword">begin</span></span>
+    
+      <span class="hljs-comment"><span class="hljs-comment">--  history    default</span></span>
+      <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> test_history(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>, device_id, parameter_id, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>, event_date)
+      <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> test_history_seq.nextval, a.device_id, a.parameter_id, a.value, a.event_date
+      <span class="hljs-keyword"><span class="hljs-keyword">from</span></span>   test_data a
+      <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_device b <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( b.id = a.device_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_parameter c <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( c.id = a.parameter_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_parameter_type d <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( d.id = c.type_id <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> d.name = <span class="hljs-string"><span class="hljs-string">'default'</span></span> )
+      <span class="hljs-keyword"><span class="hljs-keyword">left</span></span>   <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_state e <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( e.device_id = a.device_id <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> 
+                                    e.parameter_id = a.parameter_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">where</span></span>  e.value <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> <span class="hljs-literal"><span class="hljs-literal">null</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> e.value &lt;&gt; a.value;
+      
+      <span class="hljs-comment"><span class="hljs-comment">--  history    uptime</span></span>
+      <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> test_history(<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>, device_id, parameter_id, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>, event_date)
+      <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> test_history_seq.nextval, a.device_id, a.parameter_id, e.value, e.last_date
+      <span class="hljs-keyword"><span class="hljs-keyword">from</span></span>   test_data a
+      <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_device b <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( b.id = a.device_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_parameter c <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( c.id = a.parameter_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_parameter_type d <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( d.id = c.type_id <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> d.name = <span class="hljs-string"><span class="hljs-string">'uptime'</span></span> )
+      <span class="hljs-keyword"><span class="hljs-keyword">left</span></span>   <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_state e <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( e.device_id = a.device_id <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> 
+                                    e.parameter_id = a.parameter_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">where</span></span>  e.value &gt; a.value;
+      
+      <span class="hljs-comment"><span class="hljs-comment">--  state</span></span>
+      <span class="hljs-keyword"><span class="hljs-keyword">merge</span></span> <span class="hljs-keyword"><span class="hljs-keyword">into</span></span> test_state a
+      <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> c.device_id, c.parameter_id, c.value, c.event_date
+              <span class="hljs-keyword"><span class="hljs-keyword">from</span></span>   test_data c
+              <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_device d <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( d.id = c.device_id )
+              <span class="hljs-keyword"><span class="hljs-keyword">inner</span></span>  <span class="hljs-keyword"><span class="hljs-keyword">join</span></span> test_parameter e <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( e.id = c.parameter_id )
+            ) b
+      <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> ( b.device_id = a.device_id <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> b.parameter_id = a.parameter_id )
+      <span class="hljs-keyword"><span class="hljs-keyword">when</span></span> <span class="hljs-keyword"><span class="hljs-keyword">matched</span></span> <span class="hljs-keyword"><span class="hljs-keyword">then</span></span>
+        <span class="hljs-keyword"><span class="hljs-keyword">update</span></span> <span class="hljs-keyword"><span class="hljs-keyword">set</span></span> a.value = b.value, a.last_date = b.event_date
+      <span class="hljs-keyword"><span class="hljs-keyword">when</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">matched</span></span> <span class="hljs-keyword"><span class="hljs-keyword">then</span></span>
+        <span class="hljs-keyword"><span class="hljs-keyword">insert</span></span> (device_id, parameter_id, <span class="hljs-keyword"><span class="hljs-keyword">value</span></span>, last_date)
+        <span class="hljs-keyword"><span class="hljs-keyword">values</span></span> (b.device_id, b.parameter_id, b.value, b.event_date);
+    
+      <span class="hljs-comment"><span class="hljs-comment">--  ,   </span></span>
+      <span class="hljs-keyword"><span class="hljs-keyword">commit</span></span>;
+    
+    <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>;
+
+<span class="hljs-keyword"><span class="hljs-keyword">end</span></span> test_package;
+/
+
+<span class="hljs-keyword"><span class="hljs-keyword">show</span></span> <span class="hljs-keyword"><span class="hljs-keyword">errors</span></span>;
+</code></pre><br>
+</div></div><br>
+ ,     ,      ,  Oracle    .<br>
+<br>
+   :<br>
+<br>
+<div class="spoiler"><b class="spoiler_title"> </b><div class="spoiler_text"><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">package</span></span> com.acme.ae.tests.jdbc;
+
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.CallableStatement;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.Connection;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.DriverManager;
+<span class="hljs-keyword"><span class="hljs-keyword">import</span></span> java.sql.SQLException;
+
+<span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Test</span></span></span><span class="hljs-class"> </span></span>{
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String CLASS_NAME = <span class="hljs-string"><span class="hljs-string">"oracle.jdbc.driver.OracleDriver"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_CONN  = <span class="hljs-string"><span class="hljs-string">"jdbc:oracle:thin:@192.168.124.35:1521:orcl"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_NAME  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String USER_PASS  = <span class="hljs-string"><span class="hljs-string">"ais"</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">boolean</span></span> AUTO_COMMIT_MODE = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>;
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span>     BULK_SIZE        = <span class="hljs-number"><span class="hljs-number">100</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String  ADD_DATA_SQL     = 
+			<span class="hljs-string"><span class="hljs-string">"insert into test_data(device_id, parameter_id, value) values (?,?,?)"</span></span>;
+
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> String  SAVE_DATA_SQL    = 
+			<span class="hljs-string"><span class="hljs-string">"begin test_package.saveData; end;"</span></span>;
+	
+	<span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Connection c = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>;
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException </span></span>{
+		Long timestamp = System.currentTimeMillis(); 
+		CallableStatement st = c.prepareCall(ADD_DATA_SQL);
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> bulkSize = BULK_SIZE;
+			<span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; i++) {
+				st.setInt(<span class="hljs-number"><span class="hljs-number">1</span></span>, i);
+				st.setInt(<span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>);
+				st.setString(<span class="hljs-number"><span class="hljs-number">3</span></span>, <span class="hljs-string"><span class="hljs-string">"0"</span></span>);
+				st.addBatch();
+				<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (--bulkSize &lt;= <span class="hljs-number"><span class="hljs-number">0</span></span>) {
+					st.executeBatch();
+					bulkSize = BULK_SIZE;
+				}
+			}
+			<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (bulkSize &lt; BULK_SIZE) {
+				st.executeBatch();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+			st.close();
+		}
+		st = c.prepareCall(SAVE_DATA_SQL);
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			st.execute();
+		} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+			st.close();
+		}
+		System.out.println(<span class="hljs-number"><span class="hljs-number">1000000L</span></span> / (System.currentTimeMillis() - timestamp));
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> ClassNotFoundException, SQLException </span></span>{
+		Class.forName(CLASS_NAME);
+		c = DriverManager.getConnection(USER_CONN, USER_NAME, USER_PASS);
+		c.setAutoCommit(AUTO_COMMIT_MODE);
+	}
+	
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">stop</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">throws</span></span></span><span class="hljs-function"> SQLException  </span></span>{
+		<span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (c != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) {
+			c.close();
+		}
+	}
+
+	<span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String[] args)</span></span></span><span class="hljs-function"> </span></span>{
+		Test t = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Test();
+		<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+			<span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {
+				t.start();
+				t.test();
+			} <span class="hljs-keyword"><span class="hljs-keyword">finally</span></span> {
+				t.stop();
+			}
+		} <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (Exception e) {
+			System.out.println(e.toString());
+		}
+	}
+}
+</code></pre><br>
+</div></div><br>
+    :<br>
+<br>
+<pre><code class="hljs">5319
+</code></pre><br>
+,   .         .  5000   ,   ,   600.     ,        Oracle (     ).<br>
+<br>
+            ,      <a href="http://en.wikipedia.org/wiki/In-memory_database">InMemory DB</a>.      .<br>
+<br>
+<h4>     ?</h4><br>
+ ,               ,    .   ,      ,      . <br>
+<br>
+ InMemory  NoSQL DB     .       (   REDO-   <a href="http://www.oracle.com/technetwork/ru/topics/timesten/index.html">Oracle TimesTen</a>),         (    ). <br>
+<br>
+ ,   —        ?         .  ,   ,      ,      ,  .<br>
+<br>
+</div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/196828/">https://habr.com/ru/post/196828/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../196812/index.html">Tablet processor - let's talk about Bay Trail</a></li>
+<li><a href="../196814/index.html">A short excursion to the opening of the robotics laboratory at the Lyceum in Moscow or the answer to habraposta</a></li>
+<li><a href="../196816/index.html">Optimization of web environment on the Jelastic platform for PHP projects</a></li>
+<li><a href="../196820/index.html">To entrust the production of electronics: from its own factory to the fabless company</a></li>
+<li><a href="../196826/index.html">Lego Specifications Game in Ciklum Odessa, October 16</a></li>
+<li><a href="../196832/index.html">Nissan LEAF robot car first in Japan received a license plate</a></li>
+<li><a href="../196834/index.html">Lock-free data structures. Outside: an introduction to libcds</a></li>
+<li><a href="../196842/index.html">Edward Jordon speaking at the RCC 2013: "Past, Present and Future"</a></li>
+<li><a href="../196844/index.html">Yandex.DNS - secure home internet</a></li>
+<li><a href="../196848/index.html">Source codes of RosVyborov are open</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
