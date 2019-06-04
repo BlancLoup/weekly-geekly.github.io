@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How I walked behind the backtrace</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Not so long ago, we in the company decided to allow users to send us notifications about errors that occurred in our software. No sooner said than don...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How I walked behind the backtrace</h1><div class="post__text post__text-html js-mediator-article">  Not so long ago, we in the company decided to allow users to send us notifications about errors that occurred in our software.  No sooner said than done.  But then there was the task of getting the backtrace of the current call stack of the program right in runtime.  It turned out that there are several ways to solve this problem.  This article is the result of my research on the issue of getting backtracks for programs written in C / C ++ and working on Linux and FreeBSD. <br><a name="habracut"></a><br><br><h1>  A bit of theory </h1><br>  Basically, getting a call chain is pretty simple.  All necessary information is stored in the program stack.  Modern compilers for calling functions form so-called <a href="http://ru.wikipedia.org/wiki/%25D0%25A1%25D1%2582%25D0%25B5%25D0%25BA%25D0%25BE%25D0%25B2%25D1%258B%25D0%25B9_%25D0%25BA%25D0%25B0%25D0%25B4%25D1%2580">stack frames</a> .  At the beginning of each frame is the address of the previous one.  And immediately before the frame, the return address is saved, i.e.  address of the instruction to be executed next, after the function is completed.  Thus, all that needs to be done is to go through the list of frames and print the return addresses. <br>  For example, this can be done as follows (example for amd64): <br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> * </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetReturnAddress</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> depth)</span></span></span><span class="hljs-function"> </span></span>{    <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> *res;    <span class="hljs-keyword"><span class="hljs-keyword">asm</span></span> (        <span class="hljs-string"><span class="hljs-string">"mov %1, %%rcx\n"</span></span>        <span class="hljs-string"><span class="hljs-string">"MOVE: mov 0x0(%%rbp), %%rax\n"</span></span>        <span class="hljs-string"><span class="hljs-string">"loop MOVE\n"</span></span>       <span class="hljs-string"><span class="hljs-string">"mov 0x8(%%rax), %rax\n"</span></span>        <span class="hljs-string"><span class="hljs-string">"mov %%rax, %0\n"</span></span> : <span class="hljs-string"><span class="hljs-string">"=m"</span></span> (res) : <span class="hljs-string"><span class="hljs-string">"g"</span></span> (depth) : <span class="hljs-string"><span class="hljs-string">"rax"</span></span>, <span class="hljs-string"><span class="hljs-string">"rcx"</span></span>);    <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> res; }</code> </pre> <br>  The function could be written and shorter, because  the return value is put into the rax register; it was possible to do without the variable res. <br>  But, for me personally, the presence of assembly inserts is not the true path of the Jedi.  So I went to look for another solution. <br><br><h1>  <i>Gcc</i> extensions </h1><br>  The first thing I came across was the function <i>__builtin_return_address</i> good-naturedly given to us by the creators of gcc.  Here is an excerpt from her <a href="http://gcc.gnu.org/onlinedocs/gcc/Return-Address.html">full description</a> : <br>  <i>void * __builtin_return_address (unsigned int level)</i> - returns the return address of the function.  For <i>level = 0, the</i> function will return the return address of the current function, for <i>level = 1,</i> the return address of the function that called the current function, etc. <br>  When using it, there is only one thing: the compiling function unfolds into a bunch of lines of assembler code (the farther along the stack we go, the more rows) and therefore, they cannot accept the variable as a parameter.  Therefore, instead of a beautiful view of the form: <br>  <i>return __builtin_return_address (i);</i> <br>  you have to write ugly: <br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">switch</span></span>(level) { <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> __builtin_return_address(<span class="hljs-number"><span class="hljs-number">1</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> __builtin_return_address(<span class="hljs-number"><span class="hljs-number">2</span></span>); …. }</code> </pre><br>  Already better.  Go ahead. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h1>  backtrace </h1><br>  In Linux, the standard library provides the programmer with a whole range of functions that allow us to obtain the information we need.  FreeBSD requires the libexecinfo library to be installed for this purpose.  Here they are: <br>  <i>int backtrace (void ** buffer, int size)</i> is a function that fills the caller's buffer backtrace. <br>  <i>char ** backtrace_symbols (void * const * buffer, int size)</i> is a function that takes the result of the first function and translates the addresses of the functions into a textual representation. <br>  <i>void backtrace_symbols_fd (void * const * buffer, int size, int fd)</i> - does the same as the previous one, but instead of allocating memory for strings via <i>malloc,</i> writes info directly to a file. <br>  For each function that is included in the call stack, <i>backtrace_symbols</i> returns a string of the following form: <br><br>  ./prog(_Z6myfunci+0x1a) [0x8048840] <br>  where: prog is the name of the binary <br>  _Z6myfunci - coded function name <br>  0x1a - offset inside the function <br>  0x8048840 - the function address <br><br>  You can find more detailed information, as well as an example of their use, in <i>man backtrace</i> .  I just want to note that in order for <i>backtrace_symbols to</i> work properly, you need to compile the program with the <i>-rdynamic</i> option.  This is due to the fact that the information about the name of the function backtrace_symbols is taken from the table of dynamic linking.  And by default, only functions loaded from dynamic libraries get there.  For the forced addition of all the functions in this table and need the above key. <br><br><h1>  dladdr </h1><br>  The disadvantage of the <i>backtrace_symbols</i> function is that it presents the result of its work as text.  Those.  if we want to perform any manipulations, for example, with the name of a function, we will have to parse this line.  Again, not in Jedi!  Why it is necessary, it will be clear a little later. <br>  This is where the <i>dladdr</i> function <i>comes in</i> .  Actually, it is her that is called <i>backtrace_symbols</i> inside.  Its signature is very simple - the input is the address of the function, and the output is a structure like <i>Dl_info</i> : <br>  <i>int dladdr (void * addr, Dl_info * info);</i> <br>  In the case of a successful outcome of the <i>dladdr</i> call, the structure will <i>contain</i> all the same data as in the case of <i>backtrace_symbols</i> . <br>  Well, almost fine.  Now we have return addresses and even function names, albeit in a coded format (let's talk about solving this issue a bit later).  Let's see what information you can still pull out.  Can the name of the file with the source code and even the address of the line where the function is located?  Actually, although it will have to be confused! <br><br><h1>  What to do with it? </h1><br>  In principle, the data that we already have is enough.  Having the address, you can always find out the line number that originated the function call.  The easiest way is to use the gdb debugger list command.  If you have the same version of the program compiled with debug, list * &lt;address&gt; will show you the line number.  And if you still have the source code next to it, then you will see this line “about a miracle!” <br>  But the idea of ​​storing two versions of the program (with and without debugging) does not correspond to the Jedi aspirations for the ideal, and so I decided to study strip.  I have known for a long time that he knows how to store binary files and debug information separately.  It turned out to be quite simple: <br><ol><li>  We compile a program with debugs as usual (the -g key or, for fans, -g3 - then inline functions and various macros will be included in the debug). </li><li>  <b>Run objcopy --only-keep-debug a.out a.out.sym</b> .  Now all the info needed for comfortable work in gdb is in the a.out.sym file. </li><li>  We <b>strip a.out</b> .  Those.  remove debag from a.out. </li></ol><br><br>  Now we can: <br><ol><li>  Link our a.out.sym with a.out with the <b>objcopy</b> command <b>--add-gnu-debuglink = a.out.sym a.out</b> .  Then the debager will automatically load all the necessary info from a.out.sym, if it finds it in the same folder as the binary. </li><li>  Manually download the a.out.sym file from gdb with the <b>symbol-file a.out.sym command</b> <br>  Now we have the opportunity to collect debug information for our software, but not to give it to the client.  This can be done out of compassion (debugs take a rather large amount), or for security reasons (we complicate reverse engineering for hackers).  But when it is necessary to debug something right at the client, you can simply upload a few missing .sym files. </li></ol><br>  But, if there is a desire to see not only line numbers, but also the source code itself, but you don’t want to upload it to the client (a legitimate desire for commercial software), you can use gdbserver, which allows you to debug the program remotely.  For this you need: <br><ol><li>  On the client side, run <b>gdbserver 127.0.0.1:2345 a.out</b> </li><li>  For our part, run gdb and execute the command <b>target remote 127.0.0.1:2345</b> .  In this case, all source files must be accessible with the same paths that were used at the time of compilation. </li></ol><br><h1>  mangling / demangling </h1><br>  Finally, I will say a few words about the format for recording function names.  In a nutshell, such a distortion of function names is necessary for the linker to resolve naming collisions.  Well, or even easier, if there are two functions in the program with the same name, but different parameters (overloaded), then the linker needs to know exactly which of them to work with.  To do this, the compiler encodes the name of the function by a special algorithm, assigning it a new unique name.  In English, this process is called mangling, and the reverse is <a href="http://en.wikipedia.org/wiki/Name_mangling">demangling</a> . <br>  To solve the problem of converting the encoded function name to the original format, you can again use the gcc-shny extension: <br>  <sub><i>char * abi :: __ cxa_demangle (const char * mangled_name, char * output_buffer, size_t * length, int * status)</i></sub> <br>  This function, taking as input the encoded name of the function and the buffer, outputs the decoded name.  An example of its use can be found <a href="http://gcc.gnu.org/onlinedocs/libstdc%2B%2B/manual/ext_demangling.html">here</a> . <br><br><h1>  And finally </h1><br>  The funniest way to get the right information was to just ask gdb for it.  The benefit of the latter allows us to do this (an example of the function is taken <a href="http://stackoverflow.com/questions/4636456/stack-trace-for-c-using-gcc">from here</a> ). <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">print_trace</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> pid_buf[<span class="hljs-number"><span class="hljs-number">30</span></span>]; <span class="hljs-built_in"><span class="hljs-built_in">sprintf</span></span>(pid_buf, <span class="hljs-string"><span class="hljs-string">"%d"</span></span>, getpid()); <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> name_buf[<span class="hljs-number"><span class="hljs-number">512</span></span>]; name_buf[readlink(<span class="hljs-string"><span class="hljs-string">"/proc/self/exe"</span></span>, name_buf, <span class="hljs-number"><span class="hljs-number">511</span></span>)]=<span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> child_pid = fork(); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!child_pid) { dup2(<span class="hljs-number"><span class="hljs-number">2</span></span>,<span class="hljs-number"><span class="hljs-number">1</span></span>); <span class="hljs-comment"><span class="hljs-comment">// redirect output to stderr fprintf(stdout,"stack trace for %s pid=%s\n",name_buf,pid_buf); execlp("gdb", "gdb", "--batch", "-n", "-ex", "thread", "-ex", "bt", name_buf, pid_buf, NULL); abort(); /* If gdb failed to start */ } else { waitpid(child_pid,NULL,0); } }</span></span></code> </pre><br>  All we need to do is call the print_trace function and, voila, the call stack will print to stdout.  In principle, the option is working, but very slow and requiring the installation of gdb. <br><br>  That's all. <br>  Pleasant debugging! </div><p>Source: <a href="https://habr.com/ru/post/144198/">https://habr.com/ru/post/144198/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../144192/index.html">Optimizing SQLite with NSCalendar</a></li>
+<li><a href="../144193/index.html">Optimization and Generics in the CLR</a></li>
+<li><a href="../144195/index.html">Intel Architecture Code Analyzer 2.0.1</a></li>
+<li><a href="../144196/index.html">CAT - Processor Cache Size Management</a></li>
+<li><a href="../144197/index.html">Indexing AJAX sites by the Yandex search robot</a></li>
+<li><a href="../144199/index.html">Today, YouTube is seven years old. And you set the record again</a></li>
+<li><a href="../144200/index.html">Finger huffman algorithm</a></li>
+<li><a href="../144201/index.html">System of automatic reports on the work of GPS equipment</a></li>
+<li><a href="../144202/index.html">A new round of CUDA architecture</a></li>
+<li><a href="../144203/index.html">Total Commander for Android on the Play Store</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

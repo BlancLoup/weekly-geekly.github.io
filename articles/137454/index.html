@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>MySQL in NGINX: using blocking libraries in a non-blocking server</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="As you know, when developing high-load servers, an event model of working with sockets is often used. The key component of the system is epoll (in Fre...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>MySQL in NGINX: using blocking libraries in a non-blocking server</h1><div class="post__text post__text-html js-mediator-article">  As you know, when developing high-load servers, an event model of working with sockets is often used.  The key component of the system is epoll (in FreeBSD and Windows there are some solutions, but we will focus on Linux).  The epoll_wait function, being the only blocking call, returns information about all network events that interest us.  Similarly, of course, the well-known NGINX server also works. <br><br>  The event-based programming model makes the code quite peculiar, as if it is turned inside out.  But this problem is not so terrible.  There is another problem - the use of existing libraries in the event-oriented code that were not originally intended for it.  If such a library makes blocking calls (for example, connect, recv, etc.), the whole event model may lose its meaning, since  All other clients will wait for the end of one such call, which is completely unacceptable if you are writing a serious product. <br><a name="habracut"></a><br>  One of the libraries not originally intended for use in a non-blocking environment is the client library, libmysqlclient.  However, it is often needed in NGINX.  There are several solutions that allow access to MySQL from NGINX, for example, <a href="https://github.com/chaoslawful/drizzle-nginx-module">drizzle</a> and <a href="https://github.com/chaoslawful/drizzle-nginx-module">HandlerSocket</a> (the trivial protocol is quite <a href="http://github.com/arut/nginx-mysql-hsock-module">simply</a> implemented using the standard NGINX upstream mechanism).  However, all the same, the most convenient is to use all the power of the standard libmysqlclient library and the SQL language. <br><br><h4>  Context switching and interceptions </h4><br>  There is a simple solution to the problem of blocking calls.  To convert a blocking code to a nonblocking one, it’s enough to intercept the blocking call and replace it with a nonblocking call, and if you need a blocking, go to the execution of the main server cycle, but so that when the expected event occurs we return to the very place we have left.  Those.  create such a user space thread.  It will cost us pretty cheap because  preemptive multitasking is of no use to him, and we will do all context switches at the right time. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      First, find out which calls can block the flow of execution. <br>  Here are the main ones: <br><ul><li>  accept </li><li>  connect </li><li>  read / recv </li><li>  write / send </li><li>  poll </li></ul><br>  The last function in this list, poll, doesn’t look very fair.  itself is sometimes a sign of non-blocking behavior.  However, libmysqlclient uses it, so we have to intercept it.  Obviously, epoll_wait is also blocking, but we hope that it will not be used by blocking code.  There is still a select call, but it has a number of problems and therefore (thank God!) It is used less and less.  Also exclude. <br><br>  These functions are defined in libc, so if our code is linked dynamically, we have all the possibilities in order to use the standard method for interception.  I will give an example for read: <br><br><pre><code class="hljs cpp"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">typedef</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">ssize_t</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(*read_pt)</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> fd, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *buf, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">size_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> count)</span></span></span></span>; <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> read_pt orig_read; <span class="hljs-keyword"><span class="hljs-keyword">ssize_t</span></span> read(<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> fd, <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> *buf, <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> count) { <span class="hljs-keyword"><span class="hljs-keyword">ssize_t</span></span> ret; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span>(;;) { <span class="hljs-comment"><span class="hljs-comment">/*   read */</span></span> ret = orig_read(fd, buf, count); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!mtask_scheduled || ret != <span class="hljs-number"><span class="hljs-number">-1</span></span> || errno != EAGAIN) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> ret; <span class="hljs-comment"><span class="hljs-comment">/*   ;    */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (mtask_yield(fd, NGX_READ_EVENT)) { errno = EIO; <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">-1</span></span>; } } } ... <span class="hljs-comment"><span class="hljs-comment">/* -   */</span></span> orig_read = (read_pt)dlsym(RTLD_NEXT, <span class="hljs-string"><span class="hljs-string">"read"</span></span>);</code> </pre> <br>  Here, <code>mtask_yield</code> is a function that implements context switching in the main event loop.  It is called when the normal blocking code should have been blocked;  <code>mtask_scheduled</code> is a macro that allows you to determine whether to block the blocking behavior by switching contexts, or to behave in a standard way.  Obviously, outside of our handler, all context switches will only interfere.  Moreover, calls made by NGINX itself (for example, to receive and send requests), obviously, do not need our help and are initially designed for non-blocking behavior. <br><br>  It should also be noted that the socket on which this <code>read</code> operation is performed must be transferred to the non-blocking mode, for which it is necessary to make the corresponding call to <code>fcntl</code> in the captured <code>connect</code> and <code>accept</code> . <br><br><h4>  Contexts </h4><br>  What is the user context execution context?  These are the stack + registers (there is also a mask for receiving signals, but we are not jumping out of signals, so now we are not interested).  If everything is so simple, it is obvious that the context can be switched within the framework of a single process when we feel like it.  There are standard tools for this. <br><ul><li>  <code>makecontext</code> - creates a context, specifies the stack and function </li><li>  <code>swapcontext</code> - switch contexts </li><li>  <code>setcontext</code> / <code>getcontext</code> - set / read context </li></ul><br><br><h4>  We fasten to NGINX </h4><br><br>  In NGINX, content for upload is generated by the view processor: <br><br> <code>static ngx_int_t ngx_http_mtask_handler(ngx_http_request_t *r);</code> <br> <br>  This handler is added to the NGX_HTTP_CONTENT_PHASE phase handler list: <br><br><pre> <code class="hljs lisp">h = ngx_array_push(<span class="hljs-name"><span class="hljs-name">&amp;cmcf-&gt;phases</span></span>[NGX_HTTP_CONTENT_PHASE].handlers)<span class="hljs-comment"><span class="hljs-comment">; *h = ngx_http_mtask_handler;</span></span></code> </pre><br><br>  In normal use, the handler creates chains (ngx_chain_t) with buffers to return to the client, after which it calls functions <br><ul><li>  <code>ngx_http_send_header</code> - to return the HTTP header </li><li>  <code>ngx_http_output_filter</code> - for recoil body. </li></ul><br>  The body, obviously, may not "climb" into the socket as a whole, but, of course, blocking does not occur, and NGINX itself is engaged in sending the data after the completion of the client handler. <br><br>  So, we want the handler to perform blocking operations.  To do this, do the following. <br><br><pre> <code class="hljs php"><span class="hljs-comment"><span class="hljs-comment">/*  ,   */</span></span> getcontext(&amp;ctx-&gt;wctx); ctx-&gt;wctx.uc_stack.ss_sp = ngx_palloc(r-&gt;pool, mlcf-&gt;stack_size); ctx-&gt;wctx.uc_stack.ss_size = mlcf-&gt;stack_size; ctx-&gt;wctx.uc_stack.ss_flags = <span class="hljs-number"><span class="hljs-number">0</span></span>; ctx-&gt;wctx.uc_link = <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span>; makecontext(&amp;ctx-&gt;wctx, &amp;mtask_proc, <span class="hljs-number"><span class="hljs-number">0</span></span>); <span class="hljs-comment"><span class="hljs-comment">/*     */</span></span> mtask_wake(r, MTASK_WAKE_NOFINALIZE); <span class="hljs-comment"><span class="hljs-comment">/*  NGINX',        ,   ,      ;    */</span></span> r-&gt;main-&gt;count++;</code> </pre><br><br>  The mtask_wake function does the following basic things: <br><br><pre> <code class="hljs php"><span class="hljs-comment"><span class="hljs-comment">/*      */</span></span> <span class="hljs-comment"><span class="hljs-comment">/*        - */</span></span> mtask_setcurrent( r ); <span class="hljs-comment"><span class="hljs-comment">/*    */</span></span> <span class="hljs-comment"><span class="hljs-comment">/*       ! */</span></span> swapcontext(&amp;ctx-&gt;rctx, &amp;ctx-&gt;wctx); <span class="hljs-comment"><span class="hljs-comment">/*   ,  ,    ! */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!mtask_scheduled) { <span class="hljs-comment"><span class="hljs-comment">/*   */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!(flags &amp; MTASK_WAKE_NOFINALIZE)) ngx_http_finalize_request(r, NGX_OK); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>; } <span class="hljs-comment"><span class="hljs-comment">/*   ,   -   */</span></span> <span class="hljs-comment"><span class="hljs-comment">/*    -    */</span></span> <span class="hljs-comment"><span class="hljs-comment">/*         */</span></span> mtask_resetcurrent();</code> </pre><br><br>  The most important work is done by the mtask_yield function - it converts the blocking call into NGINX events and returns control to the main thread: <br><br><pre> <code class="hljs php"><span class="hljs-comment"><span class="hljs-comment">/*    NGINX        */</span></span> c = ngx_get_connection(fd, mtask_current-&gt;connection-&gt;log); c-&gt;data = mtask_current; <span class="hljs-comment"><span class="hljs-comment">/*   /  NGINX */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (event == NGX_READ_EVENT) e = c-&gt;read; <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> e = c-&gt;write; e-&gt;data = c; e-&gt;handler = &amp;mtask_event_handler; e-&gt;log = mtask_current-&gt;connection-&gt;log; ngx_add_event(e, event, <span class="hljs-number"><span class="hljs-number">0</span></span>); <span class="hljs-comment"><span class="hljs-comment">/*         ,     */</span></span> swapcontext(&amp;ctx-&gt;wctx, &amp;ctx-&gt;rctx); <span class="hljs-comment"><span class="hljs-comment">/*  !    /.  */</span></span> ngx_del_event(e, event, <span class="hljs-number"><span class="hljs-number">0</span></span>); ngx_free_connection( c );</code> </pre><br><br>  The NGINX event handler does one main thing: it switches the context when an I / O event occurs: <br><br><pre> <code class="hljs cpp"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">mtask_event_handler</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">ngx_event_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *ev)</span></span></span><span class="hljs-function"> </span></span>{ ... mtask_wake(r, wf); ... }</code> </pre><br><br>  It is also worth mentioning that in a user-specific thread you cannot call functions of NGINX itself, originally designed for non-blocking behavior.  However, such functions are likely to be called from ngx_http_send_header and ngx_http_output_filter.  In order to prevent these calls, we transfer the current connection to the buffering mode as follows: <br><br><pre> <code class="hljs erlang-repl">c-&gt;write-&gt;delayed = <span class="hljs-number"><span class="hljs-number">1</span></span></code> </pre><br><br>  At the end of the thread, this flag is reset and the data is transmitted to the client.  Obviously, this solution is not suitable for outputting large amounts of data, but in most cases this task is not worth it (and when it does, it can still be solved in a slightly less beautiful way). <br><br><h4>  We fasten libmysqlclient </h4><br><br>  Having a mechanism for executing a blocking code, accessing MySQL becomes easy.  First of all, it creates the most common handler CONTENT_PHASE.  Recall that the prototype of the function of a user-space thread completely coincides with the prototype of an ordinary handler.  Thus, having forgotten about the blocking nature of our code, we use the standard tools of the libmysqlclient library in the standard type of handler: <br><br><pre> <code class="hljs cpp"><span class="hljs-keyword"><span class="hljs-keyword">ngx_int_t</span></span> ngx_http_mysql_handler(<span class="hljs-keyword"><span class="hljs-keyword">ngx_http_request_t</span></span> *r) { ... mysql_real_connect(...) ... mysql_query(...) ... mysql_store_result(...) ... mysql_fetch_row(...) ... }</code> </pre><br>  We output the data in a simple textual form, field by field, and use one link of the ngx_chain_t chain per field.  This gives us a simple opportunity to take advantage of the results of queries within NGINX itself.  To do this, the mysql_subrequest directive is implemented, which executes the MySQL query described in another locale, and then assigns its results in order to the variables passed as arguments to this command (see example below).  Variables can then be used, for example, to proxy the connection to the desired (obtained from the database) backend or to transfer their values ​​to a script that does not have access to the database. <br><br>  The handler itself is not registered as usual (in the CONTENT_PHASE phase - here we need an “honest” non-blocking code), but in the configuration of the mtask module. <br><br><pre> <code class="hljs pgsql">ngx_http_mtask_loc_conf_t *mlcf; mlcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_mtask_module); mlcf-&gt;<span class="hljs-keyword"><span class="hljs-keyword">handler</span></span> = &amp;ngx_http_mysql_handler;</code> </pre><br><br><h4>  Examples </h4><br><br>  An example of the nginx.conf config demonstrating the capabilities of this module. <br><br><pre> <code class="hljs mel">server { ... #      server # unix socket access (<span class="hljs-keyword"><span class="hljs-keyword">default</span></span>) mysql_host localhost; #mysql_user theuser; #mysql_password thepass; #mysql_port theport; mysql_database test; mysql_connections <span class="hljs-number"><span class="hljs-number">32</span></span>; #          # .. NGINX       #       . mtask_stack <span class="hljs-number"><span class="hljs-number">65536</span></span>; #  ! location /<span class="hljs-keyword"><span class="hljs-keyword">select</span></span> { mysql_query <span class="hljs-string"><span class="hljs-string">"SELECT name FROM users WHERE id='$arg_id'"</span></span>; } location /insert { mysql_query <span class="hljs-string"><span class="hljs-string">"INSERT INTO users(name) VALUES('$arg_name')"</span></span>; } location /update { mysql_query <span class="hljs-string"><span class="hljs-string">"UPDATE users SET name='$arg_name' WHERE id=$arg_id"</span></span>; } location /<span class="hljs-keyword"><span class="hljs-keyword">delete</span></span> { mysql_query <span class="hljs-string"><span class="hljs-string">"DELETE FROM users WHERE id=$arg_id"</span></span>; } #     location /pass { #  name       $name mysql_subrequest /<span class="hljs-keyword"><span class="hljs-keyword">select</span></span>?id=$arg_id $name; #   $name   proxy_pass http:<span class="hljs-comment"><span class="hljs-comment">//myserver.com/path?name=$name; } ... }</span></span></code> </pre><br><br>  Modules can be viewed and downloaded at the addresses. <br><br>  <a href="http://github.com/arut/nginx-mtask-module">github.com/arut/nginx-mtask-module</a> <br>  <a href="http://github.com/arut/nginx-mysql-module">github.com/arut/nginx-mysql-module</a> <br><br>  Thanks to all! </div><p>Source: <a href="https://habr.com/ru/post/137454/">https://habr.com/ru/post/137454/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../137445/index.html">Yandex.Maps are now able to build routes by public transport in Kiev</a></li>
+<li><a href="../137446/index.html">Metaprogramming</a></li>
+<li><a href="../137449/index.html">PROhq Online Phone - New Freelance Tool</a></li>
+<li><a href="../137451/index.html">Draw three-dimensional icons</a></li>
+<li><a href="../137453/index.html">Practical bioinformatics p.4. Getting ready to work with ZINBA</a></li>
+<li><a href="../137456/index.html">FreeBSD and D-Link DI-804HV over IPSEC</a></li>
+<li><a href="../137457/index.html">The gov.uk platform will be completely open. Source codes published on GitHub</a></li>
+<li><a href="../137458/index.html">Why don't we make personal computers anymore?</a></li>
+<li><a href="../137459/index.html">PHP deobfuscation</a></li>
+<li><a href="../137460/index.html">"Money for free!" For fans of social networks</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

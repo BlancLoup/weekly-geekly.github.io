@@ -1,0 +1,166 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Clustered index in InnoDB and query optimization</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, networks often write about clustered index in InnoDB and MySQL tables, but, despite this, they are used in practice quite rarely. 
+ In this ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Clustered index in InnoDB and query optimization</h1><div class="post__text post__text-html js-mediator-article"> <a href="http://badoo.com/"><img src="https://habrastorage.org/storage2/f00/a6b/def/f00a6bdefb482add5b90edd3707d740d.jpg" align="left"></a>  Recently, networks often write about clustered index in InnoDB and MySQL tables, but, despite this, they are used in practice quite rarely. <br>  In this article, we will show two real-world examples of how we have optimized quite complex Badoo systems, based on an understanding of how clustered index works. <br><br>  <i><b>Clustered index</b></i> - the form of organization of the table in the file.  In InDOB data is stored in a tree, in the same one in which the usual B-TREE keys lie.  The InnoDB table itself is already a big B-TREE.  The key values ​​are clustered index.  According to the <a href="http://dev.mysql.com/doc/refman/5.5/en/innodb-index-types.html">documentation</a> , PRIMARY KEY is selected as clustered index.  If PRIMARY KEY is absent - the first UNIQUE KEY is selected.  If this is not the case, the internal 6-byte code is used. <br><br>  What follows from this organization of data on disk? <a name="habracut"></a><ol><li>  Inserting in the middle of the table may be slow due to the need to rebuild the key. </li><li>  Updating the clustered index value of a string results in the physical transfer of information on disk or in its fragmentation. </li><li>  The need to use the ever-increasing value of clustered index for quick insertion into the table.  The most optimal is the auto-increment field. </li><li>  Each row has a unique identifier-value clustered index. </li><li>  Secondary keys simply refer to these unique identifiers. </li><li>  In fact, a secondary key of the form KEY `key` (a, b, c) will have the structure KEY` key` (a, b, c, clustered_index). </li><li>  The data on the disk is ordered by clustered index (we do not consider the example of SSD). </li></ol>  Read more about this in <a href="http://dev.mysql.com/doc/refman/5.5/en/innodb-table-and-index.html">the</a> MySQL <a href="http://dev.mysql.com/doc/refman/5.5/en/innodb-table-and-index.html">manual</a> . 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      We will talk about two types of optimization, which helped significantly speed up the work of our scripts. <br><br><h4>  Test environment </h4><br>  To reduce the impact of caching on the results of the study, add SQL_NO_CACHE to the samples, and also reset the file system cache before each query.  And, because  we are interested in the worst case when the data must actually be pulled from the disk, we will restart MySQL before each query. <br><br>  Equipment: <ul><li>  Intel® Pentium® Dual CPU E2180 @ 2.00GHz </li><li>  RAM DIMM 800 MHz 4Gb </li><li>  Ubuntu 11.04 </li><li>  MySQL 5.5 </li><li>  HDD Hitachi HDS72161 </li></ul>  The scripts we used can be taken on <a href="https://github.com/Alexxz/Personal-MySQL-benchmarking">GitHub</a> . <br><br><h4>  Optimization of deep offset </h4><br>  For example, take the abstract table of messages, which contains user correspondence. <br><br><pre>  CREATE TABLE messages ( 
+             message_id int not null auto_increment, 
+             user1 int not null, 
+             user2 int not null, 
+             ts timestamp not null default current_timestamp, 
+             body longtext not null, 
+             PRIMARY KEY (message_id), 
+             KEY (user1, user2, ts) 
+         ) ENGINE = InnoDB </pre><br>  Consider this table in light of the listed features of InnoDB. <br>  The clustered index here coincides with the PRIMARY KEY and is an auto-increment field.  Each line has a 4-byte identifier.  Inserting new rows into the table is optimal.  The secondary key is actually KEY (user1, user2, ts, message_id), and we will use it. <br><br>  Add 100 million messages to our table.  This is quite enough to reveal the necessary features of InnoDB.  There are only 10 users in our system, so each pair of interlocutors will have an average of one million messages. <br><br>  Suppose that these 10 test users have exchanged many messages and often re-read old correspondence - the interface allows you to switch to a page with very old messages.  And behind this interface is a simple query: <br><br> <code>SELECT * FROM messages WHERE user1=1 and user2=2 order by ts limit 20 offset PageNumber*20</code> <br> <br>  The most common, in fact, request.  Let's look at the time of its execution depending on the depth of the offset: <br><table><tbody><tr><th>  offset </th><th>  execution time (ms) </th></tr><tr><td>  100 </td><td>  311 </td></tr><tr><td>  1000 </td><td>  907 </td></tr><tr><td>  5000 </td><td>  3372 </td></tr><tr><td>  10,000 </td><td>  6176 </td></tr><tr><td>  20,000 </td><td>  11901 </td></tr><tr><td>  30,000 </td><td>  17057 </td></tr><tr><td>  40,000 </td><td>  21997 </td></tr><tr><td>  50,000 </td><td>  28268 </td></tr><tr><td>  60,000 </td><td>  32805 </td></tr></tbody></table><br><div style="text-align:center;"><img src="https://habrastorage.org/storage2/8b3/dbb/946/8b3dbb946e5fe5fa20f73d30daff1e29.png"></div><br>  Surely many expected to see linear growth.  But getting 33 seconds on 60 thousand records is too much!  Explaining what takes so much time is quite simple - just mention one of the features of the MySQL implementation.  The fact is that MySQL for this query reads offset + limit strings from the disk and returns limit from them.  Now the situation is clear: all this time MySQL has been reading from the disk 60 thousand lines that we do not need.  What to do in a similar situation?  Begs many different solutions.  Here, by the way, is an interesting <a href="http://habrahabr.ru/blogs/mysql/44608/">article</a> about these options. <br><br>  We found a very simple solution: the first query selected only the clustered index values, and then chose only one of them.  We know that at the end of the secondary key there is a clustered index value, so if we replace message_id in a query *, we get a query that works only by key, respectively, the speed of such a query is high. <br><br>  It was: <br><pre>  mysql&gt; explain select * where messages user1 = 1 and user2 = 2 order by ts limit 20 offset 20000;
+ + ---- + ------------- + ---------- + ------ + ------------ --- + ------- + --------- + ------------- + -------- + ----- -------- +
+ |  id |  select_type |  table |  type |  possible_keys |  key |  key_len |  ref |  rows |  Extra |
+ + ---- + ------------- + ---------- + ------ + ------------ --- + ------- + --------- + ------------- + -------- + ----- -------- +
+ |  1 |  SIMPLE |  messages |  ref |  user1 |  user1 |  8 |  const, const |  210122 |  Using where |
+ + ---- + ------------- + ---------- + ------ + ------------ --- + ------- + --------- + ------------- + -------- + ----- -------- +
+ 1 row in set (0.00 sec) </pre><br><br>  It became: <br><pre>  mysql&gt; explain select message_id from messages where user1 = 1 and user2 = 2 order by ts limit 20 offset 20000;
+ + ---- + ------------- + ---------- + ------ + ------------ --- + ------- + --------- + ------------- + -------- + ----- --------------------- +
+ |  id |  select_type |  table |  type |  possible_keys |  key |  key_len |  ref |  rows |  Extra |
+ + ---- + ------------- + ---------- + ------ + ------------ --- + ------- + --------- + ------------- + -------- + ----- --------------------- +
+ |  1 |  SIMPLE |  messages |  ref |  user1 |  user1 |  8 |  const, const |  210122 |  Using where;  Using index |
+ + ---- + ------------- + ---------- + ------ + ------------ --- + ------- + --------- + ------------- + -------- + ----- --------------------- +
+ 1 row in set (0.00 sec) </pre><br>  Using index in this case means that MySQL will be able to get all the data from the secondary key, and will not access clustered index.  Read more about this <a href="http://dev.mysql.com/doc/refman/5.5/en/index-merge-optimization.html">here</a> . <br><br>  Now it only remains to retrieve the string values ​​directly <br> <code>SELECT * FROM messages WHERE message_id IN (....)</code> <br> <br>  Let's see how productive this solution is: <br><table><tbody><tr><th>  offset </th><th>  execution time (ms) </th></tr><tr><td>  100 </td><td>  243 </td></tr><tr><td>  1000 </td><td>  164 </td></tr><tr><td>  5000 </td><td>  213 </td></tr><tr><td>  10,000 </td><td>  337 </td></tr><tr><td>  20,000 </td><td>  618 </td></tr><tr><td>  30,000 </td><td>  756 </td></tr><tr><td>  40,000 </td><td>  971 </td></tr><tr><td>  50,000 </td><td>  1225 </td></tr><tr><td>  60,000 </td><td>  1477 </td></tr></tbody></table><br><div style="text-align:center;"><img src="https://habrastorage.org/storage2/9c5/28e/543/9c528e543eccfde8ff31ce76cc339a8e.png"></div><br>  The achieved result suited everyone, so it was decided not to conduct further searches.  In addition, it is not known whether it is possible to access this data in a fundamentally faster way without changing the procedure of working with history.  It should be noted once again that the task was to optimize a specific query, and not the data structure itself. <br><br><h4>  Optimization of large table update procedure </h4><br>  The second need for optimization arose when we needed to collect relevant data about our users once a day in one large table.  We had 130 million users by that time.  The script, bypassing all our bases and collecting new data, works out in half an hour and selects 30 million changed lines.  The result of the script is tens of thousands of text files with serialized new values ​​on the hard disk.  Each file contains information about hundreds of users. <br><br>  We transfer information from these text files to the database.  We read the files sequentially, group the lines in batches of several thousand and update.  Script execution time ranges from 3 to 20 hours.  Naturally, this script behavior is unacceptable.  Moreover, it is obvious that the process needs to be optimized. <br><br>  The first thing suspicion fell on is the “parasitic” load on the database server disk.  But numerous observations did not reveal evidence of this hypothesis.  We concluded that the problem is hidden in the depths of the database and we need to think about how to fix it.  How does the data lie on the disk?  What do OS, MySQL and hardware have to do to update this data?  While we were answering these questions, we noticed that the data is updated in the same order in which they were collected.  This means that each query updates a completely random place in this large table, which entails a loss of time for positioning the disk heads, a loss of the file system cache and a loss of the database cache. <br><br>  Note that the process of updating each row in MySQL consists of three stages: reading the values, comparing the old and the new values, writing the values.  This can even be seen from the fact that, as a result of the query, MySQL answers how many rows matched and how many were actually updated. <br><br>  Then we looked at how many rows actually changed in the table.  Of the 30 million lines, only 3 million have changed (which is logical, since the table contains very limited user information).  And this means that 90% of the time MySQL spends it on reading and not on updating.  The solution came by itself: you should check whether the random access to clustered index loses sequentially.  The result can be summarized in the case of updating the table (before it is updated, reading and comparison still takes place). <br><br>  The technique is extremely simple - measure the difference in the speed of the query <br> <code>SELECT * FROM messages where message_id in ($values)</code> <br>  where as values ​​to transfer an array of 10K elements.  The values ​​of the elements to make completely random to check for random access.  To test the sequential access, it is necessary to do 10K elements sequentially, starting with a certain random offset. <br><br><pre>  function getValuesForRandomAccess () { 
+     $ arr = array (); 
+     foreach (range (1, 10000) as $ i) { 
+         $ arr [] = rand (1,100000000); 
+     } 
+     return $ arr; 
+ } 
+
+ function getValuesForSequencialAccess () { 
+     $ r = rand (1, 100000000-10000); 
+     return range ($ r, $ r + 10000); 
+ } </pre><br>  Query execution time with random access and sequential: <br><table><tbody><tr><th>  N </th><th>  random </th><th>  sequential </th></tr><tr><td>  one </td><td>  38494 </td><td>  171 </td></tr><tr><td>  2 </td><td>  40409 </td><td>  141 </td></tr><tr><td>  3 </td><td>  40868 </td><td>  147 </td></tr><tr><td>  four </td><td>  37161 </td><td>  138 </td></tr><tr><td>  five </td><td>  38189 </td><td>  137 </td></tr><tr><td>  6 </td><td>  36930 </td><td>  134 </td></tr><tr><td>  7 </td><td>  37398 </td><td>  176 </td></tr><tr><td>  eight </td><td>  38035 </td><td>  144 </td></tr><tr><td>  9 </td><td>  39722 </td><td>  140 </td></tr><tr><td>  ten </td><td>  40720 </td><td>  146 </td></tr></tbody></table><br>  As you can see, the difference in runtime is 200 times.  Therefore, it is necessary to fight for it.  To optimize execution, you need to sort the source data by the primary key.  Can we quickly sort 30 million values ​​in files?  The answer is simple - we can! <br><br>  After this optimization, the running time of the script was reduced to 2.5 hours.  It takes 30 minutes to pre-sort 30 million lines (and most of the time is gzip). <br><br><h4>  Same optimization, but on SSD </h4><br>  After writing this article, we found one extra SSD, on which we also tested. <br><br>  Sampling with a deep offset: <br><table><tbody><tr><th>  offset </th><th>  execution time (ms) </th></tr><tr><td>  100 </td><td>  117 </td></tr><tr><td>  1000 </td><td>  406 </td></tr><tr><td>  5000 </td><td>  1681 </td></tr><tr><td>  10,000 </td><td>  3322 </td></tr><tr><td>  20,000 </td><td>  6561 </td></tr><tr><td>  30,000 </td><td>  9754 </td></tr><tr><td>  40,000 </td><td>  13039 </td></tr><tr><td>  50,000 </td><td>  16293 </td></tr><tr><td>  60,000 </td><td>  19472 </td></tr></tbody></table><br>  Optimized sampling with a deep offset: <br><table><tbody><tr><th>  offset </th><th>  execution time (ms) </th></tr><tr><td>  100 </td><td>  101 </td></tr><tr><td>  1000 </td><td>  21 </td></tr><tr><td>  5000 </td><td>  24 </td></tr><tr><td>  10,000 </td><td>  32 </td></tr><tr><td>  20,000 </td><td>  47 </td></tr><tr><td>  30,000 </td><td>  94 </td></tr><tr><td>  40,000 </td><td>  84 </td></tr><tr><td>  50,000 </td><td>  95 </td></tr><tr><td>  60,000 </td><td>  120 </td></tr></tbody></table><br>  Comparison of random and sequential access: <br><table><tbody><tr><th>  N </th><th>  random </th><th>  sequential </th></tr><tr><td>  one </td><td>  5321 </td><td>  118 </td></tr><tr><td>  2 </td><td>  5583 </td><td>  118 </td></tr><tr><td>  3 </td><td>  5881 </td><td>  117 </td></tr><tr><td>  four </td><td>  6167 </td><td>  117 </td></tr><tr><td>  five </td><td>  6349 </td><td>  120 </td></tr><tr><td>  6 </td><td>  6402 </td><td>  126 </td></tr><tr><td>  7 </td><td>  6516 </td><td>  125 </td></tr><tr><td>  eight </td><td>  6342 </td><td>  124 </td></tr><tr><td>  9 </td><td>  6092 </td><td>  118 </td></tr><tr><td>  ten </td><td>  5986 </td><td>  120 </td></tr></tbody></table><br>  These figures show that SSD, of course, has an advantage over a regular drive, but its use does not eliminate the need for optimization. <br><br>  And in conclusion of our article, we can say that we managed to increase the speed of data sampling by 20 times.  We accelerated the actual update of the table up to 10 times (the surrogate test was accelerated 200 times).  Recall that the experiments were conducted on a system with disabled caching.  The gain on the real system turned out to be less impressive (the cache still corrects the situation quite well). <br><br>  The conclusion from the foregoing lies on the surface: it is not enough to know the strengths and weaknesses of the software with which you work, it is important to be able to apply this knowledge in practice.  Knowing the internal structure of MySQL sometimes allows you to speed up queries tenfold. <br><br>  <i>Alexey <a href="https://habrahabr.ru/users/alexxz/" class="user_link">alexxz</a> Eremihin, Badoo developer</i> </div><p>Source: <a href="https://habr.com/ru/post/135966/">https://habr.com/ru/post/135966/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../135960/index.html">Courses at Stanford University</a></li>
+<li><a href="../135961/index.html">IPv6 support</a></li>
+<li><a href="../135962/index.html">Calendar of this programmer 2012</a></li>
+<li><a href="../135964/index.html">Siclum supports DrupalCafe first this year.</a></li>
+<li><a href="../135965/index.html">CES 2012 // At Sony (Ericsson) again the “esochka”</a></li>
+<li><a href="../135967/index.html">Modification of games on the example of Arcanoid</a></li>
+<li><a href="../135968/index.html">Sketch - 100 seconds about CES</a></li>
+<li><a href="../135969/index.html">Theory and Practice of Job Search in Canada (Part One)</a></li>
+<li><a href="../135971/index.html">Read text in iPod nano 6g</a></li>
+<li><a href="../135972/index.html">New budget 3D printer</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

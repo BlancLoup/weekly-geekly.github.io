@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Reference counting by atomic variables in C / C ++ and GCC</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Author: Alexander Sandler , original article (May 27, 2009) 
+
+ Introduction 
+ Suppose we have a data structure that manages objects and we would like ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Reference counting by atomic variables in C / C ++ and GCC</h1><div class="post__text post__text-html js-mediator-article">  Author: <a href="http://www.alexonlinux.com/">Alexander Sandler</a> , <a href="http://www.alexonlinux.com/cc-reference-counting-with-atomic-variables-and-gcc">original article (May 27, 2009)</a> <br><br><h4>  Introduction </h4><br>  Suppose we have a data structure that manages objects and we would like to work with it and objects from two or more streams.  To achieve maximum performance, we must distinguish between the mechanism used to protect the data structure itself and the mechanism used to protect current objects. <br><a name="habracut"></a><br><h4>  Why do you need reference counting? </h4><br>  To explain why these two mechanisms provide the best performance and how atomic variables can be useful, consider the following situation. <br><br>  The first stream (manipulator) must find a specific object in the data structure and modify it.  The second stream (eraser) deletes obsolete objects.  From time to time, the first thread tries to operate on an object that the second thread is trying to delete.  This is a classic script that can be found in almost any multi-threaded program. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Obviously, the two streams should work with some kind of mutual exclusion mechanism.  Suppose we protect the entire data structure with one mutex.  In this case, the manipulator thread has to keep the mutex blocked until it finds the object and processes it.  This means that the eraser stream will not have access to the data structure until the manipulator stream completes its work.  If all that the manipulator stream does is search for records and process them, then the eraser stream simply cannot access the data structure. <br><br>  Depending on the circumstances, this may become an imperceptible destruction for the system.  And as already mentioned, the only way to solve this problem is the separation between the mechanisms protecting the data structure and protecting the actual objects. <br><br>  If we do this, the manipulator thread will block the mutex only when searching for an object.  As soon as he gets the object, he can release the mutex, which protects the data structure and allows the eraser to do its work. <br><br>  But now, how can we be sure that the eraser thread will not delete the same object that is being changed by the first thread? <br><br>  It would be possible to use another mutex protecting the contents of the actual object.  But then there is an important question that we must ask ourselves.  How many mutexes are needed to protect the contents of an object? <br><br>  If we use one mutex for all objects, then we encounter the same congestion that we have just avoided.  On the other hand, if we use a mutex for each object, we face a slightly different problem. <br><br>  Suppose we created a mutex for each object.  How should we manage mutexes for objects?  We can put a mutex in the object itself, but this will create the following additional problem.  In the event that the eraser decides to delete the object, but an instant before the manipulator stream decides to check the object and tries to block its mutex.  Since the mutex has already taken the flow of the eraser, the manipulator will hibernate.  But immediately after this exit, the eraser will delete the object and its mutex, leaving the manipulator asleep on a non-existent object.  Oh. <br><br>  In fact, there are a few things we can do.  One of them is the use of object reference counting.  <a href="http://www.alexonlinux.com/do-you-need-mutex-to-protect-int">However, we must protect the link counter itself</a> .  Fortunately, thanks to atomic variables, we do not need to use a mutex to protect the counter. <br><br><h4>  How we will use atomic variables to count object references </h4><br>  First, we initialize our object reference count to one.  When the manipulator thread starts using it, it should increase the unit reference count.  Having finished working with an object, it should decrease the reference count.  That is, as long as the manipulator uses the object, it must keep the reference count incremented. <br><br>  As soon as the eraser decides to delete an object, it must first remove it from the data structure.  To do this, it must retain the mutex protecting the data structure.  After that, it should decrease by one the counter of references to the object. <br><br>  Now let's remember that we initialized the reference count by one.  Thus, if an object is not used, its reference count should become zero.  If it is zero, we can safely delete the object.  This is all because, since the object is no longer in the data structure, we can be sure that the first stream will no longer use it. <br><br>  And if its reference count is more than one?  In this case, we must wait until the thread reference count is zero.  But how to do that? <br><br>  To answer this question can be very difficult.  I usually consider one of two approaches.  The naive approach or the approach that I call the RCU approach (Read-copy update). <br><br><h4>  Naive approach </h4><br>  Naive approach is as follows.  We create a list of objects that we want to delete.  Each time the eraser flow is activated, it goes through the list and deletes all objects whose reference count is zero. <br><br>  Depending on the circumstances, there may be problems in this decision.  The list of deleted objects can grow and a full pass through it can overload the processor.  Depending on how often objects are deleted, this may be a good enough solution, but if this is not the case, then the RCU approach is worth considering. <br><br><h4>  RCU approach </h4><br>  RCU is another synchronization mechanism.  It is mainly used in the Linux kernel.  You can read about it <a href="http://lwn.net/Articles/305782/">here</a> .  I call this the RCU approach because it has some similarities with how the RCU synchronization mechanism works. <br><br>  The idea comes from the assumption that the flow of the manipulator takes some time to work with the object.  That is, basically, the manipulator continues to use the object for a certain time.  After this time period, the object should cease to be used and the eraser stream should be able to delete it. <br><br>  Assume that a manipulator flow basically takes one minute to complete its manipulations.  Here I specifically exaggerate.  When the eraser thread tries to delete an object, all it has to do is grab a mutex or <a href="http://www.alexonlinux.com/pthread-spinlocks">spinlock</a> that protects the data structure containing the objects and remove the object from this data structure. <br><br>  Next, it should get the current time and save it in the object.  The object must have methods that allow you to remember the time of your own deletion.  Then the eraser thread will add it to the end of the list of deleted objects.  This is a special list that contains all the objects that we want to delete - just like in the naive approach. <br><br><img src="https://habrastorage.org/storage2/3fe/259/312/3fe259312a88a9513696866a42769e16.png"><br>  Note that adding objects to the end of the list makes them sorted by the time they were deleted.  Earlier in the list are those objects that have earlier deletion time. <br><br>  Next, the eraser should return to the top of the list, grab the object, and make sure that one minute has passed since it was removed from the data structure.  If so, he should check his reference count and make sure that he is truly zero.  If not, he should update his delete time to the current one and add it to the end of the list.  Note that usually this should not happen.  If the link counter of the eraser thread is zero, then it should remove the object from the list and delete it. <br><br>  To show how this works, look at the picture above.  Suppose now 15:35:12.  This is more than one minute after we deleted the first object.  Therefore, as soon as the eraser is activated and checks the list, it will immediately see that the first object in the list has been deleted more than a minute ago.  It's time to remove the object from the list and check the next one. <br><br>  He will check the next object, see that he is on the list for less than a minute and leave him on the list.  Now - an interesting feature of this approach.  The eraser thread should not check the rest of the list.  Because we always add objects to the end of the list, the list is sorted and the eraser stream can be sure that other objects should not be deleted either. <br><br>  So, instead of going through the entire list, as we did in a naive approach, we can use timestamps to create a sorted list of objects and check only a few objects at the top of the list.  Depending on the circumstances, it will save a lot of time. <br><br><h4>  When did atomic variables appear? </h4><br>  Starting with version 4.1.2, gcc has built-in support for atomic variables.  They work on most architectures, but before using them, please check that your architecture supports them. <br><br>  There is a set of functions that operate on atomic variables. <br><br><pre><code class="cpp hljs">type __sync_fetch_and_add (type *ptr, type value); type __sync_fetch_and_sub (type *ptr, type value); type __sync_fetch_and_or (type *ptr, type value); type __sync_fetch_and_and (type *ptr, type value); type __sync_fetch_and_xor (type *ptr, type value); type __sync_fetch_and_nand (type *ptr, type value);</code> </pre> <br><pre> <code class="cpp hljs">type __sync_add_and_fetch (type *ptr, type value); type __sync_sub_and_fetch (type *ptr, type value); type __sync_or_and_fetch (type *ptr, type value); type __sync_and_and_fetch (type *ptr, type value); type __sync_xor_and_fetch (type *ptr, type value); type __sync_nand_and_fetch (type *ptr, type value);</code> </pre><br>  To use these functions, you do not need to include any header file.  If your architecture does not support them, the linker will give an error, as if there was a call to a non-existent function. <br><br>  Each of these functions operates on a variable of a certain <i>type</i> .  <i>A type</i> can be either <i>char</i> , <i>short</i> , <i>int</i> , <i>long</i> , <i>long long</i> , or their unsigned equivalents. <br><br>  A good idea is to wrap these functions with something that hides the implementation details.  It can be a class that represents an atomic variable or an abstract data type. <br><br>  Finally, there is my good example on the use of atomic variables in the article <a href="http://habrahabr.ru/post/147099/">simple multi-threaded data access type and atomic variables</a> . <br><br><h4>  Conclusion </h4><br>  I hope that the article will be interesting.  For additional questions, please write to e-mail (specified in the original - approx. Lane.). <br><br>  <i>Translator's Note</i> <i><br><br></i>  <i>This and other articles of the author do not pretend to be complete coverage of the material on the topic, but they have a good introductory style of presentation.</i> <i><br><br></i>  <i>I note that at the moment atomic variables:</i> <i><br></i> <ul><li>  <i>described in standards <a href="http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf">C11 (clause 7.17)</a> and <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2011/n3242.pdf">C ++ 11 (clause 29)</a> - their implementations are available in most cases (true, for C11, there are still problems);</i> </li><li>  <i>described and implemented for Boost as <a href="http://www.chaoticmind.net/~hcb/projects/boost.atomic/doc/index.html">Boost.Atomic</a> (however, this implementation was never <a href="http://lists.boost.org/Archives/boost/2012/05/193508.php">included</a> in boost 1.50);</i> </li><li>  <i>implemented in <a href="http://threadingbuildingblocks.org/">Intel Threading Building Blocks</a> .</i> </li></ul><br>  In addition to the author’s link <a href="http://lwn.net/Articles/305782/">to the RCU document,</a> the <a href="http://lttng.org/urcu/">Userspace RCU</a> project, implementing RCU for userspace, is worth noting. </div><p>Source: <a href="https://habr.com/ru/post/147107/">https://habr.com/ru/post/147107/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../147100/index.html">Higgs Boson and Mass Transfer</a></li>
+<li><a href="../147101/index.html">Stas Protasov from Parallels answered the questions of the habrasoobshchestva</a></li>
+<li><a href="../147103/index.html">Runetology (154): Nikate Androsov, Head of Ingate</a></li>
+<li><a href="../147104/index.html">Postfix to infix notation</a></li>
+<li><a href="../147105/index.html">Scientist developed clickjack rootkit for Android</a></li>
+<li><a href="../147108/index.html">About superscalar, parallelism and crisis of the genre</a></li>
+<li><a href="../147110/index.html">ABBYY opens two departments of computational linguistics</a></li>
+<li><a href="../147111/index.html">Implementing Javascript code into a page via the Chrome Extension</a></li>
+<li><a href="../147112/index.html">We invite you to a mobile hackathon in Kiev</a></li>
+<li><a href="../147117/index.html">Cloud services: from video surveillance to video analytics</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

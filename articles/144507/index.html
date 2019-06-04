@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Implementing shared memory between driver and application</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Greetings to all! 
+ This small article will discuss one way to create shared memory, which can be accessed from both kernel mode and user mode. I will...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Implementing shared memory between driver and application</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/storage2/6cf/247/cca/6cf247cca722d88971ea907f7230560b.png" align="left"><br>  Greetings to all! <br>  This small article will discuss one way to create shared memory, which can be accessed from both kernel mode and user mode.  I will give examples of functions for allocating and freeing memory, and there will also be links to the sources so that anyone can try. <br><br><a name="habracut"></a><br><br>  <i>The driver was going under a 32-bit Windows XP OS (I also checked its operation and</i> <i><br></i>  <i>in 32-bit Windows 7).</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      I will not fully describe the development of the driver, starting with the installation of the WDK (DDK), the selection of development tools, the writing of standard driver functions, etc. (if you wish, you can read <a href="http://habrahabr.ru/post/40466/">here</a> and <a href="http://habrahabr.ru/post/40171/">there</a> , although there is also not much information).  So that the article does not turn out to be too bloated, I will describe only the way to implement shared memory. <br><br><h5>  A bit of theory </h5><br>  The driver does not create a special program flow to execute its code, but runs in the context of the thread that is currently active.  Therefore, it is considered that the driver is executed in the <i>context of an arbitrary thread</i> ( <a href="http://ru.wikipedia.org/wiki/%25D0%259F%25D0%25B5%25D1%2580%25D0%25B5%25D0%25BA%25D0%25BB%25D1%258E%25D1%2587%25D0%25B5%25D0%25BD%25D0%25B8%25D0%25B5_%25D0%25BA%25D0%25BE%25D0%25BD%25D1%2582%25D0%25B5%25D0%25BA%25D1%2581%25D1%2582%25D0%25B0">Context Switching</a> ).  It is very important that when mapping the allocated memory to the user address space, we are in the context of the application thread that will manage our driver.  In this case, this rule is observed, since  the driver is single-level and we access it using the <a href="http://msdn.microsoft.com/en-us/library/windows/hardware/ff550744(v%3Dvs.85).aspx">IRP_MJ_DEVICE_CONTROL</a> request, hence the flow context will not switch and we will have access to the address space of our application. <br><br><h5>  Memory allocation </h5><br><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">pragma</span></span></span><span class="hljs-meta"> LOCKEDCODE NTSTATUS AllocateSharedMemory(PDEVICE_EXTENSION pdx, PIRP Irp) { </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">// AllocateSharedMemory KdPrint(("SharedMemory: Entering AllocateSharedMemory\n")); int memory_size = 262144000; // 250 Mb PHYSICAL_ADDRESS pstart = { 0x0, 0x00000000 }; PHYSICAL_ADDRESS pstop = { 0x3, 0xffffffff }; PHYSICAL_ADDRESS pskip = { 0x0, 0x00000000 }; // pointer to the output memory =&gt; pdx-&gt;vaReturned pdx-&gt;vaReturned = (unsigned short **) GenericGetSystemAddressForMdl(Irp-&gt;MdlAddress); // create MDL structure (pointer on MDL =&gt; pdx-&gt;mdl) pdx-&gt;mdl = MmAllocatePagesForMdl(pstart, pstop, pskip, memory_size); if (pdx-&gt;mdl != NULL) { KdPrint(("SharedMemory: MDL allocated at address %08X\n", pdx-&gt;mdl)); // get kernel space virtual address pdx-&gt;kernel_va = (unsigned short*) MmGetSystemAddressForMdlSafe(pdx-&gt;mdl, NormalPagePriority); if (pdx-&gt;kernel_va != NULL) { KdPrint(("SharedMemory: pdx-&gt;kernel_va allocated at address %08X\n", pdx-&gt;kernel_va)); for (int i = 0; i &lt; 10; ++i) { pdx-&gt;kernel_va[i] = 10 - i; // write in memory: 10-9-8-7-6-5-4-3-2-1 } } else { KdPrint(("SharedMemory: Not mapped memory into kernel space\n")); return STATUS_NONE_MAPPED; } // get user space virtual address pdx-&gt;user_va = (unsigned short*) MmMapLockedPagesSpecifyCache(pdx-&gt;mdl, UserMode, MmCached, NULL, FALSE, NormalPagePriority); if (pdx-&gt;user_va != NULL) { KdPrint(("SharedMemory: pdx-&gt;user_va allocated at address %08X\n", pdx-&gt;user_va)); // return pointer on sharing memory into user space *pdx-&gt;vaReturned = pdx-&gt;user_va; } else { KdPrint(("SharedMemory: Don't mapped memory into user space\n")); return STATUS_NONE_MAPPED; } } else { KdPrint(("SharedMemory: Don't allocate memory for MDL\n")); return STATUS_MEMORY_NOT_ALLOCATED; } return STATUS_SUCCESS; } // AllocateSharedMemory</span></span></span></span></code> </pre> <br>  <i>parsing function in parts:</i> <br>  Save the pointer, with which we pass the pointer to the allocated memory to our application: <br><br><pre> <code class="cpp hljs">pdx-&gt;vaReturned = (<span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">short</span></span> **) GenericGetSystemAddressForMdl(Irp-&gt;MdlAddress);</code> </pre><br>  The next step is to allocate unmovable physical memory with a size of memory_size and build on its basis an MDL ( <a href="http://msdn.microsoft.com/en-us/library/windows/hardware/gg463193.aspx">Memory Descriptor List</a> ) structure, the pointer to which is stored in the variable pdx-&gt; mdl: <br><br><pre> <code class="cpp hljs">pdx-&gt;mdl = MmAllocatePagesForMdl(pstart, pstop, pskip, memory_size);</code> </pre><br><img src="https://habrastorage.org/storage2/373/324/a87/373324a87af7c44094324bb52d0b2e59.gif"><br>  As you can see from the image, we need the MDL structure to describe the fixed physical pages. <br><br>  Then we get the range of virtual addresses for MDL in the system address space and store a pointer to these addresses in the variable pdx-&gt; kernel_va: <br><br><pre> <code class="cpp hljs">pdx-&gt;kernel_va = (<span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">short</span></span>*) MmGetSystemAddressForMdlSafe(pdx-&gt;mdl, NormalPagePriority);</code> </pre><br>  This function will return a pointer by which we can access the allocated memory in the driver (and regardless of the current thread context, since the addresses are obtained from the system address space). <br><br>  In the cycle, we write the first 10 memory cells with numbers from 10 to 1, so that we can check the availability of the allocated memory from the user mode: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">10</span></span>; ++i) { pdx-&gt;kernel_va[i] = <span class="hljs-number"><span class="hljs-number">10</span></span> - i; <span class="hljs-comment"><span class="hljs-comment">// write in memory: 10-9-8-7-6-5-4-3-2-1 }</span></span></code> </pre><br>  Now you need to display the allocated memory in the address space of the application that addressed the driver: <br><br><pre> <code class="cpp hljs">pdx-&gt;user_va = (<span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">short</span></span>*) MmMapLockedPagesSpecifyCache(pdx-&gt;mdl, UserMode, MmCached, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, FALSE, NormalPagePriority);</code> </pre><br>  The variable pdx-&gt; vaReturned is a pointer to a pointer and is declared in the pdx structure (see driver.h in the source_driver folder).  Using it, we pass the pointer pdx-&gt; user_va to the application: <br><br><pre> <code class="cpp hljs">*pdx-&gt;vaReturned = pdx-&gt;user_va;</code> </pre><br><br><h5>  Memory release </h5><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">pragma</span></span></span><span class="hljs-meta"> LOCKEDCODE NTSTATUS ReleaseSharedMemory(PDEVICE_EXTENSION pdx, PIRP Irp) { </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">// ReleaseSharedMemory KdPrint(("SharedMemory: Entering ReleaseSharedMemory\n")); if (pdx-&gt;mdl != NULL) { MmUnmapLockedPages(pdx-&gt;user_va, pdx-&gt;mdl); MmUnmapLockedPages(pdx-&gt;kernel_va, pdx-&gt;mdl); MmFreePagesFromMdl(pdx-&gt;mdl); IoFreeMdl(pdx-&gt;mdl); KdPrint(("SharedMemory: MDL at address %08X freed\n", pdx-&gt;mdl)); } return STATUS_SUCCESS; } // ReleaseSharedMemory</span></span></span></span></code> </pre><br><br>  This is where the address space of the application is released: <br><br><pre> <code class="cpp hljs">MmUnmapLockedPages(pdx-&gt;user_va, pdx-&gt;mdl);</code> </pre><br>  system address space: <br><br><pre> <code class="cpp hljs">MmUnmapLockedPages(pdx-&gt;kernel_va, pdx-&gt;mdl);</code> </pre><br>  then the physical pages are released: <br><br><pre> <code class="cpp hljs">MmFreePagesFromMdl(pdx-&gt;mdl);</code> </pre><br>  and kill MDL: <br><br><pre> <code class="cpp hljs">IoFreeMdl(pdx-&gt;mdl);</code> </pre><br><br><h5>  We are accessing the driver from user mode </h5><br>  <i>(The entire application code, see the attached materials)</i> <br><br>  The first thing to do is get the device handle (handle) using the <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa363858(v%3Dvs.85).aspx">CreateFile</a> () function: <br><br><pre> <code class="cpp hljs">hDevice = CreateFile(<span class="hljs-string"><span class="hljs-string">L"\\\\.\\SharedMemory"</span></span>, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, OPEN_EXISTING, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>);</code> </pre><br><br>  Then you need to send an I / O request to the driver using the <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v%3Dvs.85).aspx">DeviceIoControl</a> () function: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">short</span></span>** vaReturned = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">short</span></span>*(); ioCtlCode = IOCTL_ALLOCATE_SHARED_MEMORY; checker = DeviceIoControl(hDevice, ioCtlCode, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, vaReturned, <span class="hljs-keyword"><span class="hljs-keyword">sizeof</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>), &amp;bytesReturned, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>);</code> </pre><br>  The function call is converted to an IRP packet, which will be processed in the dispatcher function of the driver (see DispatchControl () in the driver's control.cpp file).  Those.  when you call DeviceIoControl (), the control is transferred to the driver function, the code of which was described above.  Also, when you call the DeviceIoControl () function in the DebugView program (you need to check the box so that it catches kernel-mode events), we see the following: <br><br><img src="https://habrastorage.org/storage2/f45/7bb/36b/f457bb36b7c4a2af082868889536470c.png"><br><br>  Upon returning control to the application, the vaReturned variable will point to shared memory (more precisely, it will point to a pointer that will already point to memory).  Let's make a slight simplification to get the usual pointer to memory: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">unsigned</span></span> <span class="hljs-keyword"><span class="hljs-keyword">short</span></span>* data = *vaReturned;</code> </pre><br>  Now, by the <i>data</i> pointer, we have access to shared memory from the application: <br><img src="https://habrastorage.org/storage2/6cd/4fa/072/6cd4fa07213a00a0eddba7fd7060070c.png" align="left"><br>  When you click on the “Allocate memory” button, the application transfers control to the driver, which performs all the actions described above, and returns a pointer to the allocated memory, which can be accessed from the application through the <i>data</i> pointer.  Using the “Fill TextEdit” button, we display the contents of the first 10 elements that were filled in the driver in QTextEdit and we see successful access to shared memory. <br><br>  When you click on the "Release memory" button, the memory is released and the created MDL structure is deleted. <br><br><br clear="left"><h5>  Sources </h5><br>  1. <a href="https://yadi.sk/d/yDoxCtaA3RVNZx">source_driver.rar</a> . <br>  2. <a href="https://yadi.sk/d/LWoYCtRr3RVNZC">source_app.rar</a> . <br>  3. <a href="https://yadi.sk/d/zrwwSUBv3RVNaW">source_generic_oney</a> . <br><br>  For the basis of the driver (source_driver) I took one of the examples from Walter They (examples are attached to his book "Using the Microsoft Windows Driver Model").  It is also necessary to download the Generic core library, since  This library is needed both when building and when the driver is running. <br><br><h5>  Those who want to try it themselves </h5><br>  Create a directory (eg, C: \ Drivers) and unpack the source files there (source_driver, source_generic_oney and source_app).  If you do not rebuild the driver, it is enough to install the new hardware manually (specifying the inf file: sharedmemory.inf) through the Control Panel — installing the new hardware (for Windows XP).  Then you need to run habr_app.exe (source_app / release). <br><br>  If you decide to rebuild, then: <br>  1. You need to install the <a href="http://www.microsoft.com/en-us/download/details.aspx%3Fid%3D11800">WDK</a> . <br>  2. First you need to rebuild the Generic library, since  Depending on the OS version, folders with output files can be named differently (for example, for XP - objchk_wxp_x86, for Win7 - objchk_win7_x86). <br>  3. After points 1 and 2, you can try to build the driver with the “build” command using x86 Checked Build Environment, included in the WDK. <br><br><h5>  Sources </h5><br><ul><li>  <a href="http://www.wasm.ru/series.php%3Fsid%3D9">Articles</a> from wasm.ru </li><li>  Walter They “Using the Microsoft Windows Driver Model” (ISBN 978-5-91180-057-4, 0735618038). </li><li>  Jeffrey Richter "Windows for professionals.  Creating effective Win32 applications ”(ISBN 5-272-00384-5, 1-57231-996-8). </li><li>  <a href="http://msdn.microsoft.com/en-us/windows/hardware">msdn</a> </li></ul><br>  <b>UPD:</b> Habrayuzer <a href="https://habrahabr.ru/users/dzhon/" class="user_link">DZhon</a> provided the link <a href="http://qt-project.org/doc/qt-4.8/ipc-sharedmemory.html">shared memory by means of Qt</a> . </div><p>Source: <a href="https://habr.com/ru/post/144507/">https://habr.com/ru/post/144507/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../144501/index.html">Seagate buys a controlling stake in LaCie for $ 186 million</a></li>
+<li><a href="../144503/index.html">Google adds recurring payments on Google Play</a></li>
+<li><a href="../144504/index.html">Total sale of games for Android / iOS / Mac / Linux / Win</a></li>
+<li><a href="../144505/index.html">Photo of Facebook office at Menlo Park</a></li>
+<li><a href="../144506/index.html">Nokia Lumia 900 smartphone review</a></li>
+<li><a href="../144508/index.html">Which company has the highest average junior engineer salary? [The correct answer is in the first comment]</a></li>
+<li><a href="../144509/index.html">How to warn about the outdated version of the internal utility</a></li>
+<li><a href="../144510/index.html">Single-row sorting</a></li>
+<li><a href="../144512/index.html">Linux Mint 13 Maya Released</a></li>
+<li><a href="../144514/index.html">Making a nuclear chandelier for 100'000 lumen</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

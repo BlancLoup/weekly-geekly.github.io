@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Android SDK: struggling with image memory size limits</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In a graphics drawing application, SurfaceView is used and a couple of screen-sized Bitmap (for example, I want to portray the smooth scrolling of boo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Android SDK: struggling with image memory size limits</h1><div class="post__text post__text-html js-mediator-article">  In a graphics drawing application, SurfaceView is used and a couple of screen-sized Bitmap (for example, I want to portray the smooth scrolling of book pages). <br><br>  On many devices with a higher screen resolution, the application crashes <br>  <b>AndroidRuntime: java.lang.OutOfMemoryError: bitmap size than VM budget</b> <br><br>  The problem is that the memory for Bitmap, as well as for SurfaceView, is reserved from the common process heap.  The heap size limit is small, usually a little more than 10Mb.  And this limit is set when building the system. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Attempts to improve the situation by cutting down the pixel format from 32 bits to 16 do not help much.  The problem just comes out later - for example, when you open a window on top of SurfaceView (apparently, this creates another Bitmap the size of the screen). <br><br>  Limiting the size of the program's graphic buffers in 3-4 screens is a little offensive!  Let's try to correct such an injustice. <br><a name="habracut"></a><br>  In fact, most of the Bitmap functionality is implemented in the native code (JNI), and the buffer is allocated not in the Java Heap, but with the help of the usual sish malloc.  Why is it imposed restrictions on the total size of the heap? <br><br>  We smoke source. <br><br>  It turns out that each memory allocation for Bitmap is registered in dalvik.system.VMRuntime with the help of trackExternalAllocation / trackExternalFree methods.  It is the trackExternalAllocation method that throws an exception when trying to allocate memory over the limit. <br><br>  What if you try to fool a stupid robot?  After placing the picture, say that the external memory that you just occupied has already been released.  And before freeing the image, imitate that the corresponding memory size is just occupied. <br><br>  It remains to overcome a small problem - the trackExternalAllocation and trackExternalFree methods are not visible.  We'll have to call them "hacker" methods - through Reflection. <br><br>  We try to implement this idea. <br>  Create an empty Android Application project. <br><br>  For convenience, access to VMRuntime is implemented in a separate class. <br><br><pre><code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">VMRuntimeHack</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Object runtime = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Method trackAllocation = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> Method trackFree = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">boolean</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">trackAlloc</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">long</span></span></span></span><span class="hljs-function"><span class="hljs-params"> size)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (runtime == <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">try</span></span> { Object res = trackAllocation.invoke(runtime, Long.valueOf(size)); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> (res <span class="hljs-keyword"><span class="hljs-keyword">instanceof</span></span> Boolean) ? (Boolean)res : <span class="hljs-keyword"><span class="hljs-keyword">true</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (IllegalArgumentException e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (IllegalAccessException e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (InvocationTargetException e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">boolean</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">trackFree</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">long</span></span></span></span><span class="hljs-function"><span class="hljs-params"> size)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (runtime == <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">try</span></span> { Object res = trackFree.invoke(runtime, Long.valueOf(size)); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> (res <span class="hljs-keyword"><span class="hljs-keyword">instanceof</span></span> Boolean) ? (Boolean)res : <span class="hljs-keyword"><span class="hljs-keyword">true</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (IllegalArgumentException e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (IllegalAccessException e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (InvocationTargetException e) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">VMRuntimeHack</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">boolean</span></span> success = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">try</span></span> { Class cl = Class.forName(<span class="hljs-string"><span class="hljs-string">"dalvik.system.VMRuntime"</span></span>); Method getRt = cl.getMethod(<span class="hljs-string"><span class="hljs-string">"getRuntime"</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Class[<span class="hljs-number"><span class="hljs-number">0</span></span>]); runtime = getRt.invoke(<span class="hljs-keyword"><span class="hljs-keyword">null</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Object[<span class="hljs-number"><span class="hljs-number">0</span></span>]); trackAllocation = cl.getMethod(<span class="hljs-string"><span class="hljs-string">"trackExternalAllocation"</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Class[] {<span class="hljs-keyword"><span class="hljs-keyword">long</span></span>.class}); trackFree = cl.getMethod(<span class="hljs-string"><span class="hljs-string">"trackExternalFree"</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Class[] {<span class="hljs-keyword"><span class="hljs-keyword">long</span></span>.class}); success = <span class="hljs-keyword"><span class="hljs-keyword">true</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (ClassNotFoundException e) { } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (SecurityException e) { } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (NoSuchMethodException e) { } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (IllegalArgumentException e) { } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (IllegalAccessException e) { } <span class="hljs-keyword"><span class="hljs-keyword">catch</span></span> (InvocationTargetException e) { } <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!success) { Log.i(TAG, <span class="hljs-string"><span class="hljs-string">"VMRuntime hack does not work!"</span></span>); runtime = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; trackAllocation = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; trackFree = <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>; } } } <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> VMRuntimeHack runtime = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> VMRuntimeHack();</code> </pre> <br><br>  Creation / release of Bitmap will be arranged as a separate class - a factory. <br>  Here we will remember for which of the bitmaps we corrected the information about the occupied memory - so as not to forget to return it when released. <br><br><pre> <code class="java hljs"> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">BitmapFactory</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">BitmapFactory</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">boolean</span></span></span></span><span class="hljs-function"><span class="hljs-params"> useHack)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">this</span></span>.useHack = useHack; } <span class="hljs-comment"><span class="hljs-comment">//   public Bitmap alloc(int dx, int dy) { Bitmap bmp = Bitmap.createBitmap(dx, dy, Bitmap.Config.RGB_565); if (useHack) { runtime.trackFree(bmp.getRowBytes() * bmp.getHeight()); hackedBitmaps.add(bmp); } allocatedBitmaps.add(bmp); return bmp; } //   public void free(Bitmap bmp) { bmp.recycle(); if (hackedBitmaps.contains(bmp)) { runtime.trackAlloc(bmp.getRowBytes() * bmp.getHeight()); hackedBitmaps.remove(bmp); } allocatedBitmaps.remove(bmp); } //    (  ) public void freeAll() { for (Bitmap bmp : new LinkedList&lt;Bitmap&gt;(allocatedBitmaps)) free(bmp); } private final boolean useHack; private Set&lt;Bitmap&gt; allocatedBitmaps = new HashSet&lt;Bitmap&gt;(); private Set&lt;Bitmap&gt; hackedBitmaps = new HashSet&lt;Bitmap&gt;(); }</span></span></code> </pre><br><br>  Now we will write a test that checks whether this method works.  The testAllocation () method will try to create the maximum number of megabyte images (until OutOfMemory crashes or the specified limit is reached).  UseHack checkbox sets the test with a hack or without.  The method returns the volume that was managed to take under the pictures. <br><br><pre> <code class="java hljs"> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">testAllocation</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">boolean</span></span></span></span><span class="hljs-function"><span class="hljs-params"> useHack, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> maxAlloc)</span></span></span><span class="hljs-function"> </span></span>{ System.gc(); BitmapFactory factory = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> BitmapFactory(useHack); <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> allocated = <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-comment"><span class="hljs-comment">// AndroidRuntime: java.lang.OutOfMemoryError: bitmap size exceeds VM budget while (allocated &lt; maxAlloc) { try { Bitmap bmp = factory.alloc(1024, 512); allocated += bmp.getRowBytes() * bmp.getHeight(); Log.i(TAG, "Bitmap bytes allocated " + allocated); } catch (OutOfMemoryError e) { Log.e(TAG, "Exception while allocation of bitmap, total size = " + allocated, e); break; } } factory.freeAll(); return allocated; }</span></span></code> </pre><br><br>  Call the test in Activity.onCreate () - with and without hack. <br>  The results show on the screen and in the log.  (Layout “main” needs to be corrected - add to TextView ID, according to which we will change the text). <br><br><pre> <code class="java hljs"> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">onCreate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(Bundle savedInstanceState)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">super</span></span>.onCreate(savedInstanceState); <span class="hljs-comment"><span class="hljs-comment">// perform test int allocatedNormally = testAllocation(false, 48 * MB); int allocatedWithHack = testAllocation(true, 48 * MB); String msg = "normally: " + (allocatedNormally / MB) + " MB allocated " + "\nwith hack: " + (allocatedWithHack / MB) + " MB allocated"; Log.i(TAG, msg); // display results LayoutInflater inflater = LayoutInflater.from(this); View main = (View)inflater.inflate(R.layout.main, null); TextView text = (TextView)main.findViewById(R.id.text); text.setText(msg); setContentView(main); }</span></span></code> </pre><br><br>  So, run and see the result: <br> <code>03-07 09:43:37.233: I/bmphack(17873): normally: 10 MB allocated <br> 03-07 09:43:37.233: I/bmphack(17873): with hack: 48 MB allocated <br></code> <br><br>  Without a hack, we managed to create only 10 images of 1 megabyte.  With hack - the maximum amount we specified (48 megabytes). <br>  With large sizes, the test still hung on my simulator - after ~ 58Mb. <br><br>  I hope someone this article will be useful. </div><p>Source: <a href="https://habr.com/ru/post/139717/">https://habr.com/ru/post/139717/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../139707/index.html">Twitter has turned on SPDY support</a></li>
+<li><a href="../139708/index.html">Sync vs Async on the example of Firebird</a></li>
+<li><a href="../139710/index.html">Google Thumbnail: Getting Thumbnails of Websites</a></li>
+<li><a href="../139711/index.html">Right to be forgotten</a></li>
+<li><a href="../139713/index.html">How to search for programmers in the regions? We found an effective way. Sharing ...</a></li>
+<li><a href="../139718/index.html">Prosto in Google Web Fonts</a></li>
+<li><a href="../139719/index.html">Repository pattern in conjunction with Mongoose ODM</a></li>
+<li><a href="../139720/index.html">Published webinars on Visual Studio 11, about innovations in ASP.NET and MVC4</a></li>
+<li><a href="../139721/index.html">Online Store Under Load - Web Cluster Quality Metrics</a></li>
+<li><a href="../139722/index.html">Http headers will tell a lot about your device</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

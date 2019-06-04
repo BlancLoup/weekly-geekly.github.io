@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Building a Failover SIP Proxy / PBX based on FreeSWITCH mod_sofia (recover)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello, dear habravchane. 
+
+ For several months now I've been picking on the great product FreeSWITCH. It never ceases to amaze me with its functionali...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Building a Failover SIP Proxy / PBX based on FreeSWITCH mod_sofia (recover)</h1><div class="post__text post__text-html js-mediator-article">  Hello, dear habravchane. <br><br>  For several months now I've been picking on the great product FreeSWITCH.  It never ceases to amaze me with its functionality, reliability and performance (even in those areas where you don’t expect it to). <br><br>  One of my experiments, which soon, most likely, will go into production, concerned the amazing, from my point of view, mod_sofia recover function.  The recover function allows FreeSWITCH (FS) to recover calls after crashing, or, if FS is running in a high-available cluster, pick up calls on the second node!  ATTENTION!  without interruptions in calls to subscribers, both in the case of RTP proxying, and without it. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      This is implemented quite simply, thanks to the use of an external DBMS and mod_sofia settings, which are responsible for the SIP stack.  Those.  mod_sofia stores all the information about current calls in the external database, and when the second node of the cluster is more beautiful, it is possible to read these settings and pick up the calls. <br><a name="habracut"></a><br>  So, we will need: <br><ul><li>  Free switch </li><li>  Separately installed DBMS (in my case mysql) </li><li>  unixODBC </li><li>  the dependencies that FS will require (described on the <a href="http://wiki.freeswitch.org/wiki/Installation_Guide">wiki</a> ) </li><li>  heartbeat </li></ul><br>  I will not dwell on the process of installing FS and cutting out unnecessary modules from it; all experiments will be placed on the default configuration.  At the end just add some gateway to make external calls. <br><br>  We will assume that everything that we need is established, let's proceed to the most interesting!  Tinkering configs. <br>  Setting the default FS is already completely ringing and for tests we will be more than enough. <br><br>  On the database server we execute: <br><pre><code class="tex hljs">#mysqladmin -u dba_user -p create fs_cnf</code> </pre> <br>  This will create a database in which FS will store its settings. <br><br>  Our clarister will consist of 2 working nodes and a database server. <br><br>  Address of the first node 172.16.100.200 <br>  Address of the second node 172.16.100.201 <br>  General address 172.16.100.205 <br>  Address DB server 172.16.100.210 <br><br>  <b>All actions below are performed on both FreeSWITCH nodes.</b> <br><br>  In the /etc/odbc.ini file we enter the connection parameters to the database server <br><pre> <code class="tex hljs">[fsw-cnf] Description = MySQL ODBC Database TraceFIle = stderr Driver = MySQL SERVER = 172.16.100.210 USER = fs-usr PASSWORD = super_secure_password OPTION = 67108864 DATABASE = fs_cnf</code> </pre><br>  We want FS to work on a shared IP, for this file freeswitch_base_dir / conf / vars.xml <br>  you need to enter the line: <br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">X-PRE-PROCESS</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">cmd</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"set"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">data</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"local_ip_v4=172.16.100.205"</span></span></span><span class="hljs-tag">/&gt;</span></span></code> </pre> <br>  In order for recover to work, you need to enable call tracking in sip profiles.  What profiles are beautifully described <a href="http://habrahabr.ru/post/50140/">here</a> .  Go to freeswitch_base_dir / conf / sip_profiles / and add the line (internal, external) to the settings of both profiles: <br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"track-calls"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"true"</span></span></span><span class="hljs-tag">/&gt;</span></span></code> </pre> <br>  Also in both profiles we specify the parameters for connecting to the database server. <br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"odbc-dsn"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"fsw-cnf:fs-usr:super_secure_password"</span></span></span><span class="hljs-tag">/&gt;</span></span></code> </pre> <br>  Go to the file freeswitch_base_dir / conf / autoload_configs / switch.conf.xml and add the line or uncomment and edit: <br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"core-db-dsn"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"fsw-cnf:fs-usr:super_secure_password"</span></span></span><span class="hljs-tag">/&gt;</span></span></code> </pre>  This is for the core FS settings. <br><br>  When you start FS itself will create the necessary tables for work. <br><br>  Next, configure heartbeat: <br><br>  vim /etc/ha.d/authkeys <br><pre> <code class="tex hljs">auth 1 1 sha1 mega_super_secure_key</code> </pre><br>  chmod 600 /etc/ha.d/authkeys <br><br>  vim /etc/ha.d/ha.cf <br><pre> <code class="tex hljs">#  logfacility local0 #  keepalive 100ms deadtime 2 warntime 1 initdead 120 #       udpport 694 bcast eth0 #       node fs1 fs2 #         ? auto_failback on</code> </pre><br>  vim /etc/ha.d/haresources (on the second node you need to change the hostname (fs1 to fs2)) <br><pre> <code class="tex hljs">fs1 IPaddr2::172.16.100.205/255.255.255.0/eth0 freeswitch::fsrecover</code> </pre> <br>  freeswitch :: fsrecover - the init.d section of the script that will raise our profiles to us, we will add it in the next step <br><br>  In /etc/init.d/freeswitch between restart and reload add <br><pre> <code class="bash hljs"> fsrecover) <span class="hljs-variable"><span class="hljs-variable">$FS_HOME</span></span>/bin/fs_cli -x <span class="hljs-string"><span class="hljs-string">"sofia profile internal start"</span></span> <span class="hljs-variable"><span class="hljs-variable">$FS_HOME</span></span>/bin/fs_cli -x <span class="hljs-string"><span class="hljs-string">"sofia profile external start"</span></span> /bin/sleep 1 <span class="hljs-variable"><span class="hljs-variable">$FS_HOME</span></span>/bin/fs_cli -x <span class="hljs-string"><span class="hljs-string">"sofia recover"</span></span> ;;</code> </pre><br>  Now when one of the nodes crashes the second will raise the total IP and restart the FS profiles, then execute the cherished command and pick up the calls. <br><br>  To check the outgoing call, we need to edit the dialplan and add a gateway. <br>  In my example, I will use voip.ms with a ten-digit number.  Go to freeswitch_base_dir / conf / sip_profiles / external / and create a file with the following content: <br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">include</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">gateway</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"voipms"</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"username"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"your_username"</span></span></span><span class="hljs-tag"> /&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"password"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"your_password"</span></span></span><span class="hljs-tag"> /&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"proxy"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"montreal|houston|newyork|etc.voip.ms"</span></span></span><span class="hljs-tag"> /&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"realm"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"voip.ms"</span></span></span><span class="hljs-tag"> /&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"register"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"true"</span></span></span><span class="hljs-tag"> /&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">param</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"sip_cid_type"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">value</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"rpd"</span></span></span><span class="hljs-tag"> /&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;/</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">gateway</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;/</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">include</span></span></span><span class="hljs-tag">&gt;</span></span></code> </pre><br><br>  Add to freeswitch_base_dir / conf / dialplan / default.xml (change the regular expression and caller-id parameters) <br><pre> <code class="xml hljs"><span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">extension</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">name</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"Outbound 10 Digits"</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">condition</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">field</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"destination_number"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">expression</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"^(\d{10})$"</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">action</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">application</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"set"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">data</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"effective_caller_id_number=8001231234"</span></span></span><span class="hljs-tag">/&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">action</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">application</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"set"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">data</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"effective_caller_id_name=800 Number"</span></span></span><span class="hljs-tag">/&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">action</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">application</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"bridge"</span></span></span><span class="hljs-tag"> </span><span class="hljs-attr"><span class="hljs-tag"><span class="hljs-attr">data</span></span></span><span class="hljs-tag">=</span><span class="hljs-string"><span class="hljs-tag"><span class="hljs-string">"sofia/gateway/voipms/$1"</span></span></span><span class="hljs-tag">/&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;/</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">condition</span></span></span><span class="hljs-tag">&gt;</span></span> <span class="hljs-tag"><span class="hljs-tag">&lt;/</span><span class="hljs-name"><span class="hljs-tag"><span class="hljs-name">extension</span></span></span><span class="hljs-tag">&gt;</span></span></code> </pre><br>  Start the demons: <br><br><pre> <code class="tex hljs">chkconfig heartbeat on service heartbeat start chkconfig freeswitch on service freeswitch start</code> </pre><br>  The start-up friswitch script will launch it on both nodes, but on an inactive node, profiles will not rise, since  no ip on which they run. <br>  For tests, we take any extenson from freeswitch_base_dir / conf / directory / default, registering: <br><br>  Proxy: 172.16.100.205 <br>  username: 1000 <br>  password: 1234 (This is default_password, it must be changed in vars.xml) <br><br>  We dial any number, in the process of conversation we put one of the nodes and voila!  Heartbeat detects that the second node is lying, picks up the common IP, runs the script, thereby launching inactive profiles.  Interruption of the media stream is only 2-3 seconds, i.e.  the time it takes for a heartbit to intercept resources + 1 second in freeswitch: fsrecover <br><br>  Everything.  Thank you for your attention, I hope the article will be useful to someone.  Suggestions and suggestions are more than welcome.  The plans are to write about a bunch of mod_xml_curl, mod_lcr and something else. <br><br>  P.S.  As they say: "do not kick much, the first article." <br><br>  Literature: <br>  <a href="http://wiki.freeswitch.org/">wiki.freeswitch.org</a> </div><p>Source: <a href="https://habr.com/ru/post/140517/">https://habr.com/ru/post/140517/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../140510/index.html">Living fairy tales based on Adobe Edge</a></li>
+<li><a href="../140512/index.html">Collection of links to the unsubscribe pages from notifications</a></li>
+<li><a href="../140513/index.html">Localization of games - amateurs versus professionals</a></li>
+<li><a href="../140515/index.html">Transferring Windows 7 libraries to network drives</a></li>
+<li><a href="../140516/index.html">New Generation SIM Cards</a></li>
+<li><a href="../140518/index.html">How to create your own game: the main question of any juzverej</a></li>
+<li><a href="../140520/index.html">Updating the Google Bookmarks widget</a></li>
+<li><a href="../140522/index.html">Creating a window interface using jQuery UI. Part 1</a></li>
+<li><a href="../140524/index.html">Commodore released Amiga Mini!</a></li>
+<li><a href="../140527/index.html">Flipboard animation with CSS3 and JavaScript</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

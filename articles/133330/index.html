@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Backup for standalone * NIX servers. Emulating TimeMachine</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I think none of those present need to explain the importance of backup. 
+ The problem is that of the dozens of ready-made solutions, none of them real...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Backup for standalone * NIX servers. Emulating TimeMachine</h1><div class="post__text post__text-html js-mediator-article"> I think none of those present need to explain the importance of backup. <br>  The problem is that of the dozens of ready-made solutions, none of them really meet my requirements for a standalone * NIX server on a collocation. <br>  What did you want from backup? <br>  1) daily <b>full</b> backup of all data.  No incremental-bucks. <br>  2) the fastest possible recovery of a single file.  Archivers (tar / gzip / bzip2 / rar) disappear <br>  3) fast monitoring “who exactly filled 156GB server yesterday? !!!” <br>  4) you want to keep backup copies as long as possible, how much free space is available on the disks. <br>  5) I do not want to worry about manually deleting old copies if the disk space has run out. <br>  In a nutshell, I wanted to implement the MAC OS TimeMachine functionality on a Linux server. <br>  And I started writing a script. <a name="habracut"></a><br>  You probably already guessed that at the heart of TimeMachine is a combination of <b>cp -al</b> + <b>rsync</b> <br>  On the fingers, it looks like this: <br> <code>cp -al _backup _backup</code> <br>  will copy hardlinks from yesterday’s files to today’s.  Such a copy almost does not occupy real disk space.  Then it starts <br> <code>rsync -a --del  _backup</code> <br>  it will scan the differences between the copy of yesterday's backup and, if it finds differences, will remove the hardlink and record the new version of the file;  create / copy new files and directories;  will delete non-existing more files.  In this case, all the files in yesterday's backup will remain in place. <br>  It is clear that in order to make a normal working script backup of these two teams is not enough.  I decided to write a script in 2 files - one standard for all servers with a set of functions, the second one is short, individual for each server, which is launched directly through cron. <br><br>  So, here are the scripts: ( <a href="http://narod.ru/disk/32477977001/backup_timemachine.tgz.html">can be downloaded from here</a> ) <br>  <b>backup_functions.sh</b> <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh export LC_ALL=en_US.utf8 DIR_PATTERN='20..-..-..' CURR_DATE=`date +%F` #CURR_DATE=`date +%F_%R` RESERVE_G=5 BACKUP_MAIN_DIR='/backup' BACKUP_TMP_DIR='/tmp' BACKUP_DELTA=$BACKUP_TMP_DIR/backup.delta BACKUP_ERRORS=$BACKUP_TMP_DIR/backup.err BACKUP_REPORT=$BACKUP_TMP_DIR/backup.report BACKUP_LOG_FACILITY='user.notice' BACKUP_EXPIRES_DAYS=0 VERIFY_BACKUP_MOUNTED='no' PID_FILE='/var/run/backup.pid' BACKUP_MYSQL_DIR=$BACKUP_TMP_DIR/mysql_dump MYSQL_DATA_DIR='/var/lib/mysql' [ -z "`which rsync`" ] &amp;&amp; { echo "RSYNC is not installed! backup will not work!"; exit; } [ -n "`which ionice`" ] &amp;&amp; IONICE_CMD='ionice -c2 -n6' touch /etc/default/backup_exclude rm $BACKUP_DELTA $BACKUP_ERRORS $BACKUP_REPORT 1&gt;/dev/null 2&gt;/dev/null verify_backup_mounted() { mount -a [ -d "$BACKUP_MAIN_DIR" ] || { echo "BACKUP main directory does not exist!"; exit; } str=`df "$BACKUP_MAIN_DIR" | tail -1 | grep ' /$'` [ "$str" ] &amp;&amp; { echo 'BACKUP partition is not mounted!!!!!!!!'; exit; } return 0 } prepare_for_backup() { if [ -s "$PID_FILE" ] &amp;&amp; [ `cat "$PID_FILE"` -ne $PPID ] then if [ "`ps ax | awk '{print $1;}' | grep -f \"$PID_FILE\"`" ] then echo -n "Previous BACKUP script is still running. PID = "; cat "$PID_FILE"; exit else logger -t BACKUP -p $BACKUP_LOG_FACILITY "Previous BACKUP ended unexpectly" fi fi rm "$PID_FILE" 1&gt;/dev/null 2&gt;/dev/null echo $PPID &gt; "$PID_FILE" old_dir=`pwd` cd "$BACKUP_MAIN_DIR" || { echo "BACKUP main directory does not exist!"; exit; } VERIFY_BACKUP_MOUNTED=`echo "$VERIFY_BACKUP_MOUNTED" | tr 'AZ' 'a-z'` [ "$VERIFY_BACKUP_MOUNTED" = "yes" ] &amp;&amp; verify_backup_mounted reserve_k=$(($RESERVE_G * 1048576)) mkdir -p $BACKUP_TMP_DIR 1&gt;/dev/null 2&gt;/dev/null dirs_list=`ls | grep $DIR_PATTERN | sort` if [ -n "$dirs_list" ] then while { free_k=`df -k .|grep -v Filesystem| sed -e "s/.\+ \([0-9]\+\) .\+/\1/"` dirs_list=`ls | grep $DIR_PATTERN | sort` free_pre=$free_k [ $free_pre -lt $reserve_k ] ; } do dir_oldest=`echo $dirs_list | tr " " "\n" | head -1` [ -d $dir_oldest ] &amp;&amp; { logger -t BACKUP -p $BACKUP_LOG_FACILITY "Deleting old backup in $BACKUP_MAIN_DIR/$dir_oldest" ; rm -rf $dir_oldest; } done fi [ "$VERIFY_BACKUP_MOUNTED" = "yes" ] &amp;&amp; verify_backup_mounted last_date=`ls | grep $DIR_PATTERN | sort | tail -1` if [ -n "$last_date" -a \( "$CURR_DATE" != "$last_date" \) ] then logger -t BACKUP -p $BACKUP_LOG_FACILITY "Preparing. Copying $BACKUP_MAIN_DIR/$last_date -&gt; $BACKUP_MAIN_DIR/$CURR_DATE" mkdir $CURR_DATE 1&gt;/dev/null 2&gt;/dev/null $IONICE_CMD cp -al "$last_date"/* $CURR_DATE 1&gt;/dev/null 2&gt;/dev/null rm -rf $CURR_DATE/_delta 1&gt;/dev/null 2&gt;/dev/null fi mkdir $CURR_DATE/_delta 1&gt;/dev/null 2&gt;/dev/null if [ $BACKUP_EXPIRES_DAYS -gt 0 ] then for expired_dir in `find "$BACKUP_MAIN_DIR" -maxdepth 1 -mtime +$BACKUP_EXPIRES_DAYS -type d | grep "$DIR_PATTERN"` do logger -t BACKUP -p $BACKUP_LOG_FACILITY "Deleting expired backup $expired_dir" ; rm -rf $expired_dir; done fi cd $old_dir return 0 } make_backup() { while [ -n "$1" ] do [ "$VERIFY_BACKUP_MOUNTED" = "yes" ] &amp;&amp; verify_backup_mounted src=$1 full_src=`echo $PWD/$1 | sed -e 's://:/:g'` dst=`echo $BACKUP_MAIN_DIR/$CURR_DATE/$src | sed -e "s/\/\w\+$//"` mkdir -p $dst 1&gt;/dev/null 2&gt;/dev/null logger -t BACKUP -p $BACKUP_LOG_FACILITY "$full_src started" $IONICE_CMD rsync -axW8 --del --exclude-from=/etc/default/backup_exclude $src $dst 2&gt;&gt;$BACKUP_ERRORS sync shift done return 0 } make_backup_with_delta() { while [ -n "$1" ] do [ "$VERIFY_BACKUP_MOUNTED" = "yes" ] &amp;&amp; verify_backup_mounted src=$1 full_src=`echo $PWD/$1 | sed -e 's://:/:g'` dst=`echo $BACKUP_MAIN_DIR/$CURR_DATE/$src | sed -e "s/\/\w\+$//"` mkdir -p $dst 1&gt;/dev/null 2&gt;/dev/null rm $BACKUP_DELTA 1&gt;/dev/null 2&gt;/dev/null logger -t BACKUP -p $BACKUP_LOG_FACILITY "$full_src (with delta) started" $IONICE_CMD rsync -axW8i --del $src $dst --exclude-from=/etc/default/backup_exclude 2&gt;&gt;$BACKUP_ERRORS | grep "^&gt;f" | cut -d ' ' -f 2- 1&gt;$BACKUP_DELTA old_dir=`pwd` cd $BACKUP_MAIN_DIR/$CURR_DATE dst=`echo $src | sed -e "s/\w\+$//"` xargs -a $BACKUP_DELTA -r -n5 -d '\n' -I '{}' echo $dst{} | xargs -r -n10 -d '\n' cp -ul --parents -t _delta rm $BACKUP_DELTA 1&gt;/dev/null 2&gt;/dev/null cd $old_dir sync shift done return 0 } send_email_report() { if [ -s $BACKUP_ERRORS ] then logger -t BACKUP -p $BACKUP_LOG_FACILITY "Sending email report" echo 'Content-type: text/plain; charset=utf-8' &gt;&gt; $BACKUP_REPORT echo 'Content-Transfer-Encoding: 8bit' &gt;&gt; $BACKUP_REPORT echo 'From: root@'`hostname --fqdn` &gt;&gt; $BACKUP_REPORT echo 'To: root' &gt;&gt; $BACKUP_REPORT echo 'Date:' `date` &gt;&gt; $BACKUP_REPORT echo -e 'Subject: Cron &lt;root@'`hostname --fqdn`'&gt; BACKUP\n\n' &gt;&gt; $BACKUP_REPORT cat $BACKUP_ERRORS &gt;&gt; $BACKUP_REPORT cat $BACKUP_REPORT | sendmail root fi rm $BACKUP_DELTA $BACKUP_ERRORS $BACKUP_REPORT $PID_FILE 1&gt;/dev/null 2&gt;/dev/null logger -t BACKUP -p $BACKUP_LOG_FACILITY "Finished" return 0 } make_mysql_backup() { MYSQL_DATA_DIR='/var/lib/mysql' mkdir $BACKUP_MAIN_DIR/$CURR_DATE/MySQL 1&gt;/dev/null 2&gt;/dev/null rm -rf $BACKUP_MAIN_DIR/$CURR_DATE/MySQL/* 1&gt;/dev/null 2&gt;/dev/null rm -rf $BACKUP_MYSQL_DIR 1&gt;/dev/null 2&gt;/dev/null mkdir -p $BACKUP_MYSQL_DIR 1&gt;/dev/null 2&gt;/dev/null cd $MYSQL_DATA_DIR logger -t BACKUP -p $BACKUP_LOG_FACILITY "MySQL started" for db_dir in `ls -p | grep '/' | tr -d '/'` do cd $MYSQL_DATA_DIR/$db_dir db_name=`echo $db_dir | sed -e 's/@003d/=/g' -e 's/@002d/-/g'` logger -t BACKUP -p $BACKUP_LOG_FACILITY "MySQL database '$db_name' started" for table in `ls | grep '.frm' | sed -e 's/\.frm//' -e 's/ /:::/g'` do table=`echo $table | sed -e 's/:::/ /g' -e 's/@003d/=/g' -e 's/@002d/-/g'` mysqldump $db_name "$table" --skip-lock-tables -Q -u $mysql_user -p$mysql_pass &gt; "$BACKUP_MYSQL_DIR/$table.sql" done cd $BACKUP_MYSQL_DIR tar czf $BACKUP_MAIN_DIR/$CURR_DATE/MySQL/$db_name.tar.gz * 1&gt;/dev/null 2&gt;/dev/null rm $BACKUP_MYSQL_DIR/* 1&gt;/dev/null 2&gt;/dev/null done return 0 }</span></span></code> </pre> <br><br>  and <b>backup.sh</b> : <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh . /usr/local/sbin/backup_functions.sh BACKUP_EXPIRES_DAYS=365 #  30 RESERVE_G=30 BACKUP_MAIN_DIR='/backup' VERIFY_BACKUP_MOUNTED='yes' prepare_for_backup cd / make_backup etc boot home root opt srv usr/local make_backup_with_delta var/spool var/lib var/www BACKUP_MAIN_DIR='/backup' mysql_user='root' mysql_pass='jndey7hdFdfii7HN6ygdrarUh' make_mysql_backup send_email_report</span></span></code> </pre> <br>  It is assumed that <b>backup_functions.sh is</b> located in <i>/ usr / local / sbin</i> .  If in another directory, correct the corresponding line in <b>backup.sh</b> <br>  As you can see, the script abundantly uses global variables.  for example <br>  <b>RESERVE_G</b> - the reserve (in gigabytes) that the script will provide by deleting the oldest copies <u><b>before</b></u> starting today's backup <br>  <b>BACKUP_EXPIRES_DAYS</b> - after how many days to delete the old backup, even if disk space is still there.  if BACKUP_EXPIRES_DAYS == 0 then this is not done. <br>  <b>BACKUP_MAIN_DIR</b> - directory in which the backup is written.  Inside there are folders like “2011-11-15” where backup is written. <br>  <b>VERIFY_BACKUP_MOUNTED</b> - check or not check whether a separate partition of the disk is mounted under the backup.  It should be understood that if the selected partition was unmounted for some reason, then without this check, the backup will be a heavy burden on rootfs or another unsuitable disk partition.  However, there are situations when a backup is explicitly and specifically written on rootfs or another non-specialized section.  Then you need to specify <br>  <b>VERIFY_BACKUP_MOUNTED</b> = "no" <br>  a short backup.sh script, which can already be run directly by a cron, calls several self-made functions, namely: <br>  <b>prepare_for_backup</b> - the function prepares everything before copying directly.  Roughly speaking, it does <i>cp -al</i> + any checks whether the free disk space has run out. <br>  <b>make_backup</b> (with parameters) - the function actually makes a copy <br>  <b>make_backup_with_delta</b> (with the same parameters) - the function makes a copy and additionally adds all new files to the directory <i>2011-11-15 / _delta with</i> hardlinks.  Looking into this directory you can quickly and easily find out who uploaded 156GB of data to the server yesterday. <br>  <b>send_email_report</b> - the function sends the e-mail to the admin with errors (if any) during the backup. <br>  In addition to backing up files, I also wrote the backup function for MySQL in the appendix. <br>  <b>make_mysql_backup</b> - the function is called without parameters; it makes a public mysqldump (i.e., one table - one .sql file), then all the .sql files of each database are packaged into <i>db_name.tar.gz</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Sorry for the sheet.  I hope someone will come in handy. <br><br>  UPDATE: if you want to make backups more often than once a day - in the first lines of backup_functions.sh replace the line <br>  <i>CURR_DATE = `date +% F`</i> <br>  on <br>  <i>CURR_DATE = `date +% F_% R`</i> <br><br>  If rsync is not installed, the script is aborted with the corresponding message. <br>  If <b>ionice</b> is set, then rsync will be launched with a lower io priority (parameters can be changed in the <br>  <i>[-n "` which ionice` "] &amp;&amp; IONICE_CMD = 'ionice -c2 -n6'</i> </div><p>Source: <a href="https://habr.com/ru/post/133330/">https://habr.com/ru/post/133330/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../133319/index.html">Conference ADD-3 convenes speakers</a></li>
+<li><a href="../133321/index.html">Arrangement of points over onmousewheel and a little about onion soup</a></li>
+<li><a href="../133325/index.html">Synchronization of the view with the collection</a></li>
+<li><a href="../133326/index.html">Bury bitcoin</a></li>
+<li><a href="../133328/index.html">DOM-shim for all browsers including IE <8</a></li>
+<li><a href="../133332/index.html">Biglion develops new sources of profit</a></li>
+<li><a href="../133333/index.html">Coraline. World is the opposite</a></li>
+<li><a href="../133334/index.html">First development experience for Apple iOS (IP calculator)</a></li>
+<li><a href="../133335/index.html">"Classmates" will open search engines - will index all (almost all)</a></li>
+<li><a href="../133337/index.html">Introduction to Tkinter</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

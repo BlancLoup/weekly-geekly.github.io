@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>QoS in Linux: mocking traffic</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the previous article I talked about the U32 filter. This article focuses on the so-called tc actions - actions that can be performed on traffic. Fo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>QoS in Linux: mocking traffic</h1><div class="post__text post__text-html js-mediator-article">  In the <a href="http://habrahabr.ru/blogs/sysadm/138463/">previous article</a> I talked about the U32 filter.  This article focuses on the so-called tc actions - actions that can be performed on traffic.  For example, you can build a firewall without using iptables / netfilter, or you can change individual bytes in packets, redirect / mirror traffic to other interfaces.  We will master this by examples.  Continued under the cut. <br><a name="habracut"></a><br><br><h5>  What are these tc actions like? </h5><br>  Traffic Control Action (hereinafter simply “actions”) is an extension of filters in the traffic management subsystem.  These extensions are needed for a variety of needs - from the simplest dropping of packets to changes in the traffic itself.  The action is attached to a separate filter, and thus the manipulation is performed only on the selected traffic, which adds flexibility.  In addition, you can build entire chains of actions via pipes (like pipelining of data in the console), combining them.  Manipulations can be performed both on incoming traffic and outgoing traffic. <br><br>  First of all, we need to add class or classless discipline to the interface, and filters with actions will be added to it.  If we want to mock incoming traffic, then we need to add ingress discipline.  Its distinguishing feature is that its handle is always equal to “ffff:” and it is always classless. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Naturally, the corresponding modules should be included in the kernel.  They are located in the Networking support - Networking options - QoS and / or fair queueing branch.  You need the included options Actions and modules with the actions you will use.  In distribution kernels, usually, everything is already included. <br><br><h5>  The simplest example of using actions </h5><br><br>  To simplify the construction of filters, we will filter traffic for manipulations using tags.  This method is only suitable for outgoing traffic.  Why is that?  Let's look at this <a href="">picture</a> , which shows the path of the package through the Linux network stack.  As you can see, the discipline and classification of incoming packets is performed much earlier than any netfiter hooks, and therefore we simply have no place to tag the packet before.  In this case, for classification it makes sense to build filters according to other criteria, for example, using U32.  Another way to get around this problem is to redirect traffic to another interface. <br><br>  Let's look at the simplest example of applying actions.  Surely, many have already faced him.  It will be about bandwidth limitations for certain types of traffic using the so-called polisher.  Polyser works according to the algorithm of the current bucket (you can read about this algorithm on <a href="http://ru.wikipedia.org/wiki/%25D0%2590%25D0%25BB%25D0%25B3%25D0%25BE%25D1%2580%25D0%25B8%25D1%2582%25D0%25BC_%25D1%2582%25D0%25B5%25D0%25BA%25D1%2583%25D1%2589%25D0%25B5%25D0%25B3%25D0%25BE_%25D0%25B2%25D0%25B5%25D0%25B4%25D1%2580%25D0%25B0">Wikipedia</a> or at Tanenbaum). <br><br>  Suppose we want to limit the speed of the incoming traffic of the tcp protocol from the ip address 192.168.10.3 to the address 192.168.10.5.  You can do this as follows: <br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   #  tc qdisc add \ dev eth0 \ ingress #    # tcp #  192.168.10.3/32 #  192.168.10.5/32 tc filter add \ dev eth0 \ parent ffff: \ pref 10 \ protocol ip \ handle ::1 \ u32 \ match ip protocol 6 0xff \ match ip src 192.168.10.3/32 \ match ip dst 192.168.10.5/32 \ action police \ rate 2Mbit burst 200K exceed-conform drop</span></span></code> </pre> <br><br>  The last two lines are of the greatest interest to us (if other lines are not clear to you, then read LARTC and about the U32 filter). <br><ul><li>  action police - indicates that the traffic falling under the filter will be processed by polisher.  Next come the polisher parameters. </li><li>  rate 2Mbit burst 200K - set the bandwidth to 2 megabits per second.  "Burst 200K" is one of the parameters necessary for the correct operation of the polisher.  There are other parameters, but we will not consider them. </li><li>  exceed-conform drop - defines the action on packets that “overflow the bucket's edge”, in this case they are discarded.  Packets that go into the 2 megabit band are skipped. </li></ul><br><br>  Run, for example, iperf on both machines and measure the speed.  If everything is done correctly, then the speed from 192.168.10.3 to 192.168.10.5 should be in the region of two megabits (this is the case if nothing is passed between the test data between the nodes).  In statistics, you can see how much data went through the filter, how many times it worked, how many packets were skipped and dropped, etc. <br><br><pre> <code class="bash hljs">~$ iperf -s -p 10500 ------------------------------------------------------------ Server listening on TCP port 10500 TCP window size: 85.3 KByte (default) ------------------------------------------------------------ [ 4] <span class="hljs-built_in"><span class="hljs-built_in">local</span></span> 192.168.10.5 port 10500 connected \ with 192.168.10.3 port 59154 [ ID] Interval Transfer Bandwidth [ 4] 0.0-11.2 sec 2.73 MBytes 2.04 Mbits/sec ~$ tc -s -pf ls dev eth0 parent ffff: filter protocol ip pref 10 u32 filter protocol ip pref 10 u32 fh 800: ht divisor 1 filter protocol ip pref 10 u32 fh 800::1 \ order 1 key ht 800 bkt 0 terminal flowid ??? \ (rule hit 2251145 success 4589) match IP src 91.193.236.62/32 (success 5843 ) match IP dst 91.193.236.44/32 (success 4608 ) match IP protocol 6 (success 4589 ) action order 1: police 0x1e rate 2000Kbit burst 200Kb mtu 2Kb \ action drop overhead 0b ref 1 <span class="hljs-built_in"><span class="hljs-built_in">bind</span></span> 1 Action statistics: Sent 6870220 bytes 4589 pkt (dropped 761, overlimits 761 requeues 0) backlog 0b 0p requeues 0</code> </pre><br><br>  Other actions are similarly used.  For each action, you can call a little help on the parameters.  For example, for the same polisher, this can be done with the command: <br><br><pre> <code class="bash hljs">tc filter add \ dev eth0 \ parent ffff: \ u32 \ match u32 0 0 \ action police \ <span class="hljs-built_in"><span class="hljs-built_in">help</span></span> Usage: ... police rate BPS burst BYTES[/BYTES] [ mtu BYTES[/BYTES] ] [ peakrate BPS ] [ avrate BPS ] [ overhead BYTES ] [ linklayer TYPE ] [ ACTIONTERM ] Old Syntax ACTIONTERM := action &lt;EXCEEDACT&gt;[/NOTEXCEEDACT] New Syntax ACTIONTERM := conform-exceed &lt;EXCEEDACT&gt;[/NOTEXCEEDACT] Where: *EXCEEDACT := pipe | ok | reclassify | drop | <span class="hljs-built_in"><span class="hljs-built_in">continue</span></span> Where: pipe is only valid <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> new syntax</code> </pre><br><br>  In order to find out a hint to other actions, simply indicate their name instead of “police”. <br><br><h5>  Short list of actions </h5><br><br>  The following actions are currently included in the kernel: <br><ul><li>  police - as mentioned earlier, implements polisher functions to limit speeds. </li><li>  gact - generic action - allows you to skip, discard, reclassify packets, etc.  Using this action you can implement a firewall similarity. </li><li>  mirred - with this extension you can mirror or redirect packets to other network interfaces.  Widely used in conjunction with IFB-interfaces for smoothing (shaping) incoming traffic. </li><li>  ipt - iptables target - allows you to apply iptables actions to packets, for example, marking.  In this case, if the filter is attached to the ingress-discipline, then this roughly corresponds to the actions in the mangle-prerouting chain. </li><li>  nat - stateless nat - implements stateless network address translation.  Those.  just changes in the title of one ip-address to another. </li><li>  pedit - packet edit - with it, you can change individual bits and bytes in packets.  An example of its application will be later. </li><li>  skbedit - allows changing the fields of the sk_buf structure in which the package is stored.  It is used to change the priority, mainly. </li><li>  csum - check sum update - recalculates checksums and updates their values ​​in packet headers.  Usually used in conjunction with pedit. </li></ul><br><br><h5>  Chaining actions </h5><br><br>  Actions can be applied both individually and together, forming chains.  All this is similar to pipelining of data in the console, when the output of one program is fed to the input of another.  With actions in the same way.  For example, let's try to change some field in the package header.  After that we will need to recalculate and update the checksum.  For this, the pedit and csum actions will be chained.  For clarity, we mirror the resulting packets on the ifb0 interface and see them tcpdump-ohm. <br><br><pre> <code class="bash hljs">tc filter add \ dev eth0 \ parent 1: \ pref 10 \ protocol ip \ handle ::1 \ u32 \ match ip protocol 6 0xff \ match ip src 10.10.20.119/32 \ match ip dst 10.10.20.254/32 \ match u16 10500 0xffff at 22 \ action pedit \ munge offset 22 u16 <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> 11500 \ pipe \ action csum \ tcp \ pipe \ action mirred \ egress mirror dev ifb0</code> </pre><br><br>  The team looks pretty scary.  We are familiar with the beginning - we add a filter in order to select the packets we need by source and destination addresses, protocol and port number (protocol tcp, ip src 10.10.20.119, ip dst 10.10.20.254, tcp dport 10500).  But instead of classifying, we change the contents of the packet (parameter “action pedit”) - a single word at an offset of 22 bytes from the beginning of the ip-packet.  If you look at the format of the headers, then this field corresponds to the port number of the receiver in tcp.  We overwrite it by setting it to 11500 ("munge offset 22 u16 set 11500").  But after we changed the field, the header checksum will change.  To recalculate it, packets are redirected to the csum action using the “pipe” parameter.  Csum recalculates the tcp header checksum and forwards packets to the mirred action in the same way using the pipe parameter.  As a result of the “mirred” action, copies of the packets that were sent come to the ifb0 interface. <br><br>  Check how everything works by analyzing statistics, as well as running tcpdump on the ifb0 interface: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#      ~$ tc -s -pf ls dev eth0 filter parent 1: protocol ip pref 10 u32 filter parent 1: protocol ip pref 10 u32 fh 800: ht divisor 1 filter parent 1: protocol ip pref 10 u32 fh 800::1 order 1 key ht 800 bkt 0 terminal flowid ??? (rule hit 102554 success 0) match IP protocol 6 (success 102517 ) match IP src 10.10.20.119/32 (success 0 ) match IP dst 10.10.20.254/32 (success 0 ) match dport 10500 (success 0 ) action order 1: pedit action pipe keys 1 index 66 ref 1 bind 1 installed 132 sec used 132 sec key #0 at 20: val 00002cec mask ffff0000 Action statistics: Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) backlog 0b 0p requeues 0 action order 2: csum (tp) action pipe index 29 ref 1 bind 1 installed 132 sec used 132 sec Action statistics: Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) backlog 0b 0p requeues 0 action order 3: mirred (Egress Mirror to device ifb0) pipe index 79 ref 1 bind 1 installed 132 sec used 132 sec Action statistics: Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) backlog 0b 0p requeues 0 #  tcp  10.10.20.254:10500 ~$ telnet 10.10.20.254 10500 #    ,    #   ifb0 ~$ tcpdump -nvvi ifb0 tcpdump: WARNING: ifb0: no IPv4 address assigned tcpdump: listening on ifb0, link-type EN10MB (Ethernet), capture size 65535 bytes ... 00:46:11.080234 IP (tos 0x10, ttl 64, id 46378, offset 0, flags [DF], proto TCP (6), length 60) 10.10.20.119.36342 &gt; 10.10.20.254.11500: Flags [S], cksum 0x2001 (correct), seq 1542179969, win 14600, options [mss 1460,sackOK,TS val 1417050539 ecr 0,nop,wscale 4], length 0 ... #    ~$ tc -s -pf ls dev eth0 filter parent 1: protocol ip pref 10 u32 filter parent 1: protocol ip pref 10 u32 fh 800: ht divisor 1 filter parent 1: protocol ip pref 10 u32 fh 800::1 order 1 key ht 800 bkt 0 terminal flowid ??? (rule hit 580151 success 12) match IP protocol 6 (success 579716 ) match IP src 10.10.20.119/32 (success 12 ) match IP dst 10.10.20.254/32 (success 12 ) match dport 10500 (success 12 ) action order 1: pedit action pipe keys 1 index 66 ref 1 bind 1 installed 747 sec used 454 sec key #0 at 20: val 00002cec mask ffff0000 Action statistics: Sent 888 bytes 12 pkt (dropped 0, overlimits 0 requeues 0) backlog 0b 0p requeues 0 action order 2: csum (tdp) action pipe index 29 ref 1 bind 1 installed 747 sec used 454 sec Action statistics: Sent 888 bytes 12 pkt (dropped 0, overlimits 0 requeues 0) backlog 0b 0p requeues 0 action order 3: mirred (Egress Mirror to device ifb0) pipe index 79 ref 1 bind 1 installed 747 sec used 454 sec Action statistics: Sent 888 bytes 12 pkt (dropped 0, overlimits 0 requeues 0) backlog 0b 0p requeues 0</span></span></code> </pre><br><br>  That's basically all that I wanted to tell about the application of action. <br><br><h5>  useful links </h5><br>  <a href="http://www.opennet.ru/docs/RUS/LARTC/">LARTC</a> - Linux Advanced Routing and Traffic Control. <br>  <a href="http://www.linuxfoundation.org/collaborate/workgroups/networking/ifb">An example of</a> using ifb and mirred actions. </div><p>Source: <a href="https://habr.com/ru/post/138562/">https://habr.com/ru/post/138562/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../138553/index.html">Sony Ericsson officially becomes Sony</a></li>
+<li><a href="../138554/index.html">Review of the registrar AdvoCam-HD2</a></li>
+<li><a href="../138555/index.html">Guidelines for choosing a records management system: a document viewer</a></li>
+<li><a href="../138557/index.html">Updated MSDN Russian-language web development section: new design, new training courses and articles</a></li>
+<li><a href="../138559/index.html">Semi-automatic creation of forms for Adobe Flash, based on Adobe Photoshop files</a></li>
+<li><a href="../138563/index.html">Yandex Translate API: PHP and a little research service</a></li>
+<li><a href="../138565/index.html">Overview of Windows Azure Toolkit for Social Games</a></li>
+<li><a href="../138566/index.html">Metrics in social media (translation of Avinash Koshik's article)</a></li>
+<li><a href="../138567/index.html">Intel is developing a processor with a wireless communication module</a></li>
+<li><a href="../138569/index.html">An inside look: a little about the CloudServer API</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

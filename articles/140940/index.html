@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Multi-threaded file upload in S3</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article illustrates the actual application and performance gains in the example of uploading files to Amazon S3 storage using multi-threading in ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Multi-threaded file upload in S3</h1><div class="post__text post__text-html js-mediator-article">  This article illustrates the actual application and performance gains in the example of uploading files to <a href="http://aws.amazon.com/s3/">Amazon S3</a> storage using multi-threading in Ruby using gem <a href="http://aws.amazon.com/sdkforruby/">aws-sdk</a> . <br><a name="habracut"></a><br><h4>  Start simple </h4><br>  Implementing a file upload using the official (i.e. Amazon) is gem aws-sdk quite simple.  If you omit the preparatory part of the formation of the authorization parameters for Amazon Web Services (AWS), then the code takes three lines: <br><pre><code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">upload_to_s3</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(config, src, dst)</span></span></span></span> <span class="hljs-comment"><span class="hljs-comment">#     S3,      config s3 = AWS::S3.new( :access_key_id =&gt; config['access_key_id'], :secret_access_key =&gt; onfig['secret_access_key']) #  ,    'dst'  S3 (   ) s3_file = s3.buckets[config['bucket_name']].objects[dst] #    src    (   ) s3_file.write(:file =&gt; src, :acl =&gt; :public_read) end</span></span></code> </pre> <br>  The method works and shows the average download speed up to 5 Mb / c on files larger than 5 Mb (on smaller files the average speed drops). <br>  However, from experiments it is easy to see that the total speed of simultaneous downloading of several files is higher than the speed of downloading one file at a time.  It turns out that there is a kind of bandwidth limit per stream?  Let's try to parallelize the download using multi-threading and the <a href="http://docs.amazonwebservices.com/AWSRubySDK/latest/AWS/S3/MultipartUpload.html">multipart_upload</a> method, and see what happens. <br><br><h4>  Download file parts </h4><br>  To upload a file in aws-sdk, there is a multipart_upload method.  Let's look at its typical use: <br><pre> <code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">multipart_upload_to_s3</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(src, dst, config)</span></span></span></span> s3 = AWS::S3.new( <span class="hljs-symbol"><span class="hljs-symbol">:access_key_id</span></span> =&gt; config[<span class="hljs-string"><span class="hljs-string">'access_key_id'</span></span>], <span class="hljs-symbol"><span class="hljs-symbol">:secret_access_key</span></span> =&gt; onfig[<span class="hljs-string"><span class="hljs-string">'secret_access_key'</span></span>]) s3_file = s3.buckets[config[<span class="hljs-string"><span class="hljs-string">'bucket_name'</span></span>]].objects[dst] <span class="hljs-comment"><span class="hljs-comment">#   src    src_io = File.open(src, 'rb') #    read_size = 0 uploaded_size = 0 parts = 0 #    src_size = File.size(src) #    s3_file = s3_file.multipart_upload({:acl =&gt; :public_read}) do |upload| while read_size &lt; src_size #          buff = src_io.readpartial(config['part_size']) #   read_size += buff.size part_number = parts += 1 # ,     S3 upload.add_part :data =&gt; buff, :part_number =&gt; part_number end end #    src_io.close s3_file end</span></span></code> </pre><br>  It looks more complicated than a simple download.  However, the new method has significant advantages: <br><ul><li>  parts can be pumped in random order </li><li>  there is no need to wait for the completion of downloading one part in order to start downloading another </li></ul><br>  These two properties allow us to use multithreading when performing downloads. <br><br><h4>  Multiple file download in parts </h4><br>  There are several approaches to solve this problem: <br><ul><li>  fixed number of streams: the file is divided into N parts (by the number of streams N), each part is downloaded in parallel </li><li>  fixed part size: the file is divided into parts of a size not exceeding the value of S, each part is uploaded in parallel; </li><li>  mixed: the file is divided into parts of a size not exceeding the value of S, the obtained parts are downloaded in parallel, but with no more than N streams at the same time. </li></ul><br>  From a practical point of view, the mixed approach is the most convenient, because: <br><ul><li>  API S3 has a minimum size limit (5Mb); </li><li>  using a large number of threads reduces efficiency. </li></ul><br>  I will give the code of multi-threaded file upload <br><pre> <code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">threaded_upload_to_s3</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(src, dst, config)</span></span></span></span> s3 = AWS::S3.new( <span class="hljs-symbol"><span class="hljs-symbol">:access_key_id</span></span> =&gt; config[<span class="hljs-string"><span class="hljs-string">'access_key_id'</span></span>], <span class="hljs-symbol"><span class="hljs-symbol">:secret_access_key</span></span> =&gt; onfig[<span class="hljs-string"><span class="hljs-string">'secret_access_key'</span></span>]) s3_file = s3.buckets[config[<span class="hljs-string"><span class="hljs-string">'bucket_name'</span></span>]].objects[dst] src_io = File.open(src, <span class="hljs-string"><span class="hljs-string">'rb'</span></span>) read_size = <span class="hljs-number"><span class="hljs-number">0</span></span> uploaded_size = <span class="hljs-number"><span class="hljs-number">0</span></span> parts = <span class="hljs-number"><span class="hljs-number">0</span></span> src_size = File.size(src) s3_file = s3_file.multipart_upload({<span class="hljs-symbol"><span class="hljs-symbol">:acl</span></span> =&gt; <span class="hljs-symbol"><span class="hljs-symbol">:public_read</span></span>}) <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> <span class="hljs-params"><span class="hljs-params">|upload|</span></span> <span class="hljs-comment"><span class="hljs-comment">#        upload_threads = [] #   ( ),   “” mutex = Mutex.new max_threads = [config['threads_count'], (src_size.to_f / config['part_size']).ceil].min #       max_threads.times do |thread_number| upload_threads &lt;&lt; (Thread.new do #     while true #    ,         #   mutex.lock #  ,        break unless read_size &lt; src_size #          buff = src_io.readpartial(config['part_size']) #   read_size += buff.size part_number = parts += 1 #   mutex.unlock # ,     S3 upload.add_part :data =&gt; buff, :part_number =&gt; part_number end end) end #      upload_threads.each{|thread| thread.join} end src_io.close s3_file end</span></span></code> </pre><br>  To create threads, we use the standard class Thread (the basics of working with multithreading in Ruby are described in the article <a href="http://habrahabr.ru/post/94574">habrahabr.ru/post/94574</a> ).  To implement mutual exclusions, we use the simplest binary semaphores (mutexes) implemented by the standard Mutex class. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      What are semaphores required for?  With their help, we mark a section of code (called critical) that can only execute one thread at a time.  The remaining threads will have to wait until the thread that has turned on the semaphore leaves the critical section.  Usually semaphores are used to ensure proper access to shared resources.  In this case, the common resources are: the input object src_io and the variables read_size and parts.  The variables buff and part_number are declared as local within the stream (ie, the Thread.new do ... end block), and therefore are not shared. <br><br>  For more information about semaphores and multithreading in Ruby, see the article <a href="http://www.tutorialspoint.com/ruby/ruby_multithreading.htm">www.tutorialspoint.com/ruby/ruby_multithreading.htm</a> (eng.) <br><br><h4>  Comparison results </h4><br>  We measure the download speed using different methods on several test files (1MB, 10MB, 50MB, 150MB in size) and tabulate: <br><table border="1"><tbody><tr><td></td><td>  <strong>File</strong> <br><br></td><td>  <strong>Parts</strong> <br><br></td><td>  <strong>Streams</strong> <br><br></td><td>  <strong>upload, Mb / s</strong> <br><br></td><td>  <strong>multipart_upload, Mb / s</strong> <br><br></td><td>  <strong>threaded_upload, Mb / s</strong> <br><br></td></tr><tr><td>  one <br><br></td><td>  64k <br><br></td><td>  one <br><br></td><td>  one <br><br></td><td>  0.78 <br><br></td><td>  0.29 (37%) <br><br></td><td>  0.29 (37%) <br><br></td></tr><tr><td>  2 <br><br></td><td>  512k <br><br></td><td>  one <br><br></td><td>  one <br><br></td><td>  2.88 <br><br></td><td>  1.84 (64%) <br><br></td><td>  1.65 (57%) <br><br></td></tr><tr><td>  3 <br><br></td><td>  1Mb <br><br></td><td>  one <br><br></td><td>  one <br><br></td><td>  3.39 <br><br></td><td>  2.38 (70%) <br><br></td><td>  2.58 (76%) <br><br></td></tr><tr><td>  four <br><br></td><td>  10Mb <br><br></td><td>  2 <br><br></td><td>  2 <br><br></td><td>  5.06 <br><br></td><td>  4.50 (89%) <br><br></td><td>  7.69 (152%) <br><br></td></tr><tr><td>  five <br><br></td><td>  50Mb <br><br></td><td>  ten <br><br></td><td>  five <br><br></td><td>  4.48 <br><br></td><td>  4.41 (98%) <br><br></td><td>  9.02 (201%) <br><br></td></tr><tr><td>  6 <br><br></td><td>  50Mb <br><br></td><td>  ten <br><br></td><td>  ten <br><br></td><td>  4.33 <br><br></td><td>  4.44 (103%) <br><br></td><td>  8.49 (196%) <br><br></td></tr><tr><td>  7 <br><br></td><td>  150Mb <br><br></td><td>  thirty <br><br></td><td>  five <br><br></td><td>  4.34 <br><br></td><td>  4.43 (102%) <br><br></td><td>  9.22 (212%) <br><br></td></tr><tr><td>  eight <br><br></td><td>  150Mb <br><br></td><td>  thirty <br><br></td><td>  ten <br><br></td><td>  4.48 <br><br></td><td>  4.52 (101%) <br><br></td><td>  8.90 (199%) <br><br></td></tr></tbody></table><br>  Testing was performed by uploading files from a machine in the EU West (Ireland) region to the S3 storage in the same region.  A series of 10 consecutive tests for each file was conducted. <br>  If we estimate the injection rate by a simple method for tests 4–8, then the measurement error is about 8%, which is quite acceptable. <br>  <b>Download in parts (multipart_upload)</b> on small files showed a worse result compared to simple and the same - on large files. <br>  <b>Multi-threaded download (threaded_upload)</b> showed the same efficiency on files from one part as the download in parts (which is quite obvious).  But on large files, we have a significant advantage - up to two times (compared to the usual download). <br>  The task of finding out the optimal part size and number of streams was not set, but an increase in streams from 5 to 10 on large files did not have a significant effect. <br><br><h4>  Conclusion </h4><br>  Multi-threaded file downloads proved to be more effective than normal ones on files that consist of more than one part, the speed increase is up to two times. <br>  By the way, it will be convenient to create a method that itself selects the most appropriate download method depending on the file size. <br>  The source code provided in the examples is available on Github: <a href="https://github.com/whisk/s3up">github.com/whisk/s3up</a> </div><p>Source: <a href="https://habr.com/ru/post/140940/">https://habr.com/ru/post/140940/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../140934/index.html">Promotional action Drei.AT and Dropbox. And again + 2GB for your account</a></li>
+<li><a href="../140935/index.html">Brief Description of the CImg Library</a></li>
+<li><a href="../140936/index.html">Lumix GF3 - Hack</a></li>
+<li><a href="../140938/index.html">How I got the key to Diablo III Beta</a></li>
+<li><a href="../140939/index.html">The answer to Python vs Ruby</a></li>
+<li><a href="../140941/index.html">Wifi on the ring line of the Moscow metro - rapid test</a></li>
+<li><a href="../140942/index.html">XBOX 360 xk3y. Part 1 - Overview, features and equipment</a></li>
+<li><a href="../140943/index.html">Search for inaccurate matches, search for input errors</a></li>
+<li><a href="../140944/index.html">Automate the social activity of your Internet startup using ifttt.com</a></li>
+<li><a href="../140945/index.html">Feedback on your site in a new way. Now also free</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

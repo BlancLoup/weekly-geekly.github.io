@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Replication from OLTP to OLAP database</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="My friend Robert Hodges recently published an article about replication from OLTP to an OLAP database (namely, from MySQL to Vertica), which his compa...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Replication from OLTP to OLAP database</h1><div class="post__text post__text-html js-mediator-article">  My friend Robert Hodges recently published <a href="http://scale-out-blog.blogspot.com/2012/06/mysql-to-vertica-replication-part-1.html">an article</a> about replication from OLTP to an OLAP database (namely, from MySQL to Vertica), which his company built on its Tungsten product.  The most interesting thing is the data conversion that occurs during the replication process.  The approach is quite general, and can be used for other systems. <br><br>  The usual approach to replication is synchronous or asynchronous transfer of a binary log from one database (master) to others (slaves).  In a binary log, all operations that modify data are strictly sequentially recorded.  If it is “played” on another system from the same starting point, then it should be exactly the same data state as on the original one.  "Playing" occurs in one operation or in a single transaction, that is, in very small pieces. <br><br>  This approach does not work well with OLAP-specific, and especially column-oriented databases that store data physically not in rows, but in columns.  Such databases are optimized for writing, reading and sorting large data arrays, which is typical for analytical tasks, but not for small operations on single records, because any operation involves many columns that are physically stored in different files (and sometimes different disks) .  The worst is the case with data changes.  Of course, all databases support the SQL standard and the UPDATE statement, but at the physical level, it is usually translated into the fact that the updated record is marked as deleted, and a modified copy is inserted instead.  Then, someday, the "garbage collector" shakes up the table and deleted records will be deleted forever.  In addition to poor performance, it follows that frequent deletions and updates lead to database clogging, which reduces its performance, including reading. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Robert suggested, it seems to me, a new, albeit a natural approach to solving the problem of data replication for such cases.  The binary log is converted into a sequence of partially ordered sets of DELETE / INSERT operations for each table, and so the word “set” implies that it is enough to perform “identical” operations in some sense once.  Let me explain a little more. <br><a name="habracut"></a><br>  First, instead of replicating individual changes or tables, it is suggested that replication be done in fairly large chunks or data packets.  It is natural to load data into OLAP databases.  For example, all changes over a period of time: minute, 5 minutes, etc.  Secondly, all changes that fall into the package are divided into tables.  Then, each UPDATE is translated into a DELETE and INSERT pair.  And, finally, for each table, the reduction is carried out according to certain rules: only one DELETE is left for each key, and only the last INSERT is left for each key if it is not followed by DELETE.  This reduction turns the flow of changes into a minimal set (set) of operations like DELETE and INSERT, with DELETE being executed before INSERT.  For example: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/3ff/c03/811/3ffc03811edcaee86df38d16abbc6f7b.jpg" alt="image"><br><br>  Three operations in the binary log were transferred to 4 operations at the intermediate stage, and after the reduction only the last two remained. <br><br>  What does this give?  This gives the most efficient way to change data from an OLAP database point of view: first, all deleted or changed records in the package are deleted, and nothing more, and then one piece for each table - new and changed records are added, which can be done very efficiently through package operators data downloads.  That is, a strictly ordered linear sequence is transformed into a partially ordered set (into a sequence of partially ordered sets).  This is the fundamental meaning. <br><br>  Obviously, there is a limitation.  If the UPDATE or DELETE in the binary log does not include the condition on the primary key of the table, then this approach does not work, and in this case you will have to replicate the data in the traditional way. <br><br>  In conclusion, I note that this is not an empty theory, but a working implementation, about which Robert writes in the <a href="http://scale-out-blog.blogspot.com/2012/06/mysql-to-vertica-replication-part-2.html">next article</a> .  Why do you need it?  The client wanted to get fast analytics for their data stored in MySQL.  And Vertica is a very good tool for this.  I know firsthand. <br></div><p>Source: <a href="https://habr.com/ru/post/145734/">https://habr.com/ru/post/145734/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../145728/index.html">Sony VAIO SVT Ultrabooks Video Review (T11 / T13)</a></li>
+<li><a href="../145729/index.html">How to save on printing costs automatically</a></li>
+<li><a href="../145730/index.html">Retina MacBook Pro: First Analysis</a></li>
+<li><a href="../145732/index.html">Science</a></li>
+<li><a href="../145733/index.html">About the stupidity of smart people</a></li>
+<li><a href="../145735/index.html">Russian Code Cup 2012: Analysis of the tasks of the third qualifying round</a></li>
+<li><a href="../145737/index.html">Why information technology needs linguists?</a></li>
+<li><a href="../145738/index.html">1930 applications for new top-level domains have been submitted - a full list has been published on ICANN</a></li>
+<li><a href="../145740/index.html">UniSender launched the functionality of split-testing mailings</a></li>
+<li><a href="../145741/index.html">Sasha will help American users</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

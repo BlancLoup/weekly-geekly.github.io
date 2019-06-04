@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Prediction monitoring, potential crash alerts</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This post is a continuation of the previous one . Prediction monitoring is not a standard monitoring method. Therefore, alerts should be used not quit...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Prediction monitoring, potential crash alerts</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/storage2/506/47d/895/50647d895a57c316c1b0c77a382cbbfa.png"><br>  This post is a continuation of the <a href="http://habrahabr.ru/blogs/sysadm/134599/">previous one</a> .  Prediction monitoring is not a standard monitoring method.  Therefore, alerts should be used not quite standard.  Consider how this is done and why. <br><a name="habracut"></a><br><h4>  What should be the alert </h4><br>  I think everyone wonders who uses which monitoring system in their daily work.  We, for example, use <a href="http://www.mikrotik.com/thedude.php">Dude</a> .  We taught him to monitor the entire infrastructure, except for the most important for us - transit VoIP.  The dude is by default able to give alerts by mail and popup when the client application is running.  We also taught him to send SMS by an application external to him.  But it's not about that. <br>  When an alert comes from the monitoring system, the alert itself must indicate on which of the nodes the failure occurred, and the result of the last measurement of the value being monitored.  For example, you may receive a warning that the processor is 95 percent loaded on Router1.  In itself, such a notification is informative enough to understand how quickly you need to respond to it.  Another thing is when you monitor using the forecast method and at the same time check the status of thousands of parameters. <br>  Yes, you can report the result of the last measurement in the alert, you can even display the average result of several recent measurements, or a measurement value that was exactly a day ago.  But this often may not be enough.  The most effective method of notification in this case is the alert, which displays a graph of the measured value for a certain period of time.  A simple glance at a graph is likely to be enough to understand whether a potential failure is critical, and whether it was actually a failure, or whether it is a false positive. <br><br><h4>  Implementation details in rrdtool </h4><br>  As I wrote in previous posts, in order for rrdtool to begin to predict and identify potential failures - aberrations, it is necessary to correctly form the rrd database and simply fill it with current values.  With this configuration, in addition to the values ​​of the measured value, the base is automatically filled with another value - FAILURES.  FAILURES is a simple hash, the index of which is the time (unixtime) at which the measurement was taken.  The values ​​on the index show the presence of aberrations of the measured value.  It's simple, there was an aberration. FAILURES value is 1, it was not - 0. <br>  However, simply checking the FAILURES value after the last measurement is not enough.  The fact is that aberration can last long enough, take a look at the chart. <br><img src="https://habrastorage.org/storage2/413/d56/f85/413d56f8502d14fd83c84793b2934838.png"><br>  Most likely, the monitoring system should not, as long as there is an aberration, give an alert after each measurement of the magnitude.  Although, in certain cases, this also needs to be done.  In addition, if the aberration is over, this does not mean that the problem is eliminated, it may happen that the system simply adjusts the forecast for new values.  The real example in the figure below, the problem with the flow is not solved, and the aberration has already ended. <br><img src="https://habrastorage.org/storage2/ae8/a86/f86/ae8a86f86720c605fbb5f2708ab1adaf.png"><br>  When monitoring an IMHO prediction, the most correct thing is to send an alert with a schedule, at the moments when the aberration started and when it ended. <br><br><h4>  How it's done </h4><br>  Actually, the script: <br><pre><code class="python hljs"><span class="hljs-comment"><span class="hljs-comment">#!/usr/bin/env python import os import time import rrdtool import tempfile import smtplib from email.mime.image import MIMEImage from email.mime.multipart import MIMEMultipart COMMASPACE = ', ' # Define params rrdpath = '/usr/rrdmonit/rrd/' pngpath = '/usr/local/share/cacti/rrdmonit/ width = '500' height = '200' mailsender = "alerter@my-domain.com" mailreceip = ["admins@my-domain.com", "support@my-domain.com"] mailserver = 'mx.my-domain.com' # Generate charts for last 48 hours enddate = int(time.mktime(time.localtime())) begdate = enddate - 172800 def send_alert_attached(subject, flist): """ Will send e-mail, attaching png files in the flist. """ msg = MIMEMultipart() msg['Subject'] = subject msg['From'] = mailsender msg['To'] = COMMASPACE.join(mailreceip) for file in flist: png_file = pngpath+file.split('.')[0]+'.png' print png_file fp = open(png_file, 'rb') img = MIMEImage(fp.read()) fp.close() msg.attach(img) mserver = smtplib.SMTP(mailserver) mserver.sendmail(mailsender, mailreceip, msg.as_string()) mserver.quit() def check_aberration(rrdpath,fname): """ This will check for begin and end of aberration in file. Will return: 0 if aberration not found. 1 if aberration begins 2 if aberration ends """ ab_status = 0 rrdfilename = rrdpath+fname info = rrdtool.info(rrdfilename) rrdstep = int(info['step']) lastupdate = info['last_update'] previosupdate = str(lastupdate - rrdstep - 1) graphtmpfile = tempfile.NamedTemporaryFile() # Ready to get FAILURES from rrdfile # will process failures array values for time of 2 last updates values = rrdtool.graph(graphtmpfile.name, 'DEF:f0='+rrdfilename+':val:FAILURES:start='+previosupdate+':end='+str(lastupdate), 'PRINT:f0:MIN:%1.0lf', 'PRINT:f0:MAX:%1.0lf', 'PRINT:f0:LAST:%1.0lf') fmin = int(values[2][0]) fmax = int(values[2][1]) flast = int(values[2][2]) # check if failure value had changed. if (fmin != fmax): if (flast == 1): ab_status = 1 else: ab_status = 2 return ab_status def gen_image(rrdpath, pngpath, fname, width, height, begdate, enddate): """ Generates png file from rrd database: rrdpath - the path where rrd is located pngpath - the path png file should be created in fname - rrd file name, png file will have the same name .png extention width - chart area width height - chart area height begdate - unixtime enddate - unixtime """ # 24 hours before current time, will show on chart using SHIFT option ldaybeg = str(begdate - 86400) ldayend = str(enddate - 86400) # Will show some additional info on chart endd_str = time.strftime("%d/%m/%Y %H:%M:%S",(time.localtime(int(enddate)))).replace(':','\:') begd_str = time.strftime("%d/%m/%Y %H:%M:%S",(time.localtime(int(begdate)))).replace(':','\:') title = 'Chart for: '+fname.split('.')[0] # Files names pngfname = pngpath+fname.split('.')[0]+'.png' rrdfname = rrdpath+fname # Get iformation from rrd file info = rrdtool.info(rrdfname) rrdtype = info['ds[val].type'] # Will use multip variable for calculation of totals, # should be usefull for internet traffic accounting, # or call/minutes count from CDR's. # Do not need logic for DERIVE and ABSOLUTE if rrdtype == 'COUNTER': multip = str(int(enddate) - int(begdate)) else: # if value type is GAUGE should divide time to step value rrdstep = info['step'] multip = str(round((int(enddate) - int(begdate))/int(rrdstep))) # Make png image rrdtool.graph(pngfname, '--width',width,'--height',height, '--start',str(begdate),'--end',str(enddate),'--title='+title, '--lower-limit','0', '--slope-mode', 'COMMENT:From\:'+begd_str+' To\:'+endd_str+'\\c', 'DEF:value='+rrdfname+':val:AVERAGE', 'DEF:pred='+rrdfname+':val:HWPREDICT', 'DEF:dev='+rrdfname+':val:DEVPREDICT', 'DEF:fail='+rrdfname+':val:FAILURES', 'DEF:yvalue='+rrdfname+':val:AVERAGE:start='+ldaybeg+':end='+ldayend, 'SHIFT:yvalue:86400', 'CDEF:upper=pred,dev,2,*,+', 'CDEF:lower=pred,dev,2,*,-', 'CDEF:ndev=dev,-1,*', 'CDEF:tot=value,'+multip+',*', 'CDEF:ytot=yvalue,'+multip+',*', 'TICK:fail#FDD017:1.0:"Failures"\\n', 'AREA:yvalue#C0C0C0:"Yesterday\:"', 'GPRINT:ytot:AVERAGE:"Total\:%8.0lf"', 'GPRINT:yvalue:MAX:"Max\:%8.0lf"', 'GPRINT:yvalue:AVERAGE:"Average\:%8.0lf" \\n', 'LINE3:value#0000ff:"Value \:"', 'GPRINT:tot:AVERAGE:"Total\:%8.0lf"', 'GPRINT:value:MAX:"Max\:%8.0lf"', 'GPRINT:value:AVERAGE:"Average\:%8.0lf" \\n', 'LINE1:upper#ff0000:"Upper Bound "', 'LINE1:pred#ff00FF:"Forecast "', 'LINE1:ndev#000000:"Deviation "', 'LINE1:lower#00FF00:"Lower Bound "') # List of new aberrations begin_ab = [] # List of gone aberrations end_ab = [] # List files and generate charts for fname in os.listdir(rrdpath): gen_image(rrdpath, pngpath, fname, width, height, begdate, enddate) # Now check files for beiaberrations for fname in os.listdir(rrdpath): ab_status = check_aberration(rrdpath,fname) if ab_status == 1: begin_ab.append(fname) if ab_status == 2: end_ab.append(fname) if len(begin_ab) &gt; 0: send_alert_attached('New aberrations detected',begin_ab) if len(end_ab) &gt; 0: send_alert_attached('Abberations gone',end_ab)</span></span></code> </pre> <br>  These are modifications to the script given in the previous post, simply added procedures for checking for aberration and sending mail. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      PS I do not get tired of being amazed at the capacity and beauty of solutions in the python. </div><p>Source: <a href="https://habr.com/ru/post/135086/">https://habr.com/ru/post/135086/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../135076/index.html">Node.JS support in Windows Azure</a></li>
+<li><a href="../135078/index.html">The meaning of social entrepreneurship (The Meaning of Social Entrepreneurship)</a></li>
+<li><a href="../135082/index.html">Business analyst: “How to write a list of system requirements correctly?”, Alistair Coburn, review part 1</a></li>
+<li><a href="../135083/index.html">Shoes for real geeks</a></li>
+<li><a href="../135084/index.html">Ruby on Rails is already at 3.2, the next station is 4.0.0.beta</a></li>
+<li><a href="../135087/index.html">Dynamic programming in speech recognition algorithms</a></li>
+<li><a href="../135089/index.html">Autodafé</a></li>
+<li><a href="../135090/index.html">Why do programmers work at night</a></li>
+<li><a href="../135091/index.html">Very unusual presentation of the tablet</a></li>
+<li><a href="../135092/index.html">Ads appear on Facebook news feed.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

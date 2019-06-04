@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Bug in htb.init v0.8.5, associated with the switching speed in time</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction 
+ When debugging the rules of shaping, I encountered the unusual behavior of the htb.init script itself . Part of the rules with the TIME...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Bug in htb.init v0.8.5, associated with the switching speed in time</h1><div class="post__text post__text-html js-mediator-article"><h4>  Introduction </h4><br>  When debugging the rules of shaping, I encountered the unusual behavior of the <b>htb.init</b> script <b>itself</b> .  Part of the rules with the <b>TIME</b> parameters, where time goes over midnight, was not practiced when the specified time arrived. <br><a name="habracut"></a><br>  Shaping works on a virtual server with Centos 5.7 x86_64 OS on board. <br><br>  For example, take the description of the rule for one of the classes - <i><b>eth0-2: 6: 19.unlim</b></i> : <br><pre><code class="bash hljs">TIME=08:00-19:00;2Kbit,50Mbit TIME=19:00-08:00;2Kbit,70Mbit RATE=2Kbit CEIL=50Mbit LEAF=sfq PRIO=2 MARK=0x19</code> </pre> <br>  At 19 o'clock, the speed for the class did not switch from 50 to 70 megabits, although similar rules of other classes were worked out. <br><br><h4>  Search </h4><br>  Since I already have experience in setting up the shaper, his behavior caused a storm of indignation in me.  The process of re-reading documentation and manuals in search of details, which I could not have learned or just forgot, began.  Having found nothing new, I decided to delve into the code of the script itself.  Since the syntax of the rules was correct, he concluded that it is necessary to consider the block where the <b>TIME</b> parameter is processed.  Processing of this parameter occurs when the script is called with the <b>timecheck</b> argument — the transfer rate of a certain class is changed depending on the time period.  All operations are performed in the <b><i>switch</i></b> block in the <b><i>timecheck</i></b> branch. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      To describe the branch in more detail: getting a list of files with rules for various shaping classes from <b>/ etc / sysconfig / htb</b> (the default path).  Then loop through each file, one at a time, looking for <b>TIME</b> parameters.  If the parameter is present and the current time falls within the specified limits, then the speed for the class changes.  Everything seems quite normal, but ... <br><br><h4>  Catharsis </h4><br>  I noticed that the incomprehensible happens if the time interval passes through midnight (as in the example I have given above): the <b>TIME_ABS</b> variable containing the current time value is modified.  It would be normal if this variable was only inside the loop.  Then its changes will not affect the processing of the rules of other classes.  And changes to this variable occurred in the case of processing rules that have a transition through midnight.  But it was declared out of cycle, therefore it accumulated the values ​​of previous iterations.  This is where the dog was buried - some of the rules were passed through midnight and some were not.  The “current” time gradually “ran away” and no longer fell into any boundaries defined by the <b>TIME</b> parameters in the rules. <br><br>  Here is the part of the script: <br><pre> <code class="bash hljs">timecheck) TIME_TMP=`date +%w/%k:%M` TIME_DOW=<span class="hljs-variable"><span class="hljs-variable">${TIME_TMP%%/*}</span></span> TIME_NOW=<span class="hljs-variable"><span class="hljs-variable">${TIME_TMP##*/}</span></span> <span class="hljs-comment"><span class="hljs-comment">#TIME_ABS=`htb_time2abs $TIME_NOW` ### Check all classes (if configured) for classfile in `htb_class_list`; do TIME_ABS=`htb_time2abs $TIME_NOW` ........ htb_message "$TIME_NOW: change on $DEVICE:$CLASS ($RATE_NOW/$CEIL_NOW -&gt; $NEW_RATE/$NEW_CEIL)" done ### class file ;;</span></span></code> </pre><br><br><h4>  How to fix it </h4><br>  It is necessary to transfer the declaration of the <b>TIME_ABS</b> variable to the loop and comment it out of the loop (as indicated in the code above).  After making changes, the script will work through multiple transitions through midnight as expected.  Option without script corrections - always write <b>TIME</b> parameters in all classes in such a way that there is no transition through midnight. <br><br><h4>  PS </h4><br>  I searched the Internet for information about a similar problem, but found nothing.  It is surprising that no one has encountered this problem, despite the widespread use of this script for shaping.  Although, maybe I was looking bad ... </div><p>Source: <a href="https://habr.com/ru/post/142715/">https://habr.com/ru/post/142715/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../142709/index.html">According to the results of the forum DEPO Computers "Formula DEPO: the race of IT leaders"</a></li>
+<li><a href="../142710/index.html">FortNotes - online password manager</a></li>
+<li><a href="../142712/index.html">Facebook buys part of AOL patents for $ 550 million from Microsoft</a></li>
+<li><a href="../142713/index.html">Cloud Contest 2 Report</a></li>
+<li><a href="../142714/index.html">Experience of using teaser networks to advertise their software</a></li>
+<li><a href="../142717/index.html">Useful stuff in the work of a web developer or "How could I live without it"</a></li>
+<li><a href="../142718/index.html">The hacker group Anonymous has created its social music platform Anontune</a></li>
+<li><a href="../142720/index.html">The wonders of trigonometry using canvas</a></li>
+<li><a href="../142721/index.html">The great Chinese firewall fell?</a></li>
+<li><a href="../142722/index.html">Copyright - the reason for the dominance of pop culture</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
