@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Tuning JVM on the example of one project</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In this article I want to talk about the experience gained in optimizing applications from memory using standard JVM optimization mechanisms such as v...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Tuning JVM on the example of one project</h1><div class="post__text post__text-html js-mediator-article">  In this article I want to talk about the experience gained in optimizing applications from memory using standard JVM optimization mechanisms such as various types of links, garbage collection strategies, a set of keys affecting garbage collection.  I am sure that each of you had to juggle with parameters to improve performance and you will not find any black magic or a recipe for lack of memory in the article, I just want to share my experience. <br><a name="habracut"></a><br><h4>  Project history </h4><br>  It all started fine and cloudless.  For the needs of one large bank, it was necessary to implement a calculator that calculates the Value-at-Risk value for a specific investment portfolio.  Like most financial applications, the methodology does not imply "heavy" calculations, but the data flow is sometimes truly huge. <br><br>  The problems of processing large amounts of data are usually solved by two known types of scaling: vertical and horizontal.  With the vertical everything was quite acceptable.  We had a machine about 16 cores, with 16 GB of RAM, Red Hat and Java 1.6.  On such a gland it was possible to unfold well enough, which, in fact, we successfully did for several months. <br><br>  Everything was fine until the customer did not knock on us and did not say that the IT infrastructure was revised and instead of 16x16 we have 4x1-2: <br><img src="https://habrastorage.org/storage2/382/d2e/611/382d2e611347c954a45ec7f303e05930.png"><br>  Naturally, the requirement of application running time was increased several times, but.  To convey our emotions at that time was difficult enough, but the speech, suddenly, became strongly flavored with various allegories, allusions and comparisons. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  First attempts </h4><br>  First, I’ll explain what the <a href="http://habrahabr.ru/company/luxoft/blog/145075/">Value-at-Risk</a> calculator is.  This is a program with a large number of “simple” calculations that allows a large amount of data to pass through. <br><br>  Optimization keys that were most helpful: <br><ul><li>  -server is an extremely useful key, JVM expands cycles, inline many functions, etc. </li><li>  Working with strings: -XX: + UseCompressedStrings, -XX: + UseStringCache, -XX: + OptimizeStringConcat </li></ul><br>  Naturally, such a simple technique did not give the desired results, and we continued to dig in the direction of further possibilities of “tapping” the application.  The first thing that was decided to do was remove unnecessary caches and optimize existing ones (those that give a 20% performance increase of 80%).  Unnecessary ones were quickly removed, and to work on the remaining ones, we decided to look at the different types of links in Java. <br><br>  So, we have the following types of links: <br><ul><li>  Hard / Strong </li><li>  Soft </li><li>  Weak </li><li>  Phantom </li></ul><br><br>  The dependencies between them look like this: <br><img src="https://habrastorage.org/storage2/b61/cd4/30c/b61cd430c7e09e12f37cf94824d095ff.png"><br><br>  Let's see what the specification guarantees for working with these types of links. <br>  Hard / Strong links are the most common links that are created when we use the keyword "new".  Such a link will be deleted when the number of links to the created object reaches zero.  Soft links (Soft) can be removed in case the virtual machine does not have enough memory for further work.  Weak links can be collected at any time, if GC so decides.  Phantom link (Phantom) is a special type of link that is required for more flexible object fi nalization than the classic finalize. <br><br>  Hard and Phantom links were immediately removed from our consideration due to the fact that they do not provide the required functionality and flexibility.  Hard is not deleted at the right time, but everything was in order with the fainalization. <br><br>  Consider, for example, how Weak links are collected: <br><img src="https://habrastorage.org/storage2/65c/f60/85c/65cf6085c2121e380bca4f8f7dfc7a16.png"><br><br>  We see that we have no guarantee that the object will be available all the time and can be deleted at an arbitrary point in time.  Because of this specificity, it was decided to rebuild the internal, most "heavy" caches on the Soft links.  We were driven by something like the following statement: “Let the object live in the cache as long as possible, but if there is a shortage of memory, we will be able to calculate it again, due to the fact that the time requirements have been increased.” <br><br>  The results were significant, but the work of the application in the coveted 4GB did not bring. <br><br><h4>  Detailed study </h4><br>  Further studies were carried out using various profiling tools: <br><ul><li>  Standard JVM Tools: -XX: + PrintGCDetails, -XX: + PrintGC, -XX: PrintReferenceGC, etc </li><li>  MXBean </li><li>  Visualvm </li></ul><br>  Data collection took not much time, as opposed to analysis.  After spending several wonderful days observing numbers and letters, the following conclusions were made: many objects are being created and the old generation is very overloaded.  In order to solve this problem, we began to look in the direction of various garbage collectors and methods of working with them. <br><br>  First, it was necessary to reduce the number of objects generated.  It was noted that most of the data have a similar structure: "XXX1: XXX2: XXX3, etc.".  All patterns like “XXX” were replaced with links to objects from the pool, which resulted in a significant reduction in the number of objects created (about five times), and also freed up additional amount of precious memory. <br><br>  Secondly, we decided to work in more detail with garbage collection strategies.  As we know, we have the following garbage collection strategies: <br><ul><li>  Serial </li><li>  Parallel </li><li>  Parallel compacting </li><li>  Concurrent mark-sweep </li><li>  G1 collector </li></ul><br><br>  G1 was not available to us due to the fact that the sixth version of Java was used.  Serial and Parallel are not much different and did not perform well on our task.  Parallel compacting was and is interesting due to the phase, allowing to reduce data defragmentation.  Concurrent Mark-Sweep was interesting due to the fact that it allowed to reduce the time for the phase of the stop-the-world and also did not allow strong fragmentation. <br><br>  After comparing Parallel compacting and Concurrent Mark-Sweep collectors, it was decided to stop at the second, which turned out to be a good solution. <br><br>  After the combat test of all the above techniques, the application was fully compatible with the new requirements and successfully launched in production!  Everyone sighed with relief! <br><br><h4>  Lesson learned </h4><br><br><ul><li>  The keys for working with strings helped: -XX: + UseCompressedStrings, -XX: + UseStringCache, -XX: + OptimizeStringConcat and the very specifics of string data </li><li>  Reducing the number of objects used </li><li>  Tweaking a JVM is time consuming, but the results are more than justified. </li><li>  Get to know your requirements as soon as possible!  :) </li></ul><br><br>  A more detailed version of the problem and the stages of the solution can be heard at the upcoming <a href="http://javapoint.ru/">JPoint</a> conference, which will be held in St. Petersburg. <br><img src="http://habr.habrastorage.org/post_images/afa/19d/045/afa19d045b2bce238895a5f2856f9174.gif" alt="image"></div><p>Source: <a href="https://habr.com/ru/post/174231/">https://habr.com/ru/post/174231/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../174213/index.html">Yandex ranking: how to put machine learning on stream (post # 1)</a></li>
+<li><a href="../174221/index.html">A person among 1,500,000 users of mobile communication can be identified only by 4 points in time and space</a></li>
+<li><a href="../174225/index.html">Hollow fiber allows you to reduce the propagation delay by almost half</a></li>
+<li><a href="../174227/index.html">iDispenser and MacDispenser - distribution of promotional codes on Twitter</a></li>
+<li><a href="../174229/index.html">The Ministry of Communications proposes to add information about the owners of prohibited resources to the register of prohibited sites</a></li>
+<li><a href="../174233/index.html">ASUS GX1000 Gaming Mouse</a></li>
+<li><a href="../174237/index.html">Yahoo! acquired a startup 17-year-old guy for $ 30,000,000</a></li>
+<li><a href="../174239/index.html">An inside view: the world around us - 2</a></li>
+<li><a href="../174241/index.html">Curiosity is back</a></li>
+<li><a href="../174243/index.html">Using dictionaries in tcl</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

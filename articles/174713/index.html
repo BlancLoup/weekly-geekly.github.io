@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Failover architecture of two web servers using the example of Debian Squeeze</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I received the task to organize the resiliency of a web application from two servers. The web application includes static files and data in the MySQL ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Failover architecture of two web servers using the example of Debian Squeeze</h1><div class="post__text post__text-html js-mediator-article">  I received the task to organize the resiliency of a web application from two servers.  The web application includes static files and data in the MySQL database. <br>  The main requirement of the customer - the web application should always be available and in case of failure within 5 minutes, the failure should be restored. <br>  2 servers, geographically distributed in different data centers, must satisfy this requirement. <br><img src="https://habrastorage.org/storage2/f81/db1/6b5/f81db16b560b71cd08d6f2973edf5efa.jpg"><br><a name="habracut"></a><br>  To solve this problem, I chose Debian Squeeze OS, since  Web application developers use Debian.  I decided to do fault tolerance logic through DNS, i.e.  there is a domain name test.ru.  My 2 servers act as NS servers;  all zone information is stored locally.  If a failure occurs with the main server, the DNS is overwritten and the A-record points to the backup server. <br>  In addition to DNS, there was a problem with the synchronization of files, and the need for bidirectional, because  on the backup server, at the time of the main idle, information may be uploaded.  To solve this problem, I use the Unison package. <br>  To synchronize MySQL databases using standard MySQL-replication bidirectional Master-Master.  With unidirectional replication (“master-slave”), if data is written to a subordinate database, the data may be inconsistent, which can lead to a replication error.  In the case of bidirectional replication, the databases will be in a consistent state. <br>  The arbiter of this entire system will be a self-written script, which I will give below. <br><br><h5>  System preparation </h5><br>  We have a clean Debian system with apache2 packages installed, mysql-server.  I will not paint their installation, since there is plenty of information in the internet. <br>  The main server is master IP = 10.1.0.1, the Backup server is slave IP = 10.2.0.2 <br><br><h5>  File Sync </h5><br>  Web application files are located in the / site / web / directory.  Apache on both servers should already be configured for this directory. <br>  Next, to synchronize files, we need to make SSH-free access between servers, for this we will generate a pair of keys: <br><pre><code class="bash hljs">ssh-keygen -t rsa (passphrase  ) scp /root/.ssh/id_rsa.pub root@10.2.0.2:/root/.ssh/authorized_keys2</code> </pre> <br>  and similarly on the second server: <br><pre> <code class="bash hljs">ssh-keygen -t rsa (passphrase  ) scp /root/.ssh/id_rsa.pub root@10.1.0.1:/root/.ssh/authorized_keys2</code> </pre><br>  After that, you need to make sure that the data in the / site / web / directories on both servers are identical and install Unison: <br><pre> <code class="bash hljs">apt-get install unison</code> </pre><br>  create the configuration file /root/.unison/web.prf with the following contents: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   ,    root = /site/web root = ssh://root@10.2.0.2//site/web #       owner = true times = true batch = true #         log = true logfile = /var/log/unison_sync.log</span></span></code> </pre><br>  Now you can start synchronization with the following command on the main server: <br><pre> <code class="bash hljs">unison web</code> </pre><br>  To make automatic synchronization every 5 minutes, you need to use the following script: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh # ,      if [ -f /var/lock/sync.lock ] then echo lockfile exists! exit 1 fi /usr/bin/touch /var/lock/sync.lock /usr/bin/unison test /bin/rm /var/lock/sync.lock #End</span></span></code> </pre><br>  Save this script to the file /root/bin/sync.sh, give the right to run <br><pre> <code class="bash hljs">chmod +x /root/bin/sync.sh</code> </pre><br>  And we add the task to the CRON "crontab -e": <br><pre> <code class="bash hljs">*/5 * * * * /root/bin/sync.sh &gt; /dev/null 2&gt;&amp;1</code> </pre><br>  Run this script every 5 minutes. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h5>  MySQL replication </h5><br>  For replication, we will use the MySQL user replication with the password some_password. <br>  On the master master server, edit the file /etc/mysql/my.cnf.  Insert the following lines into the section related to replication: <br><pre> <code class="bash hljs">server-id = 1 log_bin = /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/mysql/mysql-bin.log expire_logs_days = 10 max_binlog_size = 100M binlog_ignore_db = mysql binlog_ignore_db = <span class="hljs-built_in"><span class="hljs-built_in">test</span></span> master-host = 10.2.0.2 <span class="hljs-comment"><span class="hljs-comment">#ip-  slave- master-user = replication #   master-password = some_password #  master-port = 3306</span></span></code> </pre><br>  and in the same file we change the bind-address variable so that the muscle is available on any interface: <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">bind</span></span>-address = 0.0.0.0</code> </pre><br>  We go into MySQL as root and give the replication user the right to connect to our server from the backup slave server: <br><pre> <code class="bash hljs">mysql -u root -p Enter password:     root,     &gt;grant replication slave on *.* to <span class="hljs-string"><span class="hljs-string">'replication'</span></span>@<span class="hljs-string"><span class="hljs-string">'10.2.0.2'</span></span> identified by <span class="hljs-string"><span class="hljs-string">'some_password'</span></span>; &gt;flush privileges; &gt;quit; /etc/init.d/mysql restart</code> </pre><br><br>  Go to the second slave-server.  Edit the file /etc/mysql/my.cnf.  Insert the following lines into the section related to replication: <br><pre> <code class="bash hljs">server-id = 2 log_bin = /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/mysql/mysql-bin.log expire_logs_days = 10 max_binlog_size = 100M binlog_ignore_db = mysql binlog_ignore_db = <span class="hljs-built_in"><span class="hljs-built_in">test</span></span> master-host = 10.1.0.1 <span class="hljs-comment"><span class="hljs-comment">#ip-  master- master-user = replication #   master-password = some_password #  master-port = 3306</span></span></code> </pre><br>  and in the same file we change the bind-address variable so that the muscle is available on any interface: <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">bind</span></span>-address = 0.0.0.0</code> </pre><br>  We go into MySQL as root and give the right to the replication user to connect to our server from the master master server: <br><pre> <code class="bash hljs">mysql -u root -p Enter password:     root,     &gt;grant replication slave on *.* to <span class="hljs-string"><span class="hljs-string">'replication'</span></span>@<span class="hljs-string"><span class="hljs-string">'10.1.0.1'</span></span> identified by <span class="hljs-string"><span class="hljs-string">'some_password'</span></span>; &gt;flush privileges; &gt;quit; /etc/init.d/mysql restart</code> </pre><br><br>  On both servers, we verify that the replication process is running.  To do this, perform the following: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#mysql —u root —p Enter password:     root,     &gt;show slave status \G</span></span></code> </pre><br>  In the displayed information we are interested in three parameters: <br><pre> <code class="bash hljs">Slave_IO_State: Waiting <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> master to send event Slave_IO_Running: Yes Slave_SQL_Running: Yes</code> </pre><br>  If the specified parameters on both servers correspond to the above, then everything is fine, replication is configured.  If not, look at the logs. <br><br><h5>  DNS servers </h5><br>  In order to manage the domain zone test.ru, in the domain settings you need to delegate it to our servers.  Let our servers have domain names ns.master.my.com for the main server and ns.slave.my.com for the backup in the global network. <br>  Only after delegating the DNS zone to our servers can we manage it. <br>  On both servers, install the bind9 package: <br><pre> <code class="bash hljs">apt-get install bind9</code> </pre><br>  Add a line to the config /etc/bind/named.conf to specify your zones: <br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'include "/etc/bind/my-zones.conf";'</span></span> &gt;&gt; /etc/<span class="hljs-built_in"><span class="hljs-built_in">bind</span></span>/named.conf</code> </pre><br>  And we create our own /etc/bind/my-zones.conf config file with the following contents: <br><pre> <code class="bash hljs">zone <span class="hljs-string"><span class="hljs-string">"test.ru"</span></span> { <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> master; file <span class="hljs-string"><span class="hljs-string">"/etc/bind/db.test.ru"</span></span>; };</code> </pre><br>  On the first master master server, we create our database in the /etc/bind/db.test.ru file with the following contents: <br><pre> <code class="bash hljs"><span class="hljs-variable"><span class="hljs-variable">$ORIGIN</span></span> test.ru. <span class="hljs-variable"><span class="hljs-variable">$TTL</span></span> 10 @ IN SOA ns.master.my.com. admin.my.com. ( 2 ; Serial 10 ; Refresh 10 ; Retry 10 ; Expire 10 ) ; Negative Cache TTL IN NS ns.master.my.com. IN NS ns.slave.my.com. ; @ IN A 10.1.0.1</code> </pre><br>  where ns.master.my.com is the domain name of this server (my.com domain is fictional) <br>  The key here is A-record and the update time is 10 seconds. <br><br>  On the second backup slave server, we create our database in the /etc/bind/db.test.ru file with the following contents: <br><pre> <code class="bash hljs"><span class="hljs-variable"><span class="hljs-variable">$ORIGIN</span></span> test.ru. <span class="hljs-variable"><span class="hljs-variable">$TTL</span></span> 10 @ IN SOA ns.slave.my.com. admin.my.com. ( 2 ; Serial 10 ; Refresh 10 ; Retry 10 ; Expire 10 ) ; Negative Cache TTL IN NS ns.master.my.com. IN NS ns.slave.my.com. ; @ IN A 10.1.0.1</code> </pre><br>  Differences from the main in SOA-record. <br>  Further we overload bind on both servers <br><pre> <code class="bash hljs">/etc/init.d/bind9 restart</code> </pre><br>  And from some external computer try to check the A-record of the test.ru domain <br>  For example, using nslookup test.ru.  Must issue address 10.1.0.1. <br>  If something is wrong, then we look at the logs. <br><br><h5>  Arbitration </h5><br>  We turn to the most interesting - arbitration, which will settle all this and manage the DNS-zone. <br>  For a basis, I took the work of services SSH, DNS, HTTP and MySQL.  HTTP and MySQL services are critical, in this case.  if at least one of these services does not work on the main server, then you need to send all requests to the backup server, additionally notify the administrator about the problem by email. <br>  To test the service, I use a script that, with the help of TELNET, checks the availability of the port and sets the value in a special state file. <br>  First, the master master server is polled and the results are recorded in a file, then the backup slave server is polled, the results are also recorded in the file;  then the status of critical services on the core server is checked, in case of problems, the status on the backup server is checked and, depending on the status, the DNS zone is overwritten.  I will not describe all the logic, it is presented in scripts. <br>  First you need to create a special directory on both servers: <br><pre> <code class="bash hljs">mkdir /var/lock/sync/</code> </pre><br>  All scripts are stored in / root / bin / <br>  The first script /root/bin/master.sh is responsible for checking the master master server for DNS, SSH, HTTP, MySQL services. <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash #        # This script is licensed under GNU GPL version 2.0 or above # --------------------------------------------------------------------- ###     22, 53, 80  3306 ### ###         email ### ######    ###### WORKDIR="/root/bin/" SEMAFOR="/var/lock/sync/master.sem" MAILFILE="/root/bin/master_server_problem.txt" #   master- HOST="10.1.0.1" HTTP="80" SSH="22" MYSQL="3306" DNS="53" PROTOCOLS="SSH HTTP MYSQL DNS" ###  ### EMAIL="admin@my.com" ########## ############ ######       ##### ### Binaries ### TELNET=$(which telnet) ###Change dir### cd $WORKDIR ###Check if already notified### if [ -f $MAILFILE ]; then rm -rf $MAILFILE fi #     ,    if [ -f $SEMAFOR ]; then A=1 else echo "\ DNS 0 SSH 0 HTTP 0 MYSQL 0" &gt; $SEMAFOR fi ### ### for PROTO in $PROTOCOLS do Num_PROTO=`cat $SEMAFOR | grep $PROTO | awk {'print $2'}` ( echo "quit" ) | $TELNET $HOST ${!PROTO} | grep Connected &gt; /dev/null 2&gt;&amp;1 if [ "$?" -ne "1" ]; then #Ok echo "$PROTO PORT CONNECTED" if [ $Num_PROTO -ne "0" ]; then # !=0 if [ $Num_PROTO = "3" ]; then # ==3 echo "$PROTO PORT CONNECTING, AVALIBLE on server $HOST \n" &gt;&gt; $MAILFILE fi OLD_Line="$PROTO $Num_PROTO" NEW_Line="$PROTO 0" sed -i -e "s/$OLD_Line/$NEW_Line/g" $SEMAFOR fi else #Connection failure if [ $Num_PROTO -ne "3" ]; then if [ $Num_PROTO = "2" ]; then # ==2 send notification echo "$PROTO PORT NOT CONNECTING, FAILED on server $HOST \n" &gt;&gt; $MAILFILE fi OLD_Line="$PROTO $Num_PROTO" NEW_Line="$PROTO $(($Num_PROTO+1))" sed -i -e "s/$OLD_Line/$NEW_Line/g" $SEMAFOR fi fi done ###Send mail notification after 2 failed check### #   MUTT      SMTP- 10.6.6.6   #     if [ -f $MAILFILE ]; then /usr/bin/mutt -x -e "set smtp_url=smtp://10.6.6.6" -e "set from="admin@my.com"" -s "Server problem" $EMAIL &lt; $MAILFILE fi</span></span></code> </pre><br><br>  The second script /root/bin/slave.sh is responsible for checking services on the backup slave server. <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash #        # This script is licensed under GNU GPL version 2.0 or above # --------------------------------------------------------------------- ###     22, 53, 80  3306 ### ###         email ### ######    ###### WORKDIR="/root/bin/" SEMAFOR="/var/lock/sync/slave.sem" MAILADMIN=0 MAILFILE="/root/bin/slave_server_problem.txt" HOST="10.2.0.2" HTTP="80" SSH="22" MYSQL="3306" DNS="53" PROTOCOLS="SSH HTTP MYSQL DNS" ###  ### EMAIL="admin@my.com" ########## ######       ##### ### Binaries ### TELNET=$(which telnet) ###Change dir### cd $WORKDIR ###Check if already notified### if [ -f $MAILFILE ]; then rm -rf $MAILFILE fi if [ -f $SEMAFOR ]; then A=1 else echo "\ DNS 0 SSH 0 HTTP 0 MYSQL 0" &gt; $SEMAFOR fi ### SSH### for PROTO in $PROTOCOLS do Num_PROTO=`cat $SEMAFOR | grep $PROTO | awk {'print $2'}` ( echo "quit" ) | $TELNET $HOST ${!PROTO} | grep Connected &gt; /dev/null 2&gt;&amp;1 if [ "$?" -ne "1" ]; then #Ok echo "$PROTO PORT CONNECTED" if [ $Num_PROTO -ne "0" ]; then # !=0 if [ $Num_PROTO = "3" ]; then # ==3 echo "$PROTO PORT CONNECTING, AVALIBLE on server $HOST \n" &gt;&gt; $MAILFILE fi OLD_Line="$PROTO $Num_PROTO" NEW_Line="$PROTO 0" sed -i -e "s/$OLD_Line/$NEW_Line/g" $SEMAFOR fi else #Connection failure if [ $Num_PROTO -ne "3" ]; then if [ $Num_PROTO = "2" ]; then # ==2 send notification echo "$PROTO PORT NOT CONNECTING, FAILED on server $HOST \n" &gt;&gt; $MAILFILE fi OLD_Line="$PROTO $Num_PROTO" NEW_Line="$PROTO $(($Num_PROTO+1))" sed -i -e "s/$OLD_Line/$NEW_Line/g" $SEMAFOR fi fi done ###Send mail notification after 2 failed check### #   MUTT      SMTP- 10.6.6.6   #     if [ -f $MAILFILE ]; then /usr/bin/mutt -x -e "set smtp_url=smtp://10.6.6.6" -e "set from="admin@my.com"" -s "Server problem" $EMAIL &lt; $MAILFILE fi</span></span></code> </pre><br>  These two files are identical, with the exception of the two variables $ HOST and $ SEMAFOR, in principle one could be made and a cycle was used, but I decided to make them separate files. <br>  The third file /root/bin/compare.sh is used to compare the status of services on the servers and overwrites the DNS zone. <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash #        # This script is licensed under GNU GPL version 2.0 or above # --------------------------------------------------------------------- FILE_MASTER="/var/lock/sync/master.sem" FILE_SLAVE="/var/lock/sync/slave.sem" HOST_MASTER="10.1.0.1" HOST_SLAVE="10.2.0.2" DNSFILE="/etc/bind/db.test.ru" LOG="/var/log/dns_rewrite.log" PROTOCOLS="HTTP MYSQL" MASTER_COL=0 SLAVE_COL=0 COL=0 for PROTO in $PROTOCOLS do COL=$(($COL + 1)) Master_PROTO=`cat $FILE_MASTER | grep $PROTO | awk {'print $2'}` MASTER_COL=$(($MASTER_COL + $Master_PROTO)) Slave_PROTO=`cat $FILE_SLAVE | grep $PROTO | awk {'print $2'}` SLAVE_COL=$(($SLAVE_COL + $Slave_PROTO)) done MAX_COL=$(($COL * 3)) if [ $MASTER_COL = $MAX_COL ]; then # ==6 if [ $SLAVE_COL = "0" ]; then #==0 #    Slave grep $HOST_MASTER $DNSFILE if [ "$?" -ne "1" ]; then #ok, rewrite sed -i -e "s/$HOST_MASTER/$HOST_SLAVE/g" $DNSFILE echo "Rewrite DNS to $HOST_SLAVE" &gt;&gt; $LOG /etc/init.d/bind9 restart fi fi else # check master if [ $MASTER_COL = "0" ]; then #==0 grep $HOST_SLAVE $DNSFILE if [ "$?" -ne "1" ]; then #ok, rewrite sed -i -e "s/$HOST_SLAVE/$HOST_MASTER/g" $DNSFILE echo "Rewrite DNS to $HOST_MASTER" &gt;&gt; $LOG /etc/init.d/bind9 restart fi else if [ $SLAVE_COL = "0" ]; then #==0 #    Slave grep $HOST_MASTER $DNSFILE if [ "$?" -ne "1" ]; then #ok, rewrite sed -i -e "s/$HOST_MASTER/$HOST_SLAVE/g" $DNSFILE echo "Rewrite DNS to $HOST_SLAVE" &gt;&gt; $LOG /etc/init.d/bind9 restart fi fi fi fi</span></span></code> </pre><br>  Finally, we put all these scripts together in one file /root/bin/dnswrite.sh <br><pre> <code class="bash hljs"><span class="hljs-meta"><span class="hljs-meta">#!/bin/bash #    /root/bin/master.sh #   SLAVE /root/bin/slave.sh #       /root/bin/compare.sh</span></span></code> </pre><br>  Add rights to run these scripts <br><pre> <code class="bash hljs">chmod +x /root/bin/*.sh</code> </pre><br>  and add the task to the CRON to start every minute “crontab -e”: <br><pre> <code class="bash hljs">*/1 * * * * /root/bin/dnswrite.sh /dev/null 2&gt;&amp;1</code> </pre><br><br>  All is ready. <br>  Now we have a fully automated complex fault-tolerant web application! <br>  I will be glad to hear comments and accept comments. </div><p>Source: <a href="https://habr.com/ru/post/174713/">https://habr.com/ru/post/174713/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../174695/index.html">Facebook avoided getting into the “black list” of Roskomnadzor by deleting the suicide record</a></li>
+<li><a href="../174697/index.html">Some useful tools for plotting (plot) in MATLAB</a></li>
+<li><a href="../174699/index.html">Virginia Tech has developed a mechanical robot jellyfish</a></li>
+<li><a href="../174705/index.html">Robust estimators (Robust estimators)</a></li>
+<li><a href="../174709/index.html">Describing relationships using the Code First Fluent API</a></li>
+<li><a href="../174715/index.html">Bus ticket</a></li>
+<li><a href="../174717/index.html">Django ORM, gevent and rakes in green</a></li>
+<li><a href="../174719/index.html">Past performance growth: the end of the frequency race, multi-core and why progress is bogged down in one place</a></li>
+<li><a href="../174723/index.html">Installing VMware vShield Manager for VMware vCloud Director</a></li>
+<li><a href="../174727/index.html">Successful mobile art: puzzle of small parts</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

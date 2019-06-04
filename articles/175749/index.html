@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>I write toy OS (about interruptions)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article is written in the form of a post for a blog. If it turns out to be interesting to you, it will be continued. 
+
+ The last four months have...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>I write toy OS (about interruptions)</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/storage2/070/02b/e05/07002be0506dd8618fc164f754f975dd.jpg"><br>  This article is written in the form of a post for a blog.  If it turns out to be interesting to you, it will be continued. <br><br>  The last four months have been devoting my free time to writing a toy OS for x86_64.  The source code is <a href="https://github.com/ababo/toy/">here</a> . <br><br>  The general idea (so far very far from implementation) is the following: a single 64-bit address space with ever-living threads (like in Phantom OS);  virtual machine that provides security code execution.  Currently implemented: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      1. kernel boot using multiboot loader (GRUB); <br>  2. text VGA mode (16 colors, kprintf); <br>  3. simple interface to customize the display of pages; <br>  4. ability to handle interrupts in C; <br>  5. identification of the processor topology (sockets, cores, threads) and their launch; <br>  6. A working prototype of the crowding out SMP scheduler with priority support; <br><br>  Let us skip the description of multiboot-boot and work with VGA-mode (I didn’t write about this, maybe, lazy).  I don’t want to write about displaying pages either, I'm afraid it will be boring (maybe another time).  Let's talk about interrupt handling. <br><a name="habracut"></a><br>  Typically, interrupt handlers, like any other critical code, are written in assembly language.  I don’t really like assembler, preferring to write as much code as possible on C. Therefore, I made several macros that allow you to conveniently write interrupt handlers on C. Of course, this solution negatively affects performance, but the power of modern computers allows this luxury (we take the brackets out real time). <br><br>  At the moment of interruption in long mode, the processor forms a handler in the stack (this can be either a user or a separately allocated stack) a frame containing the saved registers: <br><br><img src="https://habrastorage.org/storage2/b13/0f2/b62/b130f2b6271a58127a81013d6bd0e809.png"><br><br>  Actually, this picture corresponds to protected mode (I did not find a quality picture for long mode), but, apart from small details, the principle is absolutely the same.  The remaining user thread registers remain intact, so the handler must save them on the stack.  Since our handler is written in C, we have to save a full set of registers, including 512 bytes of FPU / MMX / SSE.  Of course, you can prevent the compiler from generating SIMD code for the entire kernel or only for functions that work inside interrupts.  In the first case, we will lose many optimizations, in the second case, we generally level out the benefits of writing handlers in C, since we will not be able to use any standard functions.  So, use the fxsave and fxrstor instructions to quickly save / restore the FPU / MMX / SSE registers. <br><br>  Here is the structure of our stack frame: <br><br><pre><code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">int_stack_frame</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-keyword"><span class="hljs-keyword">uint64_t</span></span> r15, r14, r13, r12, r11, r10, r9, r8; <span class="hljs-keyword"><span class="hljs-keyword">uint64_t</span></span> rdi, rsi, rbp, rdx, rcx, rbx, rax; <span class="hljs-keyword"><span class="hljs-keyword">uint8_t</span></span> fxdata[<span class="hljs-number"><span class="hljs-number">512</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">uint32_t</span></span> error_code; <span class="hljs-keyword"><span class="hljs-keyword">uint64_t</span></span> rip; <span class="hljs-keyword"><span class="hljs-keyword">uint16_t</span></span> cs; <span class="hljs-keyword"><span class="hljs-keyword">uint64_t</span></span> rflags, rsp; <span class="hljs-keyword"><span class="hljs-keyword">uint16_t</span></span> ss; };</code> </pre> <br>  The first part of the fields before the error_code is the manually saved registers, the second is the registers automatically saved by the processor.  The reverse order is due to the fact that the stack grows from top to bottom.  Now we define macros for easy writing of handlers. <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> DEFINE_INT_HANDLER(name) \ static NOINLINE \ void handle_##name##_int(UNUSED struct int_stack_frame *stack_frame, \ UNUSED uint64_t data) #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> DEFINE_ISR_WRAPPER(name, handler_name, data) \ static NOINLINE void *get_##name##_isr(void) { \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"jmp 2f\n.align 16\n1: andq $(~0xF), %rsp"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"subq $512, %rsp\nfxsave (%rsp)"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"push %rax\npush %rbx\npush %rcx\npush %rdx\npush %rbp\n"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"push %rsi\npush %rdi\npush %r8\npush %r9\npush %r10"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"push %r11\npush %r12\npush %r13\npush %r14\npush %r15"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"movq %%rsp, %%rdi\nmovabsq $%P0, %%rsi"</span></span></span><span class="hljs-meta"> : : </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"i"</span></span></span><span class="hljs-meta">(data)); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"callq %P0"</span></span></span><span class="hljs-meta"> : : </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"i"</span></span></span><span class="hljs-meta">(handle_##handler_name##_int)); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"pop %r15\npop %r14\npop %r13\npop %r12\npop %r11"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"pop %r10\npop %r9\npop %r8\npop %rdi\npop %rsi"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"pop %rbp\npop %rdx\npop %rcx\npop %rbx\npop %rax"</span></span></span><span class="hljs-meta">); \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"fxrstor (%rsp)\naddq $(512 + 8), %rsp"</span></span></span><span class="hljs-meta">); \ void *isr; \ ASMV(</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"iretq\n2: movq $1b, %0"</span></span></span><span class="hljs-meta"> : </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"=m"</span></span></span><span class="hljs-meta">(isr)); \ return isr; \ } #</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> DEFINE_ISR(name, data) \ DEFINE_INT_HANDLER(name); \ DEFINE_ISR_WRAPPER(name, name, data) \ DEFINE_INT_HANDLER(name)</span></span></code> </pre><br>  The first macro defines the signature of the handler function.  The second is a wrapper that preserves and restores registers.  This scheme allows you to call a single handler function for multiple interrupts.  I use this for standard errors when several interrupts dump a stack frame.  As can be seen from the code, the handler accepts an additional data argument; accordingly, different interrupts can transfer their data to one handler.  Finally, the last macro for the abbreviated spelling of the pair: handler + wrapper, when the handler is sharpened for one single interrupt. <br><br>  A wrapper is a function that returns a pointer to the beginning of the processing code located in its own body.  Read more about this trick <a href="http://wiki.osdev.org/Interrupt_Service_Routines">here</a> . <br><br>  As a result, writing a handler and attaching it to an interrupt becomes a trivial task: <br><br><pre> <code class="cpp hljs">DEFINE_ISR(foo) { <span class="hljs-comment"><span class="hljs-comment">//  C-   //  struct int_stack_frame *stack_frame  uint64_t data } set_isr(INT_FOO_VECTOR, get_foo_isr());</span></span></code> </pre><br>  That's all I wanted to tell you about interrupt handling in <s>Vietnam</s> . </div><p>Source: <a href="https://habr.com/ru/post/175749/">https://habr.com/ru/post/175749/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../175739/index.html">French intelligence forced Wikipedia sysop to delete article</a></li>
+<li><a href="../175741/index.html">How I received a universal electronic card after 3 months of waiting. Part 2</a></li>
+<li><a href="../175743/index.html">Native solution to the problem with WD disks in Linux</a></li>
+<li><a href="../175745/index.html">Firefox: file size by reference, or through thorns to fork</a></li>
+<li><a href="../175747/index.html">Goodbye Zen Coding. Hi, Emmet!</a></li>
+<li><a href="../175751/index.html">GPS Updater - we accelerate the speed of fixing GPS for Android without mobile Internet</a></li>
+<li><a href="../175755/index.html">EWICON: wind turbine without blades</a></li>
+<li><a href="../175757/index.html">Apple or pear?</a></li>
+<li><a href="../175759/index.html">Google, BlackBerry EarthLink and Red Hat ask US authorities to take action against patent trolls</a></li>
+<li><a href="../175761/index.html">Google is negotiating the purchase of WhatsApp for billion</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

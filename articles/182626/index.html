@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Threads, locks, and condition variables in C ++ 11 [Part 2]</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="For a more complete understanding of this article, it is recommended to read its first part , where the focus was on threads and locks, it explained m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Threads, locks, and condition variables in C ++ 11 [Part 2]</h1><div class="post__text post__text-html js-mediator-article">  For a more complete understanding of this article, it is recommended to read its <a href="http://habrahabr.ru/post/182610/">first part</a> , where the focus was on threads and locks, it explained many points (terms, functions, etc.) that will be used here without explanation. <br>  This article will discuss conditional variables ... <a name="habracut"></a><br><br><h4>  Conditional variables </h4><br>  In addition to the synchronization methods described <a href="http://habrahabr.ru/post/182610/">earlier</a> , C ++ 11 provides support for conditional variables that allow one or more threads to be blocked until either a notification from another thread is received or the <s>mythical</s> <a href="http://en.wikipedia.org/wiki/Spurious_wakeup">spurious wakeup</a> occurs. <br>  There are two implementations of condition variables available in the <code>&lt;condition_variable&gt;</code> header: <br><ul><li>  <a href="http://en.cppreference.com/w/cpp/thread/condition_variable">condition_variable</a> : requires any thread to wait before waiting to first execute <code>std::unique_lock</code> </li><li>  <a href="http://en.cppreference.com/w/cpp/thread/condition_variable_any">condition_variable_any</a> : a more general implementation that works with any type that can be blocked.  This implementation may be more expensive (in terms of resources and performance) to use, so it should be used only if the additional capabilities it provides are needed. </li></ul><br>  I will describe how the conditional variables work: <br><ul><li>  There must be at least one thread waiting until some condition is true.  The waiting thread must first execute <code>unique_lock</code> .  This lock is passed to the <code>wait()</code> method, which releases the mutex and suspends the thread until a signal is received from the condition variable.  When this happens, the thread will wake up and <code>lock</code> will execute again. </li><li>  There must be at least one stream that indicates that the condition has become true.  A signal can be sent using <a href="http://en.cppreference.com/w/cpp/thread/condition_variable/notify_one">notify_one ()</a> , and one (any) of the waiting ones will be unblocked, or <a href="http://en.cppreference.com/w/cpp/thread/condition_variable/notify_all">notify_all ()</a> , which will unblock all the waiting threads. </li><li>  In view of some difficulties in creating an awakening condition that can be predictable in multiprocessor systems, <b>spurious wakeup</b> can occur.  This means that the thread can be awakened, even if no one signaled the condition variable.  Therefore, it is also necessary to check whether the condition of awakening is true already after the flow was awakened.  Since  false awakenings can occur many times, such a check must be organized in a cycle. </li></ul><br>  The code below shows an example of using a conditional variable to synchronize threads: during the operation of some threads (let's call them “workers”) an error may occur, while they are placed in a queue.  The “logger” thread handles these errors (retrieving them from the queue) and prints them.  “Workers” signal to the “registrar” when an error occurs.  The registrar is waiting for a conditional signal.  To avoid false awakenings, waiting occurs in a loop where the Boolean condition is checked. <br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;condition_variable&gt; #include &lt;iostream&gt; #include &lt;random&gt; #include &lt;thread&gt; #include &lt;mutex&gt; #include &lt;queue&gt; std::mutex g_lockprint; std::mutex g_lockqueue; std::condition_variable g_queuecheck; std::queue&lt;int&gt; g_codes; bool g_done; bool g_notified; void workerFunc(int id, std::mt19937 &amp;generator) { //   { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[worker " &lt;&lt; id &lt;&lt; "]\trunning..." &lt;&lt; std::endl; } //   std::this_thread::sleep_for(std::chrono::seconds(1 + generator() % 5)); //   int errorcode = id*100+1; { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[worker " &lt;&lt; id &lt;&lt; "]\tan error occurred: " &lt;&lt; errorcode &lt;&lt; std::endl; } //    { std::unique_lock&lt;std::mutex&gt; locker(g_lockqueue); g_codes.push(errorcode); g_notified = true; g_queuecheck.notify_one(); } } void loggerFunc() { //   { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[logger]\trunning..." &lt;&lt; std::endl; } //   ,      while(!g_done) { std::unique_lock&lt;std::mutex&gt; locker(g_lockqueue); while(!g_notified) //    g_queuecheck.wait(locker); //     ,   while(!g_codes.empty()) { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[logger]\tprocessing error: " &lt;&lt; g_codes.front() &lt;&lt; std::endl; g_codes.pop(); } g_notified = false; } } int main() { //   -  std::mt19937 generator((unsigned int)std::chrono::system_clock::now().time_since_epoch().count()); //   std::thread loggerThread(loggerFunc); //   std::vector&lt;std::thread&gt; threads; for(int i = 0; i &lt; 5; ++i) threads.push_back(std::thread(workerFunc, i+1, std::ref(generator))); for(auto &amp;t: threads) t.join(); //        g_done = true; loggerthread.join(); return 0; }</span></span></span></span></code> </pre><br>  Execution of this code will give approximately the following result (the result will be different each time, since the workflows work (or rather sleep) random time intervals): <br><pre> <code class="bash hljs">[logger] running... [worker 1] running... [worker 2] running... [worker 3] running... [worker 4] running... [worker 5] running... [worker 1] an error occurred: 101 [worker 2] an error occurred: 201 [logger] processing error: 101 [logger] processing error: 201 [worker 5] an error occurred: 501 [logger] processing error: 501 [worker 3] an error occurred: 301 [worker 4] an error occurred: 401 [logger] processing error: 301 [logger] processing error: 401</code> </pre><br>  The <code>wait</code> method, indicated above, has two overloads: <br><ul><li>  one that uses only <code>unique_lock</code> ;  he (method) blocks the stream and adds it to the queue of threads waiting for a signal from this condition variable;  the flow is awakened when a signal is received from the condition variable or in the case of a false wake. </li><li>  the one in addition to <code>unique_lock</code> accepts the predicate used in the loop until it returns <code>false</code> ;  This overload can be used to avoid false awakenings.  In general, this is equivalent to such a cycle: <br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(!predicate()) wait(lock);</code> </pre></li></ul><br>  Thus, using the second overload, you can avoid using the <code>g_notified</code> boolean flag in the example above: <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">workerFunc</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> id, </span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">std</span></span></span></span><span class="hljs-function"><span class="hljs-params">::mt19937 &amp;generator)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-comment"><span class="hljs-comment">//   { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[worker " &lt;&lt; id &lt;&lt; "]\trunning..." &lt;&lt; std::endl; } //   std::this_thread::sleep_for(std::chrono::seconds(1 + generator() % 5)); //   int errorcode = id*100+1; { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[worker " &lt;&lt; id &lt;&lt; "]\tan error occurred: " &lt;&lt; errorcode &lt;&lt; std::endl; } //    { std::unique_lock&lt;std::mutex&gt; locker(g_lockqueue); g_codes.push(errorcode); g_queuecheck.notify_one(); } } void loggerFunc() { //   { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[logger]\trunning..." &lt;&lt; std::endl; } //   ,      while(!g_done) { std::unique_lock&lt;std::mutex&gt; locker(g_lockqueue); g_queuecheck.wait(locker, [&amp;](){return !g_codes.empty();}); //     ,   while(!g_codes.empty()) { std::unique_lock&lt;std::mutex&gt; locker(g_lockprint); std::cout &lt;&lt; "[logger]\tprocessing error: " &lt;&lt; g_codes.front() &lt;&lt; std::endl; g_codes.pop(); } } }</span></span></code> </pre><br>  In addition to the overloaded <code>wait()</code> method, there are two more similar methods with the same overload for a predicate: <br><ul><li>  <a href="http://en.cppreference.com/w/cpp/thread/condition_variable/wait_for">wait_for</a> : blocks the stream until a conditional variable signal is received </li><li>  <a href="http://en.cppreference.com/w/cpp/thread/condition_variable/wait_until">wait_until</a> : blocks the stream until a conditional variable signal is received or a specific point in time is reached </li></ul><br>  Overloading these methods without a predicate returns <a href="http://en.cppreference.com/w/cpp/thread/cv_status">cv_status</a> , indicating whether the timeout occurred, or whether the awakening was due to a conditional variable signal, or a false awakening. <br><br>  Std also provides the <a href="http://en.cppreference.com/w/cpp/thread/notify_all_at_thread_exit">notify_all_at_thread_exit</a> function, which implements a mechanism for notifying other threads that the data stream has completed its work, including the destruction of all <code>thread_local</code> objects.  Waiting for threads with a mechanism other than <code>join</code> can lead to incorrect behavior when <code>thread_locals</code> have already been used, and their destructors could be called after the thread has been awakened or after it has already ended (see <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2010/n3070.html">N3070</a> and <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2009/n2880.html">N2880</a> . As a rule, the call This function should occur immediately before the thread starts to exist. Below is an example of how <code>notify_all_at_thread_exit</code> can be used with conditional variables to synchronize two threads: <br><pre> <code class="cpp hljs"><span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex g_lockprint; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex g_lock; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::condition_variable g_signal; <span class="hljs-keyword"><span class="hljs-keyword">bool</span></span> g_done; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">workerFunc</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">std</span></span></span></span><span class="hljs-function"><span class="hljs-params">::mt19937 &amp;generator)</span></span></span><span class="hljs-function"> </span></span>{ { <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::unique_lock&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex&gt; locker(g_lockprint); <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"worker running..."</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">endl</span></span>; } <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::this_thread::sleep_for(<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::chrono::seconds(<span class="hljs-number"><span class="hljs-number">1</span></span> + generator() % <span class="hljs-number"><span class="hljs-number">5</span></span>)); { <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::unique_lock&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex&gt; locker(g_lockprint); <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"worker finished..."</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">endl</span></span>; } <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::unique_lock&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex&gt; lock(g_lock); g_done = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::notify_all_at_thread_exit(g_signal, <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(lock)); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-function"><span class="hljs-function">mt19937 </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">generator</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">((</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">unsigned</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">std</span></span></span></span><span class="hljs-function"><span class="hljs-params">::chrono::system_clock::now().time_since_epoch().count())</span></span></span></span>; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"main running..."</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">endl</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-function"><span class="hljs-function">thread </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">worker</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(workerFunc, </span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">std</span></span></span></span><span class="hljs-function"><span class="hljs-params">::ref(generator))</span></span></span></span>; worker.detach(); <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"main crunching..."</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">endl</span></span>; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::this_thread::sleep_for(<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::chrono::seconds(<span class="hljs-number"><span class="hljs-number">1</span></span> + generator() % <span class="hljs-number"><span class="hljs-number">5</span></span>)); { <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::unique_lock&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex&gt; locker(g_lockprint); <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">cout</span></span> &lt;&lt; <span class="hljs-string"><span class="hljs-string">"main waiting for worker..."</span></span> &lt;&lt; <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">endl</span></span>; } <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::unique_lock&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::mutex&gt; lock(g_lock); <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(!g_done) <span class="hljs-comment"><span class="hljs-comment">//    g_signal.wait(lock); std::cout &lt;&lt; "main finished..." &lt;&lt; std::endl; return 0; }</span></span></code> </pre><br>  If the worker finishes his work before the main thread, then the result will be as follows: <br><pre> <code class="hljs lua">main <span class="hljs-built_in"><span class="hljs-built_in">running</span></span>... worker <span class="hljs-built_in"><span class="hljs-built_in">running</span></span>... main crunching... worker finished... main waiting <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> worker... main finished...</code> </pre><br>  If the main thread finishes its work before the worker, the result will be as follows: <br><pre> <code class="hljs lua">main <span class="hljs-built_in"><span class="hljs-built_in">running</span></span>... worker <span class="hljs-built_in"><span class="hljs-built_in">running</span></span>... main crunching... main waiting <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> worker... worker finished... main finished...</code> </pre>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  As a conclusion </h4><br>  The C ++ 11 standard allows C ++ developers to write multi-threaded code in a standard, platform-independent way.  This article is just a run through threads and synchronization mechanisms from std.  The <code>&lt;thread&gt;</code> header provides a class with the same name (and many additional functions) representing threads.  The <code>&lt;mutex&gt;</code> header provides the implementation of several mutexes and wrappers for synchronizing access to streams.  The <code>&lt;condition_variable&gt;</code> header provides two implementations of condition variables that allow you to block one or more threads until you receive a notification from another thread or until a false wake up.  For more information and understanding of the essence of the matter, of course, it is recommended to read additional literature :) </div><p>Source: <a href="https://habr.com/ru/post/182626/">https://habr.com/ru/post/182626/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../182610/index.html">Threads, locks, and condition variables in C ++ 11 [Part 1]</a></li>
+<li><a href="../182612/index.html">Silicone Skeleton - Silex tuned</a></li>
+<li><a href="../182614/index.html">Qt Graphics Framework - the dark side. Part 1</a></li>
+<li><a href="../182620/index.html">Exploring JavaScript Generators</a></li>
+<li><a href="../182622/index.html">Video: New software development and testing offers for MSDN subscribers and other Windows Azure news</a></li>
+<li><a href="../182628/index.html">Node.js: JavaScript Are you it?</a></li>
+<li><a href="../182630/index.html">The digest of interesting materials from the world of web development and IT for the last week №60 (June 1 - 8, 2013)</a></li>
+<li><a href="../182632/index.html">Configuring via scripts instead of XML and JSON using the example of a realtime multiplayer game</a></li>
+<li><a href="../182634/index.html">The Hand prosthesis - almost complete replacement of the arm</a></li>
+<li><a href="../182638/index.html">Creation of QR codes in C / C ++</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

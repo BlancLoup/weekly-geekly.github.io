@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How ZFS Works - Part 1: vdev</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Vdev, or Virtual Device is the basic unit on which the ZFS dataset (zpool) is built. ZFS requires at least one vdev - a virtual device that allows ran...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How ZFS Works - Part 1: vdev</h1><div class="post__text post__text-html js-mediator-article">  Vdev, or Virtual Device is the basic unit on which the ZFS dataset (zpool) is built.  ZFS requires at least one vdev - a virtual device that allows random access to information at the block level. <br><br>  Usually, whole disks or iScsi / FC LUNs (raw-disk vdev) are used as such blocks, but you can also use disk partitions or files.  Entire disks are preferred because ZFS uses onboard write cache for them, as a result of which write performance can be greatly improved.  <i>I will not explain the difference between logical vdev and leaf vdev yet - this is a topic for a separate article about how RaidzN and zfs mirror work.</i> <br><blockquote>  <a href="">src.illumos.org/source/xref/illumos-gate/usr/src/uts/common/fs/zfs/vdev_disk.c#314</a> <pre><code class="hljs cpp"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (vd-&gt;vdev_wholedisk == <span class="hljs-number"><span class="hljs-number">1</span></span>) { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> wce = <span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-comment"><span class="hljs-comment">/* * If we own the whole disk, try to enable disk write caching. * We ignore errors because it's OK if we can't do it. */</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">void</span></span>) ldi_ioctl(dvd-&gt;vd_lh, DKIOCSETWCE, (<span class="hljs-keyword"><span class="hljs-keyword">intptr_t</span></span>)&amp;wce, FKIOCTL, kcred, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>); }</code> </pre> </blockquote><br>  In the description of the <a href="">structure of the</a> virtual device, you can see what parameters are used for what, but I'm not going to give an explanation to everyone - the purpose of the article is the description of how ZFS stores and writes data. <br><br>  Each vdev is divided into logical partitions (metaslab), <a name="habracut"></a>  that are created automatically when you add a disk in ZFS Pool.  The number of such partitions depends on the size of vdev — about 200 partitions, but it can actually be &lt;128 and&gt; 256. <br><blockquote>  <a href="">src.illumos.org/source/xref/illumos-gate/usr/src/uts/common/fs/zfs/vdev.c#1552</a> <pre> <code class="hljs lisp">void vdev_metaslab_set_size(<span class="hljs-name"><span class="hljs-name">vdev_t</span></span> *vd) { /* * Aim for roughly 200 metaslabs per vdev. */ vd-&gt;vdev_ms_shift = highbit(<span class="hljs-name"><span class="hljs-name">vd-&gt;vdev_asize</span></span> / <span class="hljs-number"><span class="hljs-number">200</span></span>)<span class="hljs-comment"><span class="hljs-comment">; vd-&gt;vdev_ms_shift = MAX(vd-&gt;vdev_ms_shift, SPA_MAXBLOCKSHIFT); }</span></span></code> </pre></blockquote><br>  Further, inside each metaslab there is a so-called space map.  It, like most structures in ZFS, is made on the basis of the <a href="http://ru.wikipedia.org/wiki/%25D0%2590%25D0%2592%25D0%259B-%25D0%25B4%25D0%25B5%25D1%2580%25D0%25B5%25D0%25B2%25D0%25BE">AVL tree</a> , and allows you to work effectively with blocks of occupied and free space, regardless of the block size and its place inside the metaslab. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Here is a small example of how ZFS sees this structure using <pre> <code class="hljs go"><code class="bash">zdb -mmm -   <span class="hljs-number"><span class="hljs-number">20</span></span>   metaslab<span class="hljs-string"><span class="hljs-string">'a  vdev'</span></span>a   : <br> Metaslabs: vdev <span class="hljs-number"><span class="hljs-number">0</span></span> metaslabs <span class="hljs-number"><span class="hljs-number">323</span></span> offset spacemap free --------------- ------------------- --------------- ------------- metaslab <span class="hljs-number"><span class="hljs-number">0</span></span> offset <span class="hljs-number"><span class="hljs-number">0</span></span> spacemap <span class="hljs-number"><span class="hljs-number">34</span></span> free <span class="hljs-number"><span class="hljs-number">84.8</span></span>M segments <span class="hljs-number"><span class="hljs-number">72</span></span> maxsize <span class="hljs-number"><span class="hljs-number">24.9</span></span>M freepct <span class="hljs-number"><span class="hljs-number">16</span></span>% .... [ <span class="hljs-number"><span class="hljs-number">73</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">001f</span></span>00ba00<span class="hljs-number"><span class="hljs-number">-001f</span></span>fffa00 size: ff4000 [ <span class="hljs-number"><span class="hljs-number">74</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">001</span></span>eff8200<span class="hljs-number"><span class="hljs-number">-001f</span></span>00ae00 size: <span class="hljs-number"><span class="hljs-number">012</span></span>c00 [ <span class="hljs-number"><span class="hljs-number">75</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">001</span></span>b091200<span class="hljs-number"><span class="hljs-number">-001</span></span>b130200 size: <span class="hljs-number"><span class="hljs-number">09f</span></span>000 [ <span class="hljs-number"><span class="hljs-number">76</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0012</span></span>a84e00<span class="hljs-number"><span class="hljs-number">-0013</span></span>a84e00 size: <span class="hljs-number"><span class="hljs-number">1000000</span></span> [ <span class="hljs-number"><span class="hljs-number">77</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0013</span></span>a84e00<span class="hljs-number"><span class="hljs-number">-00141</span></span>bb800 size: <span class="hljs-number"><span class="hljs-number">736</span></span>a00 [ <span class="hljs-number"><span class="hljs-number">78</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0006</span></span>b88000<span class="hljs-number"><span class="hljs-number">-0007707200</span></span> size: b7f200 [ <span class="hljs-number"><span class="hljs-number">79</span></span>] FREE: txg <span class="hljs-number"><span class="hljs-number">9153385</span></span>, pass <span class="hljs-number"><span class="hljs-number">1</span></span> [ <span class="hljs-number"><span class="hljs-number">80</span></span>] F <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0000282000</span></span><span class="hljs-number"><span class="hljs-number">-0000283200</span></span> size: <span class="hljs-number"><span class="hljs-number">001200</span></span> [ <span class="hljs-number"><span class="hljs-number">81</span></span>] F <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0000</span></span>b47200<span class="hljs-number"><span class="hljs-number">-0000</span></span>b48600 size: <span class="hljs-number"><span class="hljs-number">001400</span></span> [ <span class="hljs-number"><span class="hljs-number">82</span></span>] ALLOC: txg <span class="hljs-number"><span class="hljs-number">9252698</span></span>, pass <span class="hljs-number"><span class="hljs-number">1</span></span> [ <span class="hljs-number"><span class="hljs-number">83</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0000282000</span></span><span class="hljs-number"><span class="hljs-number">-0000283</span></span>a00 size: <span class="hljs-number"><span class="hljs-number">001</span></span>a00 [ <span class="hljs-number"><span class="hljs-number">84</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0000</span></span>b47200<span class="hljs-number"><span class="hljs-number">-0000</span></span>b48e00 size: <span class="hljs-number"><span class="hljs-number">001</span></span>c00 [ <span class="hljs-number"><span class="hljs-number">85</span></span>] A <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">00008e6</span></span>e00<span class="hljs-number"><span class="hljs-number">-00008e8</span></span>a00 size: <span class="hljs-number"><span class="hljs-number">001</span></span>c00 [ <span class="hljs-number"><span class="hljs-number">86</span></span>] FREE: txg <span class="hljs-number"><span class="hljs-number">9279297</span></span>, pass <span class="hljs-number"><span class="hljs-number">2</span></span> [ <span class="hljs-number"><span class="hljs-number">87</span></span>] F <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">00008e9000</span></span><span class="hljs-number"><span class="hljs-number">-00008e9</span></span>c00 size: <span class="hljs-number"><span class="hljs-number">000</span></span>c00 [ <span class="hljs-number"><span class="hljs-number">88</span></span>] FREE: txg <span class="hljs-number"><span class="hljs-number">9328122</span></span>, pass <span class="hljs-number"><span class="hljs-number">2</span></span> [ <span class="hljs-number"><span class="hljs-number">89</span></span>] F <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0010</span></span>a7be00<span class="hljs-number"><span class="hljs-number">-0010</span></span>a7c800 size: <span class="hljs-number"><span class="hljs-number">000</span></span>a00 [ <span class="hljs-number"><span class="hljs-number">90</span></span>] FREE: txg <span class="hljs-number"><span class="hljs-number">9444756</span></span>, pass <span class="hljs-number"><span class="hljs-number">1</span></span> [ <span class="hljs-number"><span class="hljs-number">91</span></span>] F <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">0009</span></span>b14200<span class="hljs-number"><span class="hljs-number">-000</span></span>ab14200 size: <span class="hljs-number"><span class="hljs-number">1000000</span></span> [ <span class="hljs-number"><span class="hljs-number">92</span></span>] F <span class="hljs-keyword"><span class="hljs-keyword">range</span></span>: <span class="hljs-number"><span class="hljs-number">000</span></span>ab14200<span class="hljs-number"><span class="hljs-number">-000</span></span>b402000 size: <span class="hljs-number"><span class="hljs-number">8</span></span>ede00 ....</code> <br>  ,        , ,        .  ,  ZFS     -  -         Copy-on-write .  ZFS -   ,       . <br> <br>     space <span class="hljs-keyword"><span class="hljs-keyword">map</span></span> - <span class="hljs-number"><span class="hljs-number">512</span></span>  (<span class="hljs-number"><span class="hljs-number">0</span></span><span class="hljs-number"><span class="hljs-number">200</span></span>),  - <span class="hljs-number"><span class="hljs-number">16</span></span> (<span class="hljs-number"><span class="hljs-number">0</span></span><span class="hljs-number"><span class="hljs-number">1000000</span></span>).    space <span class="hljs-keyword"><span class="hljs-keyword">map</span></span>    ,     ,      -  ,   . <br> <br>    -  metaslab    <span class="hljs-string"><span class="hljs-string">""</span></span>  , free <span class="hljs-keyword"><span class="hljs-keyword">map</span></span>,        ,      ,     disk seek.    ,     <span class="hljs-number"><span class="hljs-number">84</span></span> <span class="hljs-string"><span class="hljs-string">"free"</span></span>    ,       - <span class="hljs-number"><span class="hljs-number">24.9</span></span> <span class="hljs-string"><span class="hljs-string">"maxfree"</span></span>. <br> <br>      ZFS write pipeline -   ,    ,  ()      metaslab allocator. <br> <br>      ,     -         ,    ,  . .</code> </pre> <code><code class="bash">zdb -mmm -   20   metaslab'a  vdev'a   : <br> Metaslabs: vdev 0 metaslabs 323 offset spacemap free --------------- ------------------- --------------- ------------- metaslab 0 offset 0 spacemap 34 free 84.8M segments 72 maxsize 24.9M freepct 16% .... [ 73] A range: 001f00ba00-001ffffa00 size: ff4000 [ 74] A range: 001eff8200-001f00ae00 size: 012c00 [ 75] A range: 001b091200-001b130200 size: 09f000 [ 76] A range: 0012a84e00-0013a84e00 size: 1000000 [ 77] A range: 0013a84e00-00141bb800 size: 736a00 [ 78] A range: 0006b88000-0007707200 size: b7f200 [ 79] FREE: txg 9153385, pass 1 [ 80] F range: 0000282000-0000283200 size: 001200 [ 81] F range: 0000b47200-0000b48600 size: 001400 [ 82] ALLOC: txg 9252698, pass 1 [ 83] A range: 0000282000-0000283a00 size: 001a00 [ 84] A range: 0000b47200-0000b48e00 size: 001c00 [ 85] A range: 00008e6e00-00008e8a00 size: 001c00 [ 86] FREE: txg 9279297, pass 2 [ 87] F range: 00008e9000-00008e9c00 size: 000c00 [ 88] FREE: txg 9328122, pass 2 [ 89] F range: 0010a7be00-0010a7c800 size: 000a00 [ 90] FREE: txg 9444756, pass 1 [ 91] F range: 0009b14200-000ab14200 size: 1000000 [ 92] F range: 000ab14200-000b402000 size: 8ede00 ....</code> <br>  ,        , ,        .  ,  ZFS     -  -         Copy-on-write .  ZFS -   ,       . <br> <br>     space map - 512  (0200),  - 16 (01000000).    space map    ,     ,      -  ,   . <br> <br>    -  metaslab    ""  , free map,        ,      ,     disk seek.    ,     84 "free"    ,       - 24.9 "maxfree". <br> <br>      ZFS write pipeline -   ,    ,  ()      metaslab allocator. <br> <br>      ,     -         ,    ,  . .</code> </div><p>Source: <a href="https://habr.com/ru/post/160943/">https://habr.com/ru/post/160943/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../160933/index.html">The Syrian Minister said that the Internet disconnected by terrorists</a></li>
+<li><a href="../160935/index.html">Virtual day Cisco Expo 2012</a></li>
+<li><a href="../160937/index.html">Cyberwarfare - features of the national war</a></li>
+<li><a href="../160939/index.html">New for web designer for November 2012</a></li>
+<li><a href="../160941/index.html">Project Concept - “Real Time Job”</a></li>
+<li><a href="../160945/index.html">Installing Encrypted (TrueCrypt) Windows with Ubuntu Default</a></li>
+<li><a href="../160947/index.html">Google will no longer block</a></li>
+<li><a href="../160949/index.html">There will be no price increase for domains in the .COM zone!</a></li>
+<li><a href="../160953/index.html">Virus movie from IE team about browser haters</a></li>
+<li><a href="../160955/index.html">What's new in working with exceptions in C ++ 11</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

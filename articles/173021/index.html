@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>MySQL Optimizer Problems</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="What I managed to understand about MySQL for several years of its development: 
+
+
+- it is impossible to develop without breaking backward compatibilit...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>MySQL Optimizer Problems</h1><div class="post__text post__text-html js-mediator-article">  What I managed to understand about MySQL for several years of its development: <br><ul><li>  it is impossible to develop without breaking backward compatibility </li><li>  No one needs MySQL with broken backward compatibility. </li></ul><br><br>  I will describe two serious MySQL DNA problems that any MySQL 5.1 and 5.5 users indirectly encounter (I didn’t check about 5.6, but I don’t think this has changed). <br><br>  How does MySQL work? 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <a name="habracut"></a>  There is MySQL itself - it is <br><ul><li>  parser </li><li>  query optimizer </li><li>  replication </li><li>  system catalog </li></ul><br>  There are other things, but the main ones are these. <br><br>  There is a Storage Engine: a plugin that implements the following functionality: <br><ul><li>  transactions </li><li>  disk storage </li><li>  indexes </li><li>  statistics </li></ul><br>  The list is not exhaustive, and not very well divided into responsibilities, but satisfactory for our consideration. <br><br>  The API for the Storage Engine is such a holy cow that cannot be touched. <br>  I want to give you a wonderful, wonderful example of how this Storage Engine API is “perfectly done” and what problems arise with it. <br><br>  Specifically, I studied these problems while fighting with this bug: <a href="http://bugs.mysql.com/bug.php%3Fid%3D63320">bugs.mysql.com/bug.php?id=63320</a> <br>  If anyone feels the strength and desire to deal with both the bug and the source code, I can wish good luck. <br>  Those who are lazy and trust my story can simply read on. <br><br>  So, what information can the Storage Engine report to the optimizer? <br><ul><li>  number of records in the table (let it be row_count) </li><li>  integer rows_per_key (the ratio of the number_ of records_total to the number of_unique_ records). </li></ul><br><br>  Please note - the number of unique records can not be directly recognized. <br>  MySQL counts it as number of records in the table / rows_per_key <br><br>  We write this in the form of a code (how it is calculated as a result): <br><pre><code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">int</span></span> unique_row_count_mysql = row_count / rows_per_key; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> rows_per_key = row_count / unique_row_count_engine; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> unique_row_count_mysql = row_count / ((<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>) (row_count / unique_row_count_engine));</code> </pre> <br>  I explain: <br><pre> <code class="cpp hljs">a2 = (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>)b / ((<span class="hljs-keyword"><span class="hljs-keyword">int</span></span>) (b / a));</code> </pre> <br><br>  Just because of the lack of this function, we lose exactly rounding the number twice in a row. <br>  I will explain an example.  Let there is a table with millions of entries. <br>  Consider a different number of unique keys. <br><table border="1"><tbody><tr><td>  Total records </td><td>  Unique records </td><td>  rows_per_key </td><td>  Unique records (according to the optimizer) </td></tr><tr><td>  1,000,000 </td><td>  100,000 </td><td>  ten </td><td>  100,000 </td></tr><tr><td>  1,000,000 </td><td>  200,000 </td><td>  five </td><td>  200,000 </td></tr><tr><td>  1,000,000 </td><td>  300,000 </td><td>  3 </td><td>  333333 </td></tr><tr><td>  1,000,000 </td><td>  400,000 </td><td>  2 </td><td>  500,000 </td></tr><tr><td>  1,000,000 </td><td>  500,000 </td><td>  2 </td><td>  500,000 </td></tr><tr><td>  1,000,000 </td><td>  600,000 </td><td>  one </td><td>  1,000,000 </td></tr><tr><td>  1,000,000 </td><td>  700,000 </td><td>  one </td><td>  1,000,000 </td></tr><tr><td>  1,000,000 </td><td>  800,000 </td><td>  one </td><td>  1,000,000 </td></tr><tr><td>  1,000,000 </td><td>  900000 </td><td>  one </td><td>  1,000,000 </td></tr><tr><td>  1,000,000 </td><td>  1,000,000 </td><td>  one </td><td>  1,000,000 </td></tr></tbody></table><br>  Like? <br>  There are NO reasons to lose accuracy EXCEPT the Storage Engine API - no. <br>  API can not be touched. <br>  This problem is applicable to any Storage Engine. <br><br>  This is half the battle.  We go further. <br>  To choose an effective plan, it is not enough for the optimizer to know the number of unique records and the number of records in total. <br>  Often * he needs to know the number of NULLs, the number of non-NULLs, in the case of composite keys - various combinations. <br>  Often - this is in the following cases: <br><ul><li>  inner join ("just" join) </li><li>  outer join (left / right / full) </li><li>  subquery (in / not in / all / any / exists / not exists) </li></ul><br><br>  With null statistics, you can build various effective optimizations. <br>  About this later, we first describe the problem. <br><br>  In the Storage Engine API, there is no ability to distinguish nulls from other entries. <br>  Almost not. <br>  InnoDB and MyISAM implement two global variables: innodb_stats_method and myisam_stats_method. <br>  These global variables have the following meanings: <br><ul><li>  nulls ignore </li><li>  nulls equal </li><li>  nulls not equal. </li></ul><br>  When I first saw it in the source code, I could not believe my own eyes. <br>  These variables affect the collection of statistics for ALL tables and queries that have nulls in the join keys and subqueries. <br><br>  What is bad? <br>  Here is a simple request: <br><pre>  select * from a join b on a.id = b.id </pre><br>  If nulls are worth ignore - everything is fine <br>  If nulls are worth it, everything is fine. <br>  If nulls are not equal, everything is very bad, the optimizer will choose a pessimistic plan - assuming that there will be a lot of entries at the output. <br><br>  Another request <br><pre>  select * from a left join b on a.id = b.id </pre><br>  If nulls are not equal, everything is fine <br>  If nulls equal or nulls ignore costs, the optimizer will choose an optimistic plan very badly - assuming that there will be few entries at the output. <br><br>  With subqueries, the situation is both the case and that. <br>  As a matter of fact, the bug to which I referred is about the features of calculating the number of records based on the innodb_stats_method setting. <br>  The architecture initially did not provide for the separation of nulls from everything else, and now developers are tormented by inventing more cunning crutches and heuristics to miss smaller ones. <br><br>  From my point of view, these are dead poultices. <br>  The MySQL optimizer built on top of AST (abstract syntax tree) is dead and cannot be developed and improved.  This is a huge hole that devours a lot of time and does not provide an opportunity to improve query performance. <br><br>  By themselves, the Storage Engine is fast, but the optimizer does not know how to use it.  No API, no opportunity, no normal statistics. <br><br>  I do not believe that this situation will fundamentally change.  In fact, you need to throw out a significant piece of MySQL and rewrite it from scratch. <br>  But it will be a completely different product. </div><p>Source: <a href="https://habr.com/ru/post/173021/">https://habr.com/ru/post/173021/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../173011/index.html">The answer service for Formspring closes</a></li>
+<li><a href="../173013/index.html">Homemade indicator lamps of glass blocks and diode tape (and, of course, raspberry pi)</a></li>
+<li><a href="../173015/index.html">Natural Language Ontology Editor</a></li>
+<li><a href="../173017/index.html">Stephen King "How to write program code"</a></li>
+<li><a href="../173019/index.html">The author of Google Reader is surprised that the service has lived for so long.</a></li>
+<li><a href="../173023/index.html">StateController. Event model in the development of interfaces. Part 1</a></li>
+<li><a href="../173025/index.html">4D printing - new front</a></li>
+<li><a href="../173029/index.html">Other side 22nm: unknown heroes of Silicon Valley</a></li>
+<li><a href="../173031/index.html">Enhance SSH Access Security on Juniper SRX Routers</a></li>
+<li><a href="../173037/index.html">Interesting possibilities of storage systems HP 3PAR. Part 3 - Peer Motion</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

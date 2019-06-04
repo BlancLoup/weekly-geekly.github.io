@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>About correct memory usage in Linux NUMA systems</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, our blog has an article about NUMA-systems, and I would like to continue the topic by sharing my experience in Linux. Today I will talk abou...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>About correct memory usage in Linux NUMA systems</h1><div class="post__text post__text-html js-mediator-article"> Recently, our blog has <a href="http://habrahabr.ru/company/intel/blog/165903/">an article</a> about NUMA-systems, and I would like to continue the topic by sharing my experience in Linux.  Today I will talk about what happens if you use memory in NUMA incorrectly and how to diagnose such a problem with performance counters. <br><a name="habracut"></a><br>  So let's start with a simple example: <br><br><img src="https://habrastorage.org/storage2/f5e/944/807/f5e944807c3ac527c3b3aa52b613f8b2.jpg"><br><br>  This is a simple test that summarizes the elements of an array in a loop.  Let's run it in several threads on a two-socket server with a quad-core processor installed on each socket.  Below is a graph in which we see program execution times depending on the number of threads: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <img src="https://habrastorage.org/storage2/7f0/3ae/248/7f03ae2482af461dac8e71f52286bb57.jpg"><br><br>  We see that the execution time on eight threads is only 1.16 times shorter than on four threads, although when switching from two to four threads, the performance gain is noticeably higher.  Now we will make a simple transformation of the code: add a parallelization directive before initializing the array: <br><br><img src="https://habrastorage.org/storage2/9d2/7f3/b0b/9d27f3b0bda2f28510898db021ecf759.jpg"><br><br>  And we collect again the execution times: <br><br><img src="https://habrastorage.org/storage2/da3/857/0d9/da38570d9f1693d5a2826213f9da289f.jpg"><br><br>  And here, on eight threads, the performance improved by almost 2 times.  Thus, our application is almost linearly scaled across the entire range of threads. <br>  So let's see what happened?  How does the simple parallelization of the initialization cycle lead to a nearly two-fold increase?  Consider a dual-processor server with NUMA support: <br><br><img src="https://habrastorage.org/storage2/89e/a34/837/89ea348373c627b56781b79f8e315f9d.jpg"><br><br>  Each quad-core processor is assigned a certain amount of physical memory, with which it communicates via an integrated memory controller and data bus.  Such a bunch of processor + memory is called a node or node (node).  In NUMA systems (Non Uniform Memory Access), access to the memory of another node takes much longer than access to the memory of its node.  When an application first accesses memory, virtual memory pages are assigned to physical ones.  But in NUMA-systems running Linux, this process has its own specifics: the physical pages that will be assigned virtual ones are allocated on the node with which the first access occurred.  This is the so-called “first-touch policy”.  Those.  if from the first node any memory was accessed, then the virtual pages of this memory will be displayed on the physical, which will also be allocated on the first node.  Therefore, it is important to correctly initialize the data, because the performance of the application will depend on how the data is assigned to the nodes.  If we talk about the first example, then the entire array was initialized on one node, which led to the consolidation of all data for the first node, after which half of this array was read by another node, and this led to a performance degradation. <br><br>  The attentive reader should have already wondered: “Isn't memory allocation through malloc the first access?”.  Specifically, in this case - no.  The point is this: when allocating large blocks of memory in Linux, the glibc <b>m</b> alloc function (as well as calloc and realloc) by default calls the mmap kernel service function.  This service function makes only a mark on the amount of allocated memory, but physical allocation occurs only when you first access them.  This mechanism is implemented through interruptions (exceptions) of the Page-Fault and Copy-On-Write, as well as through mapping onto a “zero” page (“zero” page).  Who is interested in the details, can read the book "Understanding the Linux Kernel".  In general, a situation is possible when the glibc <b>c</b> alloc function performs the first memory access in order to “zero” it.  But again, this will happen if calloc decides to return the previously freed memory on the heap (heap) to the user, and such memory will already exist on the physical pages.  Therefore, in order to avoid unnecessary puzzles, it is recommended to use so-called NUMA-aware memory managers (for example, TCMalloc), but this is another topic. <br><br>  And now let's answer the main question of this article: “How do you know if an application works correctly with memory in a NUMA system?”.  This question will always be the very first and foremost for us when adapting applications for servers with NUMA support, regardless of the operating system. <br><br>  To answer this question, we need VTune Amplifier, which can count events for two performance counters: OFFCORE_RESPONSE_0.ANY_REQUEST.LOCAL_DRAM and OFFCORE_RESPONSE_0.ANY_REQUEST.REMOTE_DRAM.  The first counter counts the number of all requests for which data was found in the RAM of its node, and the second counter in the memory of someone else's node.  Just in case, you can still collect counters for the cache: OFFCORE_RESPONSE_0.ANY_REQUEST.LOCAL_CACHE and OFFCORE_RESPONSE_0.ANY_REQUEST.REMOTE_CACHE.  Suddenly it turns out that the data is not in the memory, but in the processor's cache on another node? <br><br>  So, let's run our application without parallelizing the initialization into eight threads under VTune and calculate the number of events for the above counters: <br><br><img src="https://habrastorage.org/storage2/0c8/c52/12a/0c8c5212aa7062f6958443e601316337.jpg"><br><br>  We see that the thread running on cpu 0 worked mainly with its node.  Although from time to time the vmlinux module on this core for some reason looked into other people's nodes.  But the stream on cpu 1 did the opposite: only for 0.13% of all requests, the data was found in its own node.  Here I must explain how the kernels are assigned to the nodes.  The kernels 0,2,4,6 belong to the first node, and the kernels 1,3,5,7 - the second one.  You can learn the topology using the numactl utility: <br><br>  numactl --hardware <br>  available: 2 nodes (0-1) <br>  <b>node 0 cpus: 0 2 4 6</b> <br>  node 0 size: 12277 MB <br>  node 0 free: 10853 MB <br>  <b>node 1 cpus: 1 3 5 7</b> <br>  node 1 size: 12287 MB <br>  node 1 free: 11386 MB <br>  node distances: <br>  node 0 1 <br>  0: 10 20 <br>  1:20 20 <br><br>  Please note that logical numbers are listed here, but in reality, the cores 0,2,4,6 belong to one quad-core processor, and the cores 1,3,5,7 - to the other. <br><br>  Now look at the value of the counters for the example with parallel initialization: <br><br><img src="https://habrastorage.org/storage2/6ef/7b6/c75/6ef7b6c7578c5216bbe2281b68cdd6e9.jpg"><br><br>  The picture is almost perfect, we see that all cores work mainly with their nodes.  Calls to other people's nodes make up no more than half a percent of all requests, with the exception of cpu 6. This core sends about 4.5% of all requests to another's node.  Since  contacting someone else's node takes 2 times longer than its own time, then 4.5% of such requests do not significantly degrade performance.  Therefore, we can say that now the application works correctly with memory. <br><br>  Thus, using these counters you can always determine if there is a possibility to speed up the application for the NUMA system.  In practice, I had cases when the correct initialization of data accelerated applications by 2 times, and in some applications I had to parallelize all the cycles, slightly degrading the performance for a conventional SMP system. <br><br>  For those who are interested, where 4.5% come from, I suggest going further.  The Nehalem processor and its descendants have a rich set of counters for analyzing the activity of the memory system.  All of these counters start with the name OFFCORE_RESPONSE.  It may even seem that there are too many of them.  But if you look closely, you will notice that they are all combinations of multiple requests and responses.  Each compound request or response consists of basic requests and responses, which are specified by a bit mask. <br><br>  The following are the bitmask values ​​for compound requests and responses: <br><br><img src="https://habrastorage.org/storage2/49b/930/f3c/49b930f3ce6e58f92a5a249e91fa500c.jpg"><br><br>  This is how the OFFCORE_RESPONSE_0 counter is formed in the Nehalem processor: <br><br><img src="https://habrastorage.org/storage2/2a6/495/48b/2a649548b4b6cf95a7520cc140880958.jpg"><br><br>  Let's analyze, for example, our counter OFFCORE_RESPONSE_0.ANY_REQUEST.REMOTE_DRAM.  It consists of the ANY_REQUEST composite request and the REMOTE_DRAM composite response.  The ANY_REQUEST request is xxFF, which means tracking all events: from reading data “on demand” (bit 0, Demand Data Rd in the table) to prefetchers of instruction cache (bit 6, PF Ifetch) and the rest “trivia” (bit 7 , Othr).  The answer REMOTE_DRAM is 20xx, which means tracking requests for which data was found only in the memory of another node (bit 13 L3_MISS_REMOTE_DRAM).  All information on these counters can be found on intel.com at the Intel 64 and IA-32 Architectures Optimization Reference Manual, section B.2.3.5 Measuring Core Memory Access Latency. <br><br>  In order to understand exactly who sends their requests to a foreign node, ANY_REQUEST should be decomposed into composite requests: DEMAND_DATA_RD, DEMAND_RFO, DEMAND_IFETCH, COREWB, PF_DATA_RD, PF_RFO, PF_IFETCH, OTHER and collect the events for them separately.  Thus, the "culprit" was found: <br><br>  OFFCORE_RESPONSE_0.PREFETCH.REMOTE_DRAM <br>  cpu 0: 6405 <br>  cpu 1: 597190 <br>  cpu 2: 2503 <br>  cpu 3: 229271 <br>  cpu 4: 2035 <br>  cpu 5: 190549 <br>  <b>cpu 6: 19364266</b> <br>  cpu 7: 228027 <br><br>  But why did the prefetcher look at the 6th kernel looking at someone else's node, while the prefetchers of the other kernels worked with their nodes?  The fact is that before running the example with parallel initialization, I additionally installed a hard binding of threads to the cores as follows: <br><br>  <b>export KMP_AFFINITY = granularity = fine, proclist = [0,2,4,6,1,3,5,7], explicit, verbose</b> <b><br></b>  <b>./a.out</b> <br>  OMP: Info # 204: KMP_AFFINITY: decoding x2APIC ids. <br>  OMP: Info # 202: KMP_AFFINITY: Affinity capable, using global cpuid leaf 11 info <br>  OMP: Info # 154: KMP_AFFINITY: Initial OS proc set respected: {0,1,2,3,4,5,6,7} <br>  OMP: Info # 156: KMP_AFFINITY: 8 available OS procs <br>  OMP: Info # 157: KMP_AFFINITY: Uniform topology <br>  OMP: Info # 179: KMP_AFFINITY: 2 packages x 4 cores / pkg x 1 threads / core (8 total cores) <br>  OMP: Info # 206: KMP_AFFINITY: OS proc to physical thread map: <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 0 maps to package 0 core 0 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 4 maps to package 0 core 1 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 2 maps to package 0 core 2 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 6 maps to package 0 core 3 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 1 maps to package 1 core 0 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 5 maps to package 1 core 1 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 3 maps to package 1 core 2 <br>  OMP: Info # 171: KMP_AFFINITY: OS proc 7 maps to package 1 core 3 <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 0 bound to OS proc set {0} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 1 bound to OS proc set {2} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 2 bound to OS proc set {4} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 3 bound to OS proc set {6} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 4 bound to OS proc set {1} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 5 bound to OS proc set {3} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 6 bound to OS proc set {5} <br>  OMP: Info # 147: KMP_AFFINITY: Internal thread 7 bound to OS proc set {7} <br><br>  According to this binding, the first four threads work on the first node, and the second four threads on the second.  This shows that the 6th core is the last core belonging to the first node (0,2,4,6).  Usually, a prefetcher always tries to load memory ahead of time, which is far ahead (or behind, depends on the direction in which the program accesses memory).  In our case, the prefetcher of the sixth core injected the memory that was in front of that with which the thread of Internal thread 3 was working at that moment. This is where the conversion to another node occurred, because the front memory partially belonged to the first kernel of another node (1.3 , 5.7).  And this led to the emergence of 4.5% of calls to someone else's node. <br><br>  <i>Note: the test program was compiled by the Intel compiler with the –no-vec option to get the scalar code instead of the vector one.</i>  <i>This was done in order to obtain "beautiful data" to facilitate the understanding of the theory.</i> <i><br></i> </div><p>Source: <a href="https://habr.com/ru/post/171079/">https://habr.com/ru/post/171079/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../171063/index.html">Microsoft suspected the creators of the terrorist recognition complex of plagiarism</a></li>
+<li><a href="../171069/index.html">Fire Safety in Version Control Systems</a></li>
+<li><a href="../171071/index.html">Sergey Brin: smartphones are asocial</a></li>
+<li><a href="../171073/index.html">Mass client migration between hosting providers: struggling with entropy on an industrial scale</a></li>
+<li><a href="../171077/index.html">Dennis Tito plans to send people to Mars in 2018</a></li>
+<li><a href="../171081/index.html">The method of image formation in the projection of Gauss-Kruger</a></li>
+<li><a href="../171083/index.html">Compliance with standards and policies in vulnerability scanners and SIEM</a></li>
+<li><a href="../171087/index.html">Getting started with Push Notifications in PhoneGap</a></li>
+<li><a href="../171089/index.html">Users in applications: what are the realities?</a></li>
+<li><a href="../171091/index.html">IDC counted the smartphone market in Russia</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

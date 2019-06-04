@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>USB support in KolibriOS: what's inside? Part 2: Basics of working with host controllers</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Before explaining the support code of the host controllers, you need to talk about some of the principles of iron, as well as the data structures used...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>USB support in KolibriOS: what's inside? Part 2: Basics of working with host controllers</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/habr/post_images/882/61a/ae8/88261aae82f0dfcb06d32f7bfd94c4c6.png" align="left"><br>  Before explaining the support code of the host controllers, you need to talk about some of the principles of iron, as well as the data structures used.  As I found out when writing text, one article about the whole level of support for host controllers would have turned out to be too big, so the second part of the cycle - which you are reading now - talks about what you need to know to understand the code, and the description of the actions occurring in the code I'll postpone to the next part. <br><br><h3>  Interrupts and streams </h3><br>  Host controllers notify the software about the events, generating interrupts.  An interrupt can come and tear the processor away from the current task at any time;  this imposes strict requirements on the interrupt handler.  The interrupt handler cannot take any locks - after all, it is quite possible that the interrupted code has just taken possession of the lock and can no longer release it.  The only exception is the <a href="http://ru.wikipedia.org/wiki/Spinlock">spinlock</a> variant, which prohibits interruptions at the time of blocking, but due to the globality of the spinlock effect, it is worthwhile to use it less often for very short code sections.  On uniprocessor configurations, this option degenerates into a <code>cli</code> / <code>sti</code> pair without a spinlock itself, on a multiprocessor inside <code>cli</code> / <code>sti</code> usual spinlock remains.  In addition, the interrupt controller blocks the rest with the same or lower priority during the processing of one interrupt. <br><br>  For these two reasons, in KolibriOS, interrupt handlers from USB host controllers transfer most of the work to the dedicated USB kernel stream, and themselves are limited to saying “thank you, signal received” to the host controller.  The USB stream itself has the highest priority so that the user applications that are conceived do not interfere with the processing.  All functions of the upstream layers that are called from the support level of the host controller work in the context of the USB stream and, as a result, may well use synchronization primitives.  A pleasant side effect is the automatic serialization of calls: neither the handler of the completion of the second transfer from the channel queue, nor the <b>DeviceDisconnected</b> function will be called until the handler completes the first transfer from the channel queue, which is a logical API requirement. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The USB stream also occasionally wakes up to handle delayed events.  An example, which I will talk about in more detail later: after the device connection event, you must wait 100 milliseconds before further processing.  In this case, the thread will wake up when it detects a device connection and schedules the next wake up in 100 milliseconds, no longer associated with waking up due to an interrupt. <br><a name="habracut"></a><br><br><h3>  Data structures </h3><br><img src="https://habrastorage.org/getpro/habr/post_images/150/4e7/f39/1504e7f39b3523f99991d712fe86a0a7.png" alt="Controller-Independent and Structural Components"><br>  For the host controller support level, the following structures are important: the data structure of the controller <code>*_controller</code> , the data structure of the channel <code>*_pipe</code> , the data structure of the <code>*_pipe</code> -isochronous transfer <code>*_gtd</code> .  Each of them consists of two parts: host controller-specific <code>*hci_*</code> and common for all controllers <code>usb_*</code> .  The host controller requires alignment of its structures.  The controller data uses page alignment, i.e. 1000h bytes.  Alignment of other data is different for different controllers. <br><br>  In KolibriOS, both parts of each structure are arranged in memory in series.  The memory for both structures is allocated with one trick taking into account the required alignment.  The first in memory is the part responsible for communicating with the host controller to ensure alignment.  For the addressing of both parts, a single pointer is used, indicating the boundary between the parts;  data on the negative displacements are <code>*hci_*</code> , on non-negative data - <code>usb_*</code> data.  The pointer to <code>usb_controller</code> permanently located in the <code>esi</code> register.  The handle of the channel is a pointer to <code>usb_pipe</code> ;  one of the <code>usb_pipe</code> fields is a pointer to the corresponding <code>usb_controller</code> . <br><br>  A code that allocates memory for structures must know the sizes of both structures and the required alignment.  For <code>*_controller</code> , a page allocator is used, automatically guaranteeing alignment to the page border.  The allocator is called by the code responsible for <code>usb_controller</code> , the size of the structure <code>*hci_controller</code> is taken from <code>usb_hardware_func.DataSize</code> ;  as I mentioned in the overview, <code>usb_hardware_func</code> describes things specific to the host controller and the rest of the code. <br>  For <code>*_pipe</code> and <code>*_gtd</code> , it would be extremely wasteful to allocate a page for each instance, and using a common heap of kernels for small blocks is inconvenient due to alignment requirements.  Therefore, for them, the code uses an allocator of blocks of a fixed size, which, after selecting the page, cuts it into blocks of a given size and gives them one after another.  If the allocated size is multiple, for example, 16 bytes, then all allocated blocks will have an address that is a multiple of 16. Here the allocator needs separate data for each size;  in order not to include them all in the <code>usb_hardware_func</code> structure, the latter contains <code>AllocPipe</code> / <code>FreePipe</code> allocation / release <code>FreePipe</code> for a pair of <code>*_pipe</code> and <code>AllocTD</code> / <code>FreeTD</code> structures for a pair of <code>*_gtd</code> structures. <br><br>  The host controller must know the physical addresses of all structures in order to work with them.  The address of the structure <code>*hci_controller</code> entered during controller initialization.  The addresses of the data structures of non-isochronous transfers are compiled into a <code>*hci_pipe</code> linked list with the physical address of the first element inside <code>*hci_pipe</code> and the physical address of each next element inside <code>*hci_gtd</code> . <br><br><br><img src="https://habrastorage.org/getpro/habr/post_images/9ce/9a8/977/9ce9a89777b094f5ff515d2154116a32.png"><br>  Channels are grouped into several lists.  Within each list there are three links: the physical address of the next channel for hardware, the virtual addresses of the next and previous channels for software.  One list consists of all channels for control transmissions.  The other list consists of all channels for the transmission of data arrays. <br>  The interrupt channel lists are organized in a binary tree as shown in the figure, where circles represent interrupt channel lists, and arrows are the physical addresses of the following elements.  The host controller starts each unit of time (the frame for UHCI and OHCI, the microframe for EHCI) by taking the lower <i>n</i> bits of the frame number (the frame, even if it is EHCI), takes the corresponding element of the address table, which is part of <code>*hci_controller</code> , and starts following links to the next item.  The first list, therefore, will be processed once every 2 <sup><i>n</i></sup> milliseconds.  Next, the pairs of links “stick together”: the following list leads to two links so that the next list receives the attention of the controller twice per full cycle in the address table, once every 2 <sup><i>n-1</i></sup> milliseconds.  At the end is a list, the elements of which are processed every millisecond.  Such an organization of interrupt channels allows you to implement channels with a processing interval, expressed in milliseconds by a power of two.  The USB specification allows the actual polling interval to be less than the requested one. <br><br>  In EHCI, the planning unit is the microframe, which is 8 times smaller than the frame.  However, walks through the channel lists are still guided by the frame number.  Therefore, in each interrupt channel there is a bit mask of 8 bits, in which each bit corresponds to one microframe inside the frame, the zero value of the bit leads to an immediate continuation of the walk through the links.  In some channels of such masks there are even two, not intersecting in single bits, but more on that later. <br><br>  Support for isochronous transfers is under development, so for now I will say only a few words about the hardware.  In OHCI, isochronous transfers are addressed in the same way as the others: there is a bit in <code>ohci_pipe</code> is responsible for the format of the transmission data structures, isochronous and the rest use a different format.  In UHCI and EHCI, the data structures for isochronous channels are not as such, and the structures of isochronous transfers are inserted into the address table along with the structures of the interrupt channels.  In order for the controller to understand whether the address indicates a channel or an isochronous transfer (of which there are actually two different types), two bits of the address are allocated to the type of structure that is located at this address.  As a result, the number <i>n</i> for UHCI and EHCI is 10, but not to support polling intervals more than a second, but so that after processing an isochronous transfer fragment, the software has a second to query the next fragment.  In OHCI, <i>n</i> = 5. <br><br><h3>  Transfers and transactions </h3><br>  Although the USB architecture protocols below transfers are <i>almost</i> uninteresting, there are some things that you still need to know about them when implementing levels below the driver level. <br>  The size of the USB bus is almost unlimited;  That one device did not occupy the bus too for a long time, transfers are divided into <i>transactions</i> .  In one transaction, the next piece of data of limited length is transmitted.  The maximum transaction length is one of the characteristics of the channel.  For one transfer stage (I remind you that control transfers consist of two or three stages, and the rest are from one stage) all transactions, except the last, have a maximum size;  The last transaction transfers the remaining data and may be shorter than the rest. <br><br>  The size of the data that one pair of <code>*_gtd</code> structures can describe is also limited.  If all data does not fit into one <code>*_gtd</code> , the transfer should be divided into several parts.  The partitioning points must be chosen so that, from the device’s point of view, what is happening remains one transfer, that is, the size of all parts except the last must be divided by the maximum transaction size. <br><br>  UHCI is chronologically the first interface created by Intel;  UHCI focuses on the simplicity of the hardware implementation.  As a result, the UHCI controller knows nothing about transfers, and one <code>uhci_gtd</code> structure describes one transaction.  For large transfers, this leads to a large overhead of separate memory for all transactions. <br>  In OHCI and EHCI, the controller is already able to independently break long transfers into transactions, here the restrictions are weaker.  In <code>ohci_gtd</code> there are two fields for two data pages, at best, it turns out 2000h bytes, at worst (if the data starts with the address <code>xxxxxFFFh</code> ) - 1001h bytes = 4 kilobytes + 1 bytes.  Five pages are already placed in <code>ehci_gtd</code> , which in the worst case gives a limit of 4001h bytes.  If there is more data, then the transfer still needs to be split into several fragments. <br><br>  <i>Split transactions</i> appeared in USB2.  The USB2 specification added a new data transfer rate of 480 megabits / s <i>(high-speed, HS)</i> , but still supports two speeds of USB1, 12 megabits / s <i>(full-speed, FS)</i> and 1.5 megabits / s <i>(low-speed, LS )</i> .  On one USB bus at a time, you can only communicate with one device.  In USB1, the bus controlled by a single host controller was unified, and during the transaction to the LS device, it (capable of 12 megabits / s) worked at a speed of 1.5 megabits / s.  In USB2, in the same way, it would be impractical to slow down the HS bus, so there is one common bus, which always runs on high-speed, and several FS / LS buses, to which FS / LS devices are connected.  The hub to which the low-speed device is connected is responsible for communication between the buses;  The specification names the corresponding part of the hub <i>Transaction Translator (TT)</i> . <br><br>  While the hub is slowly communicating with a low-speed device over a low-speed bus, the high-speed bus is free, and for quite a long time.  So that the received time could be used properly, the transaction on the HS-bus is split into two: the initial one ( <i>start-split transaction</i> ) and the final one ( <i>complete-split transaction</i> ). <br><br><br><img src="https://habrastorage.org/getpro/habr/post_images/f83/694/3c6/f836943c60cdafddd6eb57f6e82e11ae.png"><br>  Splitting details are somewhat different for periodic transactions (interrupt transfers and isochronous transfers) and non-periodic (control transfers and data transfers).  The figure above shows a diagram of what is happening inside the hub for periodic split transactions.  The good news is that for non-periodic transactions the additional support actions are minimal - you need to correctly initialize the channel structure and clear the hub buffer with data when the HS bus fails, the controller itself will follow the rest.  For periodic transactions everything is more complicated.  This is where the second bitmask arises in the structure of the interrupt channel, which I mentioned earlier - for the FS / LS device interrupt channels, the first bitmask is responsible for the microframes into which the initial split transaction should be initiated, the second for the microframes into which the end split transaction  From here, the second type of isochronous transactions appears in EHCI - the structures of ordinary and split isochronous transactions differ. <br><br><h3>  EHCI and companions </h3><br><br><img src="https://habrastorage.org/getpro/habr/post_images/2d8/a4d/c8b/2d8a4dc8bc7da1bfeb7bc6a73b771e0a.png"><br>  When designing a host controller for USB2, Intel decided to use, if possible, an existing base in the form of UHCI / OHCI hardware and software support.  There is no Transaction Translator in the root hub of the EHCI;  instead, each port can be connected to a companion controller, it can be UHCI or OHCI.  There may be several companions.  While the EHCI controller is not initialized, all ports are connected to companions;  code that can program UHCI and OHCI will be able to work with all devices and in this configuration, of course, at USB1 speed.  After initializing the EHCI controller, each port can be assigned an owner independently of the others.  A non-owner controller perceives a port in the "no device" state.  Ports on which there really is no device, as well as ports with HS devices are assigned to the EHCI controller;  ports with low-speed devices are assigned to a companion controller. <br><br><br><img src="https://habrastorage.org/getpro/habr/post_images/639/291/ff7/639291ff738a9d504c081443ba4f66b9.png"><br>  Later, Intel decided that it no longer wants to put UHCI next to the EHCI.  In order not to overhaul the specification and not force everyone to rewrite the drivers, Intel did not change the controller, but on the way from the “real” ports to the controller, set up a “virtual” hub with the official name <i>Rate Matching Hub (RMH)</i> , and left the controller only two ports, one of which is always connected to the hub.  The purpose of the second port, unfortunately, I could not figure out.  From a programmatic point of view, a “virtual” hub is no different from the usual one; just when writing your implementation you should keep in mind that to access devices in some configurations you have to implement not only EHCI support, but also support for hubs. <br><br><h3>  All articles of the series </h3><br>  <a href="http://habrahabr.ru/company/kolibrios/blog/181586/">Part 1: general scheme</a> <br>  Part 2: Basics of working with host controllers <br>  <a href="http://habrahabr.ru/company/kolibrios/blog/183284/">Part 3: Host Controller Support Code</a> <br>  <a href="http://habrahabr.ru/company/kolibrios/blog/186276/">Part 4: Channel Support Level</a> <br>  <a href="http://habrahabr.ru/company/kolibrios/blog/200172/">Part 5: logic level</a> <br>  <a href="http://habrahabr.ru/company/kolibrios/blog/203918/">Part 6: hub driver</a> </div><p>Source: <a href="https://habr.com/ru/post/183184/">https://habr.com/ru/post/183184/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../183168/index.html">Cloud computing threats and methods to protect them</a></li>
+<li><a href="../183170/index.html">Pure-FTPD with user storage in the MYSQL database</a></li>
+<li><a href="../183172/index.html">Download Youtube playlist in mp3 format with one bash-script</a></li>
+<li><a href="../183176/index.html">IPv6 practice</a></li>
+<li><a href="../183182/index.html">Yandex on the draft law on arbitrary blocking of sites: continued</a></li>
+<li><a href="../183186/index.html">Free course of 11 lectures on marketing, sales and customer service in a web-studio / agency</a></li>
+<li><a href="../183188/index.html">Patterns of JavaScript modules in Impress for node.js and browsers</a></li>
+<li><a href="../183190/index.html">ICQ, new features - new holes</a></li>
+<li><a href="../183192/index.html">When the race is not over. Oppo find 5</a></li>
+<li><a href="../183200/index.html">Version 1.8.1.0 “Dakar”: update of cases, import of contacts from 1C, acceleration and connection of tables, new in accounting, templates and call center</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

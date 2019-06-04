@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Uninterrupted operation (HA) for OpenStack MySQL + rabbitMQ services</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Posted by: Piotr Siwczak 
+ The last article by Oleg Gelbuch gave an overview of various aspects of uninterrupted operation in OpenStack. All component...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Uninterrupted operation (HA) for OpenStack MySQL + rabbitMQ services</h1><div class="post__text post__text-html js-mediator-article">  Posted by: <i>Piotr Siwczak</i> <br>  <a href="http://www.mirantis.com/blog/intro-to-openstack-in-production/">The last article by</a> Oleg Gelbuch gave an overview of various aspects of uninterrupted operation in OpenStack.  All components of OpenStack are designed to be uninterrupted, but the platform also uses external resources, such as a database and messaging system.  And it is the user's concern to deploy these external resources for uptime. <br><br>  It is very important to remember that all stateful resources in OpenStack use a messaging system and a database, and all other components do not store state information (with the exception of Glance).  The database and messaging system are key to the OpenStack platform.  While the queue management system allows several components to exchange messages, the database stores the cluster status.  Both of these systems participate in each user request, both when displaying a list of virtual objects and when creating a new virtual machine. <br><br>  RabbitMQ is used by default for messaging, and MySQL is the default database.  Reliable solutions are well known in the industry and, in our experience, are sufficient to scale even in large installations.  In theory, any database that supports SQLAlchemy will do, but most users use the default database.  For messaging, it’s hard to find an alternative to RabbitMQ, although some use the <a href="http://www.cloudscaling.com/blog/cloud-computing/simplicity-scales-an-alternative-approach-to-openstack-nova-rpc-messaging/">ZeroMQ</a> driver for OpenStack. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  How OpenStack Works Messages and Database </h4><br><br>  Let's first take a look at how the database and messaging system work together in OpenStack.  First, I will describe the data stream at the most popular user request: creating an instance of a virtual machine. <br><br>  The user sends his request to OpenStack, interacting with the nova-api component.  Nova-api processes the instance creation request by calling the create_instance function from the nova-compute API.  The function does the following: <a name="habracut"></a><br><br>  - Checks the data entered by users: (for example, verifies that the requested VM image, variety, network exists.)  If not specified, it tries to get the default values ​​(for example, variety, default network). <br>  - Checks the request for compliance with user restrictions. <br>  - Thereafter, the test described above gave positive results, creates an entry about the instance in the database (create_db_entry_for_new_instance function). <br>  - Calls the _schedule_run_instance function, which sends the user request to the nova-scheduler component via the message queue using the AMQP protocol.  The request body contains the instance parameters: <br><br>  request_spec = { <br>  'image': jsonutils.to_primitive (image), <br>  'instance_properties': base_options, <br>  'instance_type': instance_type <br>  'num_instances': num_instances, <br>  'block_device_mapping': block_device_mapping, <br>  'security_group': security_group, <br>  } <br><br>  The _schedule_run_instance function is terminated by sending an AMQP message with a call to the scheduler_rpcapi.run_instance function. <br><br>  Now the scheduler enters the job.  It receives a message with a node specification and, based on it and its scheduling policies, tries to find a suitable node to create an instance.  This is an excerpt from the nova-scheduler log files during this operation (here uses <a href="http://docs.openstack.org/developer/nova/devref/filter_scheduler.html">FilterScheduler</a> ): <br><br>  Host filter passes for ubuntu from (pid = 15493) passes_filters /opt/stack/nova/nova/scheduler/host_manager.py:163 <br>  Filtered [host 'ubuntu': free_ram_mb: 1501 free_disk_mb: 5120] from (pid = 15493) _schedule /opt/stack/nova/nova/scheduler/filter_scheduler.py:199 <br><br>  He chooses the node with the lowest cost, using the weighing function (there is only one node, so in this case the weighing operation does not change anything): <br><br>  Weighted WeightedHost host: ubuntu from (pid = 15493) _schedule /opt/stack/nova/nova/scheduler/filter_scheduler.py:209 <br><br>  After the compute node on which the instance is to be launched is defined, the scheduler calls the cast_to_compute_host function, which: <br><br>  - Updates the node record for the instance in the nova database (node ​​= compute node on which the instance will be created) and <br>  - Sends a message using the AMQP protocol to the nova-compute service on this particular node to launch an instance.  The message includes the instance UUID to run and the following action to be taken, that is: run_instance. <br><br>  In response, the nova-compute service on the selected node calls the _run_instance method, which receives the instance parameters from the database (based on the UUID that was transferred) and starts the instance with the appropriate parameters.  While setting up an instance, nova-compute also communicates via the AMQP protocol with the nova-network service to set up network interaction (including assigning an IP address and setting up a DHCP server).  The state of the virtual machine at different stages of the creation process is recorded in the nova database using the _instance_update function. <br><br>  As you can see, AMQP is used for communication between the various components of OpenStack.  In addition, the database is updated several times to display the initial state of the virtual machine (VM).  Thus, if we lose any of the following components, we will significantly disrupt the core functions of the OpenStack cluster: <br><br>  - The loss of RabbitMQ will make it impossible to perform any user tasks.  Also, some resources (such as the deployable VM, for example) will remain in a disassembled state. <br>  - The loss of the database will lead to even more destructive consequences: all instances will work, but they will not be able to determine to whom they belong, to which node they hit, or what their IP address is.  Taking into account how many VMs can be running in your cloud (maybe several thousand), this situation cannot be rectified. <br><br><h4>  HA database solutions </h4><br>  You can prevent a database crash by carefully backing up and replicating data.  In the case of MySQL, there are many solutions with detailed descriptions, including MySQL Cluster (the “official” MySQL clustering suite), MMM (multiple replica management tool with multiple replicas), and XtraDB from Percona. <br><br><h5>  MySQL cluster </h5><br><br>  The MySQL cluster works on the basis of a special storage engine called NDB (Network DataBase).  The engine is a cluster of servers called “data nodes”, which is controlled by a “management node”.  Data is segmented and replicated between data nodes and there are at least two replicas for each data unit.  All replicas are necessarily located on different data nodes.  A MySQL server farm running NDB storage in the server part is running on top of the data nodes.  Each of the processes mysqld has the ability to read / write and allows you to distribute the load to ensure efficiency and continuity. <br><img src="https://habrastorage.org/getpro/habr/post_images/822/6c3/6e1/8226c36e1141e21d015f46783141f205.png" alt="image"><br>  The MySQL cluster guarantees <a href="http://dev.mysql.com/doc/refman/5.0/en/mysql-cluster-nodes-groups.html">synchronous replication</a> , which is a clear disadvantage of the traditional replication mechanism.  It has some limitations compared to other storage engines (a good overview is located at this <a href="http://docs.oracle.com/cd/E17952_01/refman-5.1-en/mysql-cluster-ndb-innodb-engines.html">link</a> ). <br><br><h5>  XtraDB Cluster </h5><br><br>  This solution is an industry recognized Percona company.  XtraDB Cluster consists of a set of nodes, each of which runs an instance of Percona XtraDB with a set of <a href="https://launchpad.net/codership-mysql">add-ons</a> to support replication.  Add-ons contain a set of procedures for exchanging data with the InnoDB storage engine and allow it to create at the lower level a replication system that conforms to the <a href="https://launchpad.net/wsrep">WSREP</a> specification. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/3a7/3c3/d72/3a73c3d7204076a1f768c4765124c01a.png" alt="image"><br><br>  On each cluster node, a version of mysqld is running with additions from Percona.  Also on each of them is a complete copy of the data.  Each node allows you to perform read and write operations.  Like MySQL Cluster, XtraDB Cluster has some limitations described <a href="http://www.percona.com/doc/percona-xtradb-cluster/limitation.html">here</a> . <br><br><h5>  MMM </h5><br><br>  The <a href="http://mysql-mmm.org/">MultiMaster replication Manager replication</a> management tool uses the traditional “master-slave” mechanism for replication.  It works on the basis of a set of MySQL servers with at least two main replicas with a set of subordinate replicas, as well as a dedicated monitoring node.  On top of this node set is a pool of IP addresses that MMM can dynamically move from node to node, depending on their availability.  We have two types of these addresses: <br><br>  - “Recording”: the client can write to the database by connecting to this IP address (in the whole cluster there can be only one address of the recording node). <br><br>  - “Reading”: the client can read in the database by connecting to this IP address (there may be several reading nodes for reading scaling). <br><br>  The monitoring node checks the availability of MySQL servers and includes the transfer of “recording” and “reading” IP addresses in case of server failure.  The set of checks is relatively simple: it includes checking for network availability, checking for the presence of mysqld on a host, the presence of a replication branch, and the size of the replication log.  Reading load distribution between “reading” IP addresses is performed by the user (it can be done using HAProxy or DNS round robin, etc.). <br><br><img src="https://habrastorage.org/getpro/habr/post_images/4d0/458/fe8/4d0458fe809dc679d91b821d6863ee84.png" alt="image"><br><br>  MMM uses traditional asynchronous replication.  This means that there is always a chance that at the time of the failure of the master replicas are lagging behind the master.  One branch of replication is being used now, which is often not enough in a multi-core world with a large volume of transactions, especially when many write requests are executed.  These considerations are eliminated in a future version of MySQL, which implements a <a href="http://dev.mysql.com/tech-resources/articles/mysql-5.6-replication.html">set of functions for optimizing the binary log</a> (binlog) and uninterrupted HA. <br>  As for the OpenStack training materials regarding MySQL continuity, Alessandro Tagliapietra presents an interesting approach (the article only describes OpenStack) to ensure MySQL accessibility through master slave replication, as well as <a href="">Pacemaker with Percona's Pacemaker agent</a> . <br><br><h4>  Ensuring Continuity (HA) for Message Queuing </h4><br><br>  By nature, RabbitMQ data changes very often.  Since the speed and amount of data is important for messaging, all messages are stored in RAM, unless you have defined queues as “stable” - in this case, RabbitMQ writes messages to the disk.  This feature is supported by OpenStack using the rabbit_durable_queues = True parameter in nova.conf.  Although messages are written to disk and thus do not disappear if the RabbitMQ server crashes or restarts, this is not a real solution to ensure continuity, since: <br><br>  - RabbitMQ does not perform fsync on the disk when receiving each message, so if the server crashes, there may be messages in the file system buffer that are not written to the disk.  After a reboot, they will be lost. <br>  - RabbitMQ is still located on only one node. <br><br>  You can <a href="http://www.rabbitmq.com/clustering.html">cluster</a> RabbitMQ and cluster RabbitMQ is called “intermediary”.  Clustering itself is more designed to scale than to ensure continuity.  However, it has a big disadvantage — all virtual nodes, switching elements, users, are replicated, with the exception of the message queues themselves.  In order to correct this deficiency, the <a href="http://www.rabbitmq.com/ha.html">queue mirroring</a> function was implemented.  The creation of a middleman, as well as the mirroring of the queue, must be combined for complete fault tolerance of RabbitMQ. <br><br>  There is also a <a href="http://www.rabbitmq.com/pacemaker.html">solution based on Pacemaker</a> , but it is considered obsolete compared to the one described above. <br><br>  It should be noted that none of the above clustering modes is supported directly in OpenStack;  nevertheless, Mirantis has a rather rich experience in this area (more on this below). <br><br><h4>  Deployment Experience in Mirantis </h4><br><br>  Mirantis installed highly available MySQL with MMM (Multiple Master Replication Management Tool) for several clients.  Although some developers have expressed concern about errors in MMM in online discussions, in our experience we have not encountered significant glitches of this tool.  We consider it a sufficient and acceptable solution.  However, we know that there are people who have a lot of <a href="http://openlife.cc/blogs/2011/may/different-ways-doing-ha-mysql">problems with this solution</a> and therefore we are now considering architectures based on the WSREP synchronous replication approach, since by definition it provides greater data integrity and controllability, as well as simpler customization (for example, , <a href="http://codership.com/products/mysql_galera">Galera Cluster</a> , <a href="http://www.percona.com/doc/percona-xtradb-cluster/intro.html">XtraDB Cluster</a> ). <br>  Below is an illustration of the setup we performed for a large-scale installation of OpenStack: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/df3/4b7/717/df34b77177fd01ed5962ef6e34b142f9.png" alt="image"><br><br>  MMM uninterrupted operation: master-master replication with one master replica in standby mode (only the active replica supports writing, and both wizards support reading, so we have one “write” IP address and two “readers”).  The mmm_monitor module checks the availability of both wizards and shuffles the “read” and “write” IP addresses accordingly. <br><br>  On top of MMM, HAproxy provides performance improvements by distributing the load when reading between both IP addresses.  Of course, for greater scalability, you can add several subordinate nodes with additional IP addresses to read.  While HAproxy distributes the traffic well, it does not provide uninterrupted operation by itself, so another instance of HAproxy is created and a resource is created in Pacemaker for both instances.  Therefore, if one of the HAproxy proxy servers fails, Pacemaker transfers the IP address from the failed “recording server” to the other. <br><br>  Since we only have one “recording” IP address, we do not need to distribute the load and write requests go directly to it. <br><br>  With this approach, we can ensure the scalability of write requests by adding more subordinate nodes to the database farm, as well as load balancing using HAproxy.  In addition, we support high availability using Pacemaker (for detecting HAproxy failures) plus MMM (for detecting failures of the database node). <br><br>  If we compare RabbitMQ HA and OpenStack, Mirantis proposed an <a href="https://review.openstack.org/">add-on</a> for nova with support for mirroring queues.  From the user's point of view, the add-on adds two new options to nova.conf: <br><br>  -rabbit_ha_queues = True / False - to enable queue mirroring. <br>  -rabbit_hosts = ["rabbit_host1", "rabbit_host2"] - so that users can define a clustered pair of RabbitMQ HA nodes. <br><br>  Technically, the following happens: each call to queue.declare inside nova adds x-ha-policy: all and connects the roundrobin cluster logic.  The very configuration of the RabbitMQ cluster is done by the user. <br><br><h4>  additional information </h4><br><br>  I have presented several options for providing high availability for the database and messaging system.  Below is a list of links for additional research on the subject. <br><br>  <a href="http://wiki.openstack.org/HAforNovaDB/">http://wiki.openstack.org/HAforNovaDB/: Continuity for the OpenStack database</a> <a href="http://wiki.openstack.org/HAforNovaDB/"><br></a>  <a href="http://wiki.openstack.org/RabbitmqHA">http://wiki.openstack.org/RabbitmqHA: Uninterrupted Queuing System</a> <a href="http://wiki.openstack.org/RabbitmqHA"><br></a>  <a href="http://www.hastexo.com/blogs/florian/2012/03/21/high-availability-openstack">http://www.hastexo.com/blogs/florian/2012/03/21/high-availability-openstack: An article on various aspects of business continuity in OpenStack.</a> <a href="http://www.hastexo.com/blogs/florian/2012/03/21/high-availability-openstack"><br></a>  <a href="http://docs.openstack.org/developer/nova/devref/rpc.html">http://docs.openstack.org/developer/nova/devref/rpc.html: how messaging works in OpenStack</a> <a href="http://docs.openstack.org/developer/nova/devref/rpc.html"><br></a>  <a href="http://www.laurentluce.com/posts/openstack-nova-internals-of-instance-launching/">http://www.laurentluce.com/posts/openstack-nova-internals-of-instance-launching/: an interesting description of the sequence of steps when starting an instance</a> <a href="http://www.laurentluce.com/posts/openstack-nova-internals-of-instance-launching/"><br></a>  <a href="https://lists.launchpad.net/openstack/pdfGiNwMEtUBJ.pdf">https://lists.launchpad.net/openstack/pdfGiNwMEtUBJ.pdf: nova uninterrupted presentation</a> <a href="https://lists.launchpad.net/openstack/pdfGiNwMEtUBJ.pdf"><br></a>  <a href="http://openlife.cc/blogs/2011/may/different-ways-doing-ha-mysql/">http://openlife.cc/blogs/2011/may/different-ways-doing-ha-mysql/: the title explains everything</a> <a href="http://openlife.cc/blogs/2011/may/different-ways-doing-ha-mysql/"><br></a>  <a href="http://www.linuxjournal.com/article/10718">http://www.linuxjournal.com/article/10718: MySQL Replication article</a> <a href="http://www.linuxjournal.com/article/10718"><br></a>  <a href="http://www.mysqlperformanceblog.com/2010/10/20/mysql-limitations-part-1-single-threaded-replication/">http://www.mysqlperformanceblog.com/2010/10/20/mysql-limitations-part-1-single-threaded-replication/: Replication Performance Issues</a> <a href="http://www.mysqlperformanceblog.com/2010/10/20/mysql-limitations-part-1-single-threaded-replication/"><br></a>  <a href="">https://github.com/jayjanssen/Percona-Pacemaker-Resource-Agents/blob/master/doc/PRM-setup-guide.rst: MySQL Replication Article: Percona Replication Manager Article</a> <a href=""><br></a>  <a href="http://www.rabbitmq.com/clustering.html">http://www.rabbitmq.com/clustering.html: RabbitMQ clustering</a> <a href="http://www.rabbitmq.com/clustering.html"><br></a>  <a href="http://www.rabbitmq.com/ha.html">http://www.rabbitmq.com/ha.html: RabbitMQ Mirrored Queries</a> <a href="http://www.rabbitmq.com/ha.html"><br><br></a>  <a href="http://www.rabbitmq.com/ha.html">Original article</a> <a href="http://www.mirantis.com/blog/ha-platform-components-mysql-rabbitmq/">in English</a> </div><p>Source: <a href="https://habr.com/ru/post/177357/">https://habr.com/ru/post/177357/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../177343/index.html">How we built cellular communications in Cambodia: part 2, about people</a></li>
+<li><a href="../177347/index.html">Keyboard do it yourself</a></li>
+<li><a href="../177349/index.html">Budget solution for backup of the whole office</a></li>
+<li><a href="../177351/index.html">RigidBot, a budget 3D printer not inferior to the leaders</a></li>
+<li><a href="../177355/index.html">The secret visual information sharing scheme</a></li>
+<li><a href="../177359/index.html">The digest of interesting news and materials from the world of ayti for the last week No. 53 (April 13 - 19, 2013)</a></li>
+<li><a href="../177365/index.html">A brainwave gadget that blocks phone calls</a></li>
+<li><a href="../177367/index.html">LIVE: continue to watch lectures on the font</a></li>
+<li><a href="../177371/index.html">Economic simulation as a game for programmers</a></li>
+<li><a href="../177373/index.html">Simple-Science - Simple Experiments (Digest # 21)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

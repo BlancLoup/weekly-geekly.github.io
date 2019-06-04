@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Moving a physical machine in a ProxmoxVE2 cluster (3) from DRBD to a new hardware</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Having a cluster of two servers running on Proxmox with DRBD-integrated storage, it may be necessary to update the node in this cluster without stoppi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Moving a physical machine in a ProxmoxVE2 cluster (3) from DRBD to a new hardware</h1><div class="post__text post__text-html js-mediator-article">  Having a cluster of two servers running on Proxmox with DRBD-integrated storage, it may be necessary to update the node in this cluster without stopping the operation of the machines in it.  The task is not difficult, but some moments are not always remembered in the process. <br>  Therefore, for myself, the actions were recorded for the future copy-paste into the console.  Well, once already written, why not share with people? <br>  PS At the end of a small bonus about the expansion of the block device called DRBD, tuning and useful links. <br><br><a name="habracut"></a><br>  Let's get started <br><br>  1. We migrate all virtual machines to one node which remains alive (PM2). <br>  2. Go to the console on PM2 from the privileged user.  We allow being in the cluster one node: <br><pre><code class="bash hljs">pvecm expected 1</code> </pre> <br>  3. We look nodes in a cluster: <br><pre> <code class="bash hljs">pvecm nodes</code> </pre><br>  4. Remove the moving node from the cluster: <br><pre> <code class="bash hljs">pvecm delnode pm1</code> </pre><br>  5. Stop DRBD synchronization: <br><pre> <code class="bash hljs">drbdadm disconnect all</code> </pre><br>  and check the status of StandAlone team <br><pre> <code class="bash hljs">cat /proc/drbd</code> </pre><br>  6. Delete the old machine entries in / etc / pve / priv / {autorized_keys, know_hosts}, and also in /root/.ssh <br>  7. Install the ProxmoxVE2 (PM1) on the new machine, specifying the dimensions of the sections during installation by writing in the invitation <br>  boot: <i>linux ext4 maxroot = 8 swapsize = 1 maxvz = 10</i> (there is also the key minfree = 200) <br>  8. Go to the console fresh PM1, update: <br><pre> <code class="bash hljs">apt-get update &amp;&amp; apt-get dist-upgrade</code> </pre><br>  9. Add to cluster: <br><pre> <code class="bash hljs">pvecm add 192.168.0.12</code> </pre>  (192.168.0.12 is the IP address of PM2) <br>  10. Install the utilities for working with DRBD: <br><pre> <code class="bash hljs">apt-get install drbd8-utils</code> </pre><br>  but since the old utilities in the Debian repository, we need to update them with similar ones in the kernel: <br><pre> <code class="bash hljs">dpkg -i drbd8-utils_8.3.13-0_amd64.deb</code> </pre><br>  <i>(in Proxmox 3 based on Debian 7, the version is relevant, so skip this point)</i> <br>  11. Create / copy a file with PM2 /etc/drbd.d/r0.res for example with the following content: <br><pre> <code class="bash hljs">resource r0 { protocol C; startup { wfc-timeout 0; degr-wfc-timeout 600; become-primary-on both; } syncer { rate 500M; } net { cram-hmac-alg sha1; shared-secret <span class="hljs-string"><span class="hljs-string">"my-secret"</span></span>; allow-two-primaries; after-sb-0pri discard-zero-changes; after-sb-1pri discard-secondary; after-sb-2pri disconnect; sndbuf-size 0; no-tcp-cork; unplug-watermark 16; max-buffers 8000; max-epoch-size 8000; } on pm1 { device /dev/drbd0; disk /dev/pve/drbd; address 192.168.0.11:7788; meta-disk internal; } on pm2 { device /dev/drbd0; disk /dev/pve/drbd; address 192.168.0.12:7788; meta-disk internal; }</code> </pre><br>  12. Create a logical partition the size of exactly the same as on a working machine: <br><pre> <code class="bash hljs">lvcreate -L450G -n drbd0 pve</code> </pre><br>  and see what we have done the team <br><pre> <code class="bash hljs">lvscan</code> </pre><br>  13. Start drbd: <br><pre> <code class="bash hljs">/etc/init.d/drbd start</code> </pre><br>  14. Create a metadata: <br><pre> <code class="bash hljs">drbdadm create-md r0</code> </pre><br>  15. Just in case, we make secondary <br><pre> <code class="bash hljs">drbdadm secondary r0</code> </pre><br>  and disconnect from all <br><pre> <code class="bash hljs">drbdadm disconnect r0</code> </pre><br>  16. We say that the storage in our machine is not up to date with the command: <br><pre> <code class="bash hljs">drbdadm -- --discard-my-data connect r0</code> </pre><br>  and restart the car <br>  17. In the console of the first server, we look at the synchronization status with the command: <br><pre> <code class="bash hljs">watch cat /proc/drbd</code> </pre><br>  18. In the web interface in the cluster stack we allow our nodes at the repository with drbd 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Bonus: <b>DRBD Volume Expansion</b> <br><br>  This is all true for the external meta disk. <br>  1. We added the amount of disks in Reid.  Expand the partition on which drbd lies: <br><pre> <code class="bash hljs">lvextend -L+250G /dev/pve/drbd0</code> </pre><br>  2. On an empty machine, we will make the repository secondary: <br><pre> <code class="bash hljs">drbdadm secondary r0</code> </pre><br><br>  3. Expand drbd by running a virtual machine on the machine, because  the disk on the second machine temporarily stops: <br><pre> <code class="bash hljs">drbdadm resize r0</code> </pre><br><br>  4. The expansion of the drbd device will increase only this block device, but not pv, in order to increase it: <br><pre> <code class="bash hljs">pvresize /dev/pve/drbd0</code> </pre><br><br>  If the disk is internal, then it will be necessary to temporarily or permanently transfer the metadata to a separate disk.  Without stopping it can be done in two stages. <br>  1. On one of the servers: <br>  a) Stop drbd: <br><pre> <code class="bash hljs">drbdadm down r0</code> </pre><br>  then we change the lines in the config <br>  meta-disk internal <br>  on <br>  meta-disk / dev / ”your device for metadata” [0] <br>  for which ssd disk is highly recommended, but for a while you can create an lvm partition. <br>  b) Then on another machine <br><pre> <code class="bash hljs">drbdadm -- --overwrite-data-of-peer primary r0</code> </pre><br>  and on the current <br><pre> <code class="bash hljs">drbdadm up r0</code> </pre><br>  and watch the synchronization process <br><pre> <code class="bash hljs">watch cat /proc/drbd</code> </pre><br>  After the process is complete, we have metadata on this server transferred to a separate device. <br>  2. Repeat step 1 on another server. <br><br>  If there is no ssd, then after the extension, in order not to spoil the speed of the storage, you will have to do the opposite manipulations.  But it is better to buy a couple of ssd, and maybe four, for stock or connecting them in RAID1 on each of the servers. <br><br>  Before any actions it is quite natural to make backup copies, and a line in the /etc/vzdump.conf file will help to make them faster: <br><pre> <code class="bash hljs">bwlimit: 100000</code> </pre><br>  which will make the speed limit of 100 megabits, by default it costs only 10, which is quite normal for a 100 megabit network, but for gigabits (a) it is too soft. <br><br>  Useful links: <br>  <a href="http://proxmox.com/">Proxmox website</a> <br>  <a href="http://pve.proxmox.com/">Proxmox wiki</a> <br>  <a href="http://forum.proxmox.com/">Proxmox forum</a> <br>  <a href="http://proxmox.com/downloads/category/iso-images-pve">Download image for installation</a> <br><br>  UPD: Congratulations on the release of Proxmox 3.0 based on Debian Wheezy </div><p>Source: <a href="https://habr.com/ru/post/180699/">https://habr.com/ru/post/180699/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../180689/index.html">Data Transmission Technology in the ERA-GLONASS Emergency Response System</a></li>
+<li><a href="../180691/index.html">About prices for the implementation of Corporate portals and EDS based on Sharepoint 2013 Worklite Docs</a></li>
+<li><a href="../180693/index.html">Airborne information systems of aircraft</a></li>
+<li><a href="../180695/index.html">11 reasons to be a manager</a></li>
+<li><a href="../180697/index.html">Why I do not believe in the domestic space - a view from the inside</a></li>
+<li><a href="../180701/index.html">Google Play Developer Console: New Features - New Issues</a></li>
+<li><a href="../180703/index.html">Hibernate duplicate fieldset</a></li>
+<li><a href="../180705/index.html">Automated testing of a web application (MS Unit Testing Framework + Selenium WebDriver C #). Part 3: WebPages - describing pages</a></li>
+<li><a href="../180707/index.html">Russian 3D core zahabreno. Answers to your questions</a></li>
+<li><a href="../180709/index.html">The visual language of DRAGON and its application in the rocket and space industry, medicine and other fields. Video report V. Parondzhanova</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

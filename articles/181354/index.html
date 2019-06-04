@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Scalable networks in Openstack. Part 2: VlanManager</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Posted by: Piotr Siwczak 
+
+ In the first part of the article, I described the main network operation mode in OpenStack, in particular, the FlatManager...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Scalable networks in Openstack. Part 2: VlanManager</h1><div class="post__text post__text-html js-mediator-article">  <i>Posted by: Piotr Siwczak</i> <br><br>  In the <a href="http://habrahabr.ru/company/mirantis_openstack/blog/180585/">first part of the article,</a> I described the main network operation mode in OpenStack, in particular, the FlatManager network manager and its addition, FlatDHCPManager.  In this article I will talk about VlanManager.  While managers working in flat mode are designed for simple and small deployments, VlanManager is suitable for large internal clouds and public clouds.  As the name suggests, VlanManager relies on the use of virtual local area networks (“virtual LANs”).  The purpose of VLANs is to divide the physical network into separate broadcast domains (in such a way that groups of nodes in different virtual networks do not see each other).  VlanManager is trying to fix two major drawbacks of network managers, namely: <a name="habracut"></a><br><br>  -Lack of scalability (managers operating in flat mode rely on a single L2 broadcast domain for all OpenStack installations) <br>  - Lack of user isolation (a single pool of IP addresses that is used by all users) 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In this article, I concentrate on VlanManager, which uses multi-node network mode in OpenStack.  Outside the sandbox, this is safer than single-node mode, since multi-node mode does not suffer from a single failure resulting from running a separate instance of the nova-network service on the entire openstack cluster.  However, it is possible to use VlanManager in single-node mode.  (You can read more about the ratio of “multi-node” and “single-node” mode <a href="http://docs.openstack.org/trunk/openstack-compute/admin/content/existing-ha-networking-options.html">here</a> ). <br><br><h4>  Differences between managers working in the “flat” mode and VlanManager </h4><br>  When working with managers in the flat mode during the network configuration process, the administrator usually performs the following actions: <br>  -Creates <b><i>one</i></b> large network with fixed ip-addresses (usually with a network mask of 16 or less bits), which is shared by all users: <br> <code>nova-manage network create --fixed_range_v4=10.0.0.0/16 --label=public</code> <br> <br>  -Creates users <br>  -After the users create their copies, assigns each a free IP address from the common pool of IP addresses. <br><br>  Typically, in this mode, IP addresses are allocated instances as follows: <br><br>  tenant_1: <br><img src="https://habrastorage.org/getpro/habr/post_images/f22/e94/ac2/f22e94ac2b2836131b7809da95d7b611.png" alt="image"><br>  tenant_2: <br><img src="https://habrastorage.org/getpro/habr/post_images/03b/022/098/03b0220989663bf085738b46a9e02179.png" alt="image"><br><br>  We see that the tenant_1 and tenant_2 instances are in the same IP network, 10.0.0.0. <br><br>  If VlanManager is used, the administrator acts as follows: <br>  -Creates a new user, writes tenantID <br>  -Creates a dedicated fixed ip-network for a new user: <br> <code>nova-manage network create --fixed_range_v4=10.0.1.0/24 --vlan=102 \ <br> --project_id="tenantID"</code> <br>  -After creating an instance of the user will automatically be assigned an IP address from the private pool of IP addresses. <br><br>  Thus, compared to FlatDHCPManager, we additionally define two things for the network: <br>  -Connection network with a specific user (--project_id =).  Thus, no one else can take IP addresses from the network. <br>  - Allocation of a separate virtual network for this network (--vlan = 102). <br><br>  From now on, as soon as the user creates a new virtual machine, it automatically obtains an IP address from the allocated pool.  It is also placed on a dedicated virtual network vlan, which is automatically created and maintained by the OpenStack platform.  Thus, if we have created two different networks for two users, the situation is as follows: <br><br>  tenant_1: <br><img src="https://habrastorage.org/getpro/habr/post_images/217/6d7/d18/2176d7d18e8b7211121ac38a56dfa3ac.png" alt="image"><br>  tenant2: <br><img src="https://habrastorage.org/getpro/habr/post_images/9cd/e69/03d/9cde6903d1870037af01fc126565826b.png" alt="image"><br><br>  It is clear that the instances of users are located in different pools of IP addresses.  But how are virtual networks supported? <br><br><h4>  How VlanManager configures network settings </h4><br>  VlanManager here does three things: <br>  -Creates a dedicated bridge for the user's network on the compute node. <br>  -Creates the vlan interface on top of the eth0 interface of the compute node. <br>  - Starts and configures the dnsmasq process corresponding to the bridge so that the user instance can be loaded from it. <br>  Let's assume that a user called “t1” <b>creates its own instance of t1_vm_1</b> .  It falls on one of the compute nodes.  Here is the network diagram: <br><img src="https://habrastorage.org/getpro/habr/post_images/e0d/418/697/e0d4186972b4cea00ef112c5a4c186b6.png" alt="image"><br>  We see that a dedicated bridge “br102” was created with a vlan interface called “vlan102”.  In addition, the dnsmasq process was created, which listens at 10.0.2.1.  When an instance t1_vm_1 is loaded, it gets its address from the dnsmasq process based on a static lease (for details on how dnsmasq is managed by the OpenStack platform, see the <a href="http://habrahabr.ru/company/mirantis_openstack/blog/180585/">previous article</a> ). <br><br>  Now, let's assume that the user “t1” <b>creates another instance called t1_vm_2</b> , and he accidentally ends up on the same compute node as the previous instance created: <br><img src="https://habrastorage.org/getpro/habr/post_images/5a0/865/8cc/5a08658cc19bbcef622dc9622ba8e445.png" alt="image"><br>  Both instances are connected to the same bridge, since they belong to the same user, and thus they are on the same dedicated network of users.  In addition, they receive their DHCP configuration from a single dnsmasq server. <br><br>  Now, imagine that the user <b>“t2” creates its first instance</b> .  It also falls on a single computing node with the user “t1”.  In addition, a dedicated bridge, the vlan interface, and the dnsmasq process are configured for its network: <br><img src="https://habrastorage.org/getpro/habr/post_images/453/c8f/933/453c8f933b21a771ff1dde4b9a36fe81.png" alt="image"><br>  Thus, it turns out that, depending on the number of users, the situation is quite normal when you have a sufficiently large number of network bridges and dnsmasq processes, and all work on a single computing node. <br><br>  There is nothing strange in this situation - OpenStack will automatically manage all of them.  In contrast to the use of managers in the flat mode, here both instances of users are located on different bridges that are not connected to each other.  This will ensure traffic separation at the L2 level.  In the case of the “t1” user, ARP broadcasts transmitted via br102, and then via vlan102, are not visible on the br103 and vlan103 ports, and vice versa. <br><br><h4>  Support for user networks on multiple computing sites </h4><br>  Above, we talked about how it works on a single computing node.  Most likely you will use multiple compute nodes.  Usually we aim for the largest number of compute nodes.  Then, most likely, the user “t1 ″ will be distributed among several compute nodes.  This means that the dedicated network must also be distributed among several compute nodes.  However, it must meet two requirements: <br>  - Must be provided to communicate instances of t1, which are located on different physical computer nodes <br>  - The t1 network distributed across several computing nodes should be isolated from other user networks <br><br>  Typically, compute nodes are connected to the network with one cable.  We would like several users to share this channel without seeing each other’s traffic. <br><br>  There is a technology that satisfies this requirement - <a href="http://en.wikipedia.org/wiki/IEEE_802.1Q">Vlan tagging</a> (802.1q).  Technically, each Ethernet frame is supplemented with a 12-bit field called VID (Vlan ID), which has the vlan number.  Frames with the same Vlan tag belong to the same L2 translation domain;  thus, devices with traffic tagged with the same Vlan ID may be reported. <br><br>  Therefore, it is clear that it is possible to isolate networks of users by marking them with different Vlan IDs. <br>  <b>How does it work in practice?</b>  Take a look at the diagrams above. <br><br>  Traffic for user “t1” leaves the compute node via the interface “vlan102 ″.  Vlan102 is a virtual interface connected to eth0.  Its sole purpose is to tag frames with the number “102 ″ using the 802.1q protocol. <br><br>  The traffic for the user “t2” leaves the computing node via the interface “vlan103 ″, which is tagged with tag 103. Since the stream has different vlan tags, the traffic“ t1′s ”does not intersect with the traffic“ t2 '. <br><br>  They have no idea about each other, although they both use the same physical interface eth0, and then the ports and trunk of the switch. <br><br>  Then we need to tell the switch that the tagged traffic needs to be sent through its ports.  This is accomplished by putting this switch port in trunk mode (as opposed to the default “access” mode).  In short, a trunk allows the switch to send frames tagged by VLANs;  More information on vlan trunks can be found in <a href="http://www.ciscopress.com/articles/article.asp%3Fp%3D29803%26seqNum%3D3">this article</a> (802.1q).  At this time, the <b>configuration of the switch is performed by the system administrator</b> .  Openstack does not perform this configuration on its own.  Not all switches support vlan trunking.  This must be checked in advance before purchasing a switch. <br><br>  In addition, if you are using <a href="http://devstack.org/">devstack</a> + <a href="https://www.virtualbox.org/">virtualbox</a> to experiment with VlanManager in a virtual environment, make sure that you select “PCNET - Fast III” as an adapter to connect to your VLAN. <br><br>  Having done this, we come to the following communication model: <br><img src="https://habrastorage.org/getpro/habr/post_images/63b/3b0/843/63b3b084348f5dd3b62904f1b595e864.png" alt="image"><br><br>  The thick black line from the compute nodes to the switch is a physical channel (cable).  Vlan traffic with tags 102 and 103 (red and green dotted lines) is carried over the same cable.  Traffic does not mix (two lines never intersect). <br><br>  What does the traffic look like when the user “t1” wants to send a packet from 10.0.2.2 to 10.0.2.5? <br>  -Package runs from 10.0.2.2 to the bridge br102 and up to vlan102, where it is assigned tag 102. <br>  -The traffic goes beyond the switch that processes the vlan tags.  Once it reaches the second compute node, its vlan tag is learned. <br>  -Based on the results of the study, the computational node decides to send it to the vlan102 interface. <br>  -Vlan102 removes the Vlan ID field from the packet so that the packet can reach the instances (instances do not have a tagged interface). <br>  -Then he goes through br102 and reaches the address 10.0.2.5. <br><br>  VlanManager setup <br><br>  To configure the VlanManager network settings in OpenStack, put the following lines in the nova.conf file: <br>  #We point OpenStack to use VlanManager here: <br>  network_manager = nova.network.manager.VlanManager <br><br>  #Interface on which virtual interfaces will be created: <br>  vlan_interface = eth0 <br><br>  #The first tag number for private vlans <br>  # (in this case, vlan numbers lower than 100 can serve our <br>  #internal purposes and will not be consumed by tenants): <br>  vlan_start = 100 <br><br><h4>  Conclusion </h4><br>  In any case, VlanManager is the most sophisticated network interaction model currently offered in OpenStack.  L2 scalability and isolation of traffic of different users is provided. <br>  However, this manager has his limitations.  For example, for each user network, it assigns ip pools (L3 level) to vlan networks (L2 level) (remember? Each user's network is defined by a pair of ip + vlan pool).  Thus, it is not possible to make two different users use the same IP addressing scheme independently in different L2 domains. <br>  In addition, the field length of the vlan tag is only 12 bits, which allows you to create a maximum of 4096 vlan.  This means that you can have no more than 4096 potential users, not so much on the scale of the cloud. <br>  These restrictions will be circumvented by emerging solutions, such as <a href="http://docs.openstack.org/developer/quantum/">Quantum</a> , the new network manager for the OpenStack platform and <a href="http://en.wikipedia.org/wiki/Software_Defined_Networking">software-defined networking</a> . <br><br>  In the next article in this series, I will explain how floating ip addresses work. <br><br>  Original article <a href="http://www.mirantis.com/blog/openstack-networking-vlanmanager/">in English</a> </div><p>Source: <a href="https://habr.com/ru/post/181354/">https://habr.com/ru/post/181354/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../181336/index.html">Arduino: Automatic staircase lighting</a></li>
+<li><a href="../181338/index.html">Adding animation to the ListView</a></li>
+<li><a href="../181342/index.html">Using artificial immune systems to solve symbolic regression</a></li>
+<li><a href="../181344/index.html">A little more about 2D graphics for Android</a></li>
+<li><a href="../181350/index.html">Warner Bros. and NBC Universal demanded the removal of the address of the file hosting Mega from the Google search results</a></li>
+<li><a href="../181356/index.html">Fundamental problems of the economy on Bitcoin</a></li>
+<li><a href="../181362/index.html">Overview of the Philips Shoqbox SB7300 Portable Audio System</a></li>
+<li><a href="../181366/index.html">Runetology (200): Maxim Spiridonov, CEO of the Netology Education Center</a></li>
+<li><a href="../181368/index.html">The secret ingredient is a good architect.</a></li>
+<li><a href="../181372/index.html">You are dangerously incompetent in cryptography</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

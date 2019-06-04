@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Once again about multithreading and Python</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="As it is known, Global Interpreter Lock (GIL) is used in the main Python implementation CPython ( python.org ). This thing allows you to simultaneousl...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Once again about multithreading and Python</h1><div class="post__text post__text-html js-mediator-article">  As it is known, Global Interpreter Lock (GIL) is used in the main Python implementation CPython ( <a href="http://python.org/">python.org</a> ).  This thing allows you to simultaneously run only one Python stream - the rest are obliged to wait for the GIL switch to them. <br><br>  A colleague of <a href="http://habrahabr.ru/users/qualab/" class="user_link">Qualab</a> recently published a <a href="http://habrahabr.ru/post/167261/">lively article</a> on Habré, proposing an innovative approach: create a Python subinterpreter to the operating system stream, and get the opportunity to run all our subinterpreters in parallel.  Those.  GIL, as it were, does not interfere at all. <br><br>  The idea is fresh, but it has one major drawback - it does not work ... <br><a name="habracut"></a><br>  Let me first look at the GIL in more detail, and then proceed to the analysis of the mistakes of the author. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  GIL </h4><br>  I will briefly describe the essential GIL details for consideration in the Python 3.2+ implementation (a more detailed description of the subject can be found <a href="http://asvetlov.blogspot.com/2011/07/gil.html">here</a> ). <br><br>  Version 3.2 is chosen to be specific and reduce the length of presentation.  For 1.x and 2.x, the differences are minor. <br><br><ul><li>  GIL, as the name suggests, is a sync object.  It is designed to block simultaneous access to the internal state of Python from different threads. </li><li>  It can be captured by any stream or remain free (unclotted). </li><li>  Only one thread can capture a GIL at a time. </li><li>  GIL is the only one for the whole process in which Python is executed.  Once again I emphasize: GIL is hidden not in the subinterpreter or anywhere else - it is implemented as a set of static variables common to the whole process code. </li><li>  From the GIL point of view, each thread executing the Python C API calls must have a PyThreadState structure.  GIL points to one of PyThreadState (working) or does not indicate anything (GIL is released, threads run independently and in parallel). </li><li>  After the start of the interpreter, the only operation allowed on the Python C API with no captured GIL is its capture.  Everything else is forbidden (Py_INCREF is also technically safe, Py_DECREF can cause an object to be deleted, which can cause an uncontrolled, unprotected, simultaneous change of the internal state of Python that GIL tries to prevent).  In the DEBUG assembly checks for incorrect operation with GIL more, in RELEASE part is disabled for better performance. </li><li>  Switches GIL on a timer (default 5 ms) or by explicit calling ( <br>  PyThreadState_Swap, PyEval_RestoreThread, PyEval_SaveThread, PyGILState_Ensure, PyGILState_Release, etc.) </li></ul><br><br>  As you can see, it is possible to start simultaneous parallel execution of code, while it is impossible to make calls to the Python C API (this concerns the execution of code written on python, too, of course). <br><br>  At the same time, “no” means (especially in the RELEASE assembly used by all) that this behavior is unstable.  It may not break right away.  It can work fine on this program in general, and with a slight harmless change in the executed Python code, terminate with a segmentation fault and a bunch of side effects. <br><br><h4>  Why sub-interpreters do not help </h4><br>  What does a <a href="http://habrahabr.ru/users/qualab/" class="user_link">Qualab</a> colleague <a href="http://habrahabr.ru/users/qualab/" class="user_link">do</a> (you can find the link to the archive with the code in his article, I duplicated the source code on gist: <a href="https://gist.github.com/4680136">gist.github.com/4680136</a> )? <br><br>  In the main thread, <a href="https://gist.github.com/4680136">GIL is</a> immediately <a href="https://gist.github.com/4680136">released via PyEval_SaveThread ()</a> .  The main thread no longer works with python - it creates several worker threads and waits for them to complete. <br><br>  Workflow <a href="https://gist.github.com/4680136">captures GIL</a> .  The code came out strange, but now it does not matter.  The main thing - GIL clamped in our fist. <br><br>  And immediately the parallel execution of workflows becomes serial.  It was possible not to fence the construction with subinterpreters - the sense of them in our context is exactly zero, as expected. <br><br>  I do not know why the author did not notice this immediately, before the publication of the article.  And then he persisted for a long time, preferring to call black white. <br><br>  Back to the parallel execution is simple - you need to let go of GIL.  But then it will be impossible to work with the Python interpreter. <br><br>  If you still do not care about the ban and call the Python C API without GIL - the program will break, and not necessarily immediately and not the fact that without unpleasant side effects.  If you want to shoot yourself in the foot in a particularly intricate way - this is your chance. <br><br>  I repeat again: GIL is one for the whole process, not for the interpreter-subinterpreter.  The GIL capture means that all threads executing the Python code are suspended. <br><br><h4>  Conclusion </h4><br>  Like or not GIL - it already exists and I strongly recommend to learn how to work with it correctly. <br><br><ol><li>  Either grab the GIL and call the Python C API functions. </li><li>  Or let him go and do what we want, but the Python cannot be touched in this mode. </li><li>  Parallel work is provided by the simultaneous launch of several processes through <a href="http://docs.python.org/2/library/multiprocessing.html">multiprocessing</a> or in some other way.  The details of working with processes are beyond the scope of this article. </li></ol><br><br>  The rules are simple, there are no exceptions and no loopholes. </div><p>Source: <a href="https://habr.com/ru/post/167733/">https://habr.com/ru/post/167733/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../167717/index.html">Watch HD video without wires</a></li>
+<li><a href="../167723/index.html">Properly set up a DLNA server for Samsung TVs</a></li>
+<li><a href="../167725/index.html">Double-edged stick. Do you suffer perfectionism?</a></li>
+<li><a href="../167727/index.html">China is organizing a man-in-the-middle attack against github users</a></li>
+<li><a href="../167731/index.html">The first victims of critical vulnerabilities Rails: RubyGems.org suffered a hacker attack</a></li>
+<li><a href="../167735/index.html">Write reviews without departing from the ticket office!</a></li>
+<li><a href="../167737/index.html">Facebook's net profit fell significantly in 2012</a></li>
+<li><a href="../167739/index.html">Microsoft textbooks Microsoft SkillPipe for students and trainers</a></li>
+<li><a href="../167741/index.html">Cisco chassis architecture overview using the 7600 series</a></li>
+<li><a href="../167743/index.html">Creating games using the Alawar Engine. Part one</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

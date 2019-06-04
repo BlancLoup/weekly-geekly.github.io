@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Setting up a cluster with several regions for cloud storage of objects with OpenStack Swift</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Author: Oleg Gelbukh 
+
+ Last fall, an interesting review of their approach to creating multi-regional clusters of the OpenStack Object Storage (codena...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Setting up a cluster with several regions for cloud storage of objects with OpenStack Swift</h1><div class="post__text post__text-html js-mediator-article">  <i>Author: Oleg Gelbukh</i> <br><br>  Last fall, an interesting <a href="http://swiftstack.com/blog/2012/09/16/globally-distributed-openstack-swift-cluster/">review of</a> their approach to creating multi-regional clusters of the OpenStack Object Storage (codename of the project - Swift) appeared in the SwiftStack team blog.  This approach fits well with the Swift geographically distributed cluster scheme with a reduced number of replicas (3 + 1 instead of 3 + 3, for example), on which we worked together with Webex around the same time.  I would like to briefly describe our approach and dwell on the implementation plan and proposed changes to the Swift code. <br><br><h4>  The current state of OpenStack Swift </h4><br>  I would like to begin with a brief overview of the current Swift algorithms, in order to clarify what needs to be done in order to create a cluster from several geographically separated regions. <a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h5>  Ring </h5><br>  A standard ring (ring or hash ring) of a Swift cluster is a data structure that allows you to divide storage devices into zones.  The ring build script (swift-ring-builder) included in the Essex release ensures that the replicas of objects do not fall into the same zone. <br><br>  The structure of the ring includes the following components: <br>  - <b>Device list</b> : includes all storage devices (disks) known to the ring.  Each element of this list is a dictionary that includes a device identifier, its symbolic name, a zone identifier, the IP address of the data storage node on which the storage device is installed, the network port, weight, and metadata. <br>  - <b>Partition distribution table</b> : a two-dimensional array with the number of rows equal to the number of replicas.  Each cell in the array contains a device identifier (from the device list) on which the replica of the partition corresponding to the column index is located ... <br>  - <b>Partition area</b> number: the number of bits from the MD5 checksum from the path to the object (/ account / container / objec), which determines the partitioning of the entire space of possible MD5 hashes into sections. <br><br>  In the Folsom version, changes were made to the format of the ring file.  These changes significantly improve processing efficiency and override the ring balancing algorithm.  The strict condition, which required the distribution of replicas in different zones, was replaced by a much more flexible algorithm that organizes zones, nodes and devices into layers. <br><br>  The ring balancer attempts to position the replicas as far apart as possible;  preferably in different zones, but if only one zone is available, then in different nodes;  and if only one node is available, then to different devices on the node.  This algorithm, which operates on the principle of “maximum distribution,” potentially supports a geographically distributed cluster.  This can be achieved by adding a region-level diagram to the top.  A region is essentially a group of zones with one location, be it a rack or a data center. <br><br>  In our proposal, the region is defined in the field of the same name (region) in the devs device dictionary. <br><br><h5>  Proxy server </h5><br>  The proxy server provides the Swift API public interface to clients and performs basic operations with objects, containers and accounts, including writing using a PUT request and reading using a GET request. <br>  When servicing PUT requests, the proxy server follows the following algorithm: <br><br>  1. Calculates MD5 checksum of the path to the object in the format / account [/ container [/ object]]. <br><br>  2. Calculates the partition number as the first N bits of the MD5 checksum. <br><br>  3. Selects devices from the partitioning table on which the replicas of the computed partition are stored. <br><br>  4. Selects the IP address and port of the data storage node from the list of devices for all devices found in step # 3. <br><br>  5. Proubet establish a connection to all nodes on the corresponding ports, if it is impossible to connect to at least half of the nodes, rejects the PUT request. <br><br>  6. Tries to load the object (or create an account or container) on all nodes to which the connection has been established;  if at least half of the downloads are canceled, reject the PUT request. <br><br>  7. If data is loaded on N / 2 + 1 nodes (where N is the number of nodes found in step # 4), sends a confirmation of a successful PUT request to the client. <br><br>  When servicing GET requests, the proxy server basically performs the following algorithm: <br><br>  1. Repeats steps 1-4 of the PUT request processing algorithm and determines the list of nodes that store replicas of objects. <br><br>  2. Shuffles the list of nodes using the shuffle function and connects to the first of the received list. <br><br>  3. If the connection cannot be established, proceeds to the next node from the list. <br><br>  4. If the connection is established, it starts transmitting data to the client in response to the request. <br><br><h5>  Replication </h5><br>  Replication in Swift works on sections, but not on separate objects.  The replicator workflow runs periodically, at a configurable interval.  The default interval is 30 seconds. <br><br>  The replicator in general follows the following algorithm: <br><br>  1. Create a task replicator.  That is, scan all devices on the site, scan all found devices and find a list of all sections, and then for each section create a dictionary of replication actions. <br><br>  { <br>  'path': &lt;path_to_partition&gt;, <br>  'nodes': [replica_node1, replica_node2, ...], <br>  'delete': &lt;true | false&gt;, <br>  'partition':} <br><br>  - &lt;path_to_partition&gt; is the path in the file system to the partition (/ srv / node // objects /) <br><br>  - [replica_node1, replica_node2, ...] is a list of nodes that store replicas of partitions.  The list is imported from the ring for objects. <br><br>  - 'delete' is set to “true” if the number of replicas of this section exceeds the configured number of replicas in the cluster. <br><br>  - is the ID number of the section. <br><br>  2. To process each section in accordance with the task for replication.  I.e: <br><br>  - If a section is marked for deletion, the replicator maps each subdirectory of the job ['path'] directory to all the nodes in the job ['nodes'] list, sends a REPLICATE request to each node on which the replica is located, and deletes the job [[path]] directory. <br><br>  - If the section is not marked for deletion, the replicator calculates the checksums of the contents of all the subfolders of the job ['path'] directory (that is, the account / container databases and the object files in the section).  The replicator issues a REPLICATE request to all replicas of the job ['partition'] section and receives in response from the remote subfolders of the checksum correspondence section.  It then compares the checksum matches and uses rsync to send the modified subfolders to the remote nodes.  Replication success is checked by re-sending the REPLICATE request. <br><br>  3. If there is no access to the so-called “main” replica, the replicator uses the get_more_node class of the ring.  This method uses a specific deterministic algorithm to determine a set of “spare” nodes, where you can save a temporary copy of this section ... The algorithm determines the zone to which the “main” device belongs, which failed, and selects the “spare” device from another zone to save the time partition replicas  If another device is also not available, a node is selected from the third zone, and the cycle continues until all zones and all nodes have been enumerated. <br><br><h4>  Proposed Changes to OpenStack Swift </h4><br><h5>  Adding the level of "region" in the ring </h5><br>  We suggest adding a field to the list of devices.  This parameter should use the RingBuilder class when balancing a ring as described below.  The region parameter is an additional level in the system that allows you to group zones.  Thus, all devices that belong to zones constituting one region should belong to this region. <br><br>  In addition, regions can be added to the ring as an additional structure — a dictionary with regions as keys and a list of zones as values, for example: <br><br><table><tbody><tr><td>  Key (region) </td><td>  Value (zone list) </td></tr><tr><td>  Austin </td><td>  1,2,3 </td></tr><tr><td> San jose </td><td>  4,5,6 </td></tr></tbody></table><br><br>  It is important to note that a zone can belong to only one region. <br><br>  In this case, the regions are used similarly to the previous use, but the ring class must include additional code for processing the vocabulary of regional zone assignments and determine which region the particular device belongs to. <br><br>  Assigning a region's default zone should assign all zones to a single default region to reproduce the standard Swift behavior. <br><br>  In the latest release of the Swift project, support for the level of regions in the ring has already been added, which means an important step towards the full implementation of geographically distributed storage facilities based on Swift. <br><br><h5>  Tweaking RingBuilder Balancing Algorithm </h5><br>  The RingBuilder balancing algorithm should recognize the region parameter in the device list.  The algorithm can be configured to distribute replicas in various ways.  Below we propose one of the possible implementations of the distribution algorithm that we have chosen to develop a prototype. <br><br><h5>  Algorithm of alternate distribution </h5><br>  Partition replicas should be placed on devices under the following conditions: <br>  - Replicas should be located on devices belonging to different groups at the highest possible level (standard behavior of the ring balancing algorithm). <br><br>  - For N replicas and M regions (groups of zones), the number of replicas that fall into each region is equal to the whole number of quotients of N / M.  The rest of the replicas is added to one region (which is the main one for this section). <br><br>  - A region cannot contain more replicas than the number of zones in a region. <br><br>  For example, if N = 3 and M = 2, with this algorithm we will have a ring in which one replica enters each region (the whole part of the fraction 3/2 is 1), and the remaining one replica enters one of two regions, selected randomly.  The diagram below represents the distribution of replicas by region in the example above. <br><img src="https://habrastorage.org/getpro/habr/post_images/05e/1aa/4ff/05e1aa4ff6978c8739de860e47eedc88.png" alt="image"><br><br>  Making a direct PUT request from a proxy server to a storage node in a remote region is not so simple: in most cases we may not have access to the internal cluster network from the outside.  Thus, for the initial implementation, we assume that only local replicas are recorded during the execution of a PUT request, and remote regional replicas are created by the replication process. <br><img src="https://habrastorage.org/getpro/habr/post_images/024/35c/6b8/02435c6b83fd20b2273a4f5c113302b0.png" alt="image"><br><br>  By default, the number of replicas is three, and one region.  This case reproduces the standard Swift configuration and ring balancing algorithm. <br><br><h5>  Once again about Get_more_nodes </h5><br>  We propose changes to the Ring class get_more_nodes method to recognize regions when selecting “spare” zones for temporary replicas.  The algorithm must sort the candidates for “spare” so that the zones from the region that contains the lost replica are selected first.  If there is no access to zones in the local region (for example, the network connection between regions is closed), the algorithm returns a node that belongs to a zone from one of the outer regions.  The following two schemes describe the algorithm for the two extreme cases. <br><img src="https://habrastorage.org/getpro/habr/post_images/3e0/e1b/fab/3e0e1bfab209d7ecf647189ce2913895.png" alt="image"><br><br><h5>  Regional proxy server </h5><br><br>  For proper operation, the Swift proxy server in an environment with several geographically distributed regions needs to have information on which region it belongs to.  The proxy server can obtain this information based on network latency analysis when connecting to data storage servers, or directly from the configuration file.  The first approach is implemented in the current version of Swift (1.8.0).  The proxy server sorts data storage nodes based on response time after connecting to each of them, and selects the fastest one for reading.  This approach works well for read requests, but when writing, it is required to work with all the “main” storage servers, and also, possibly, with several “spare” ones.  In this case, the configuration method for determining the local region is better suited. <br><br>  This is quite simply implemented by adding a region parameter to the [DEFAULT] section of the proxy configuration file (proxy-server.conf), for example: <br><br>  [DEFAULT] <br>  ... <br>  region = san-jose <br><br>  This parameter is used by the proxy server for ring read operations, and also, possibly, when selecting nodes to serve GET requests.  Our goal is for the proxy server to connect to the drive nodes from local zones (that is, zones that belong to the same region as the proxy server). <br><br>  In the SwiftStack article, this functionality is called proxy affinity. <br><br>  The proxy server should not read data from a host that belongs to an external region if a local replica is available.  This reduces the load on network connections between regions, and also works when there is no network connection between regions (as a result of a temporary failure or features of the cluster topology). <br><img src="https://habrastorage.org/getpro/habr/post_images/d9c/7ca/808/d9c7ca808c68aec7dcb5f6ad2f84c7a7.png" alt="image"><br><br>  We then replace the shuffle operation of the list of nodes in step # 2 of the GET request processing algorithm (see above) with a procedure that arranges the nodes in such an order that the drives belonging to the local proxy server region are first in the list.  After such sorting, the lists of local regional and external regional nodes are mixed independently, and then the list of external regional nodes is added to the list of local regional nodes.  Alternatively, at this stage, the method described above can be used to select the data storage node by the minimum response time. <br><br><h4>  <i>Swift Replication</i> </h4><br><br>  Replication between geographically distributed data centers in our prototype works for the regions as a whole in the same way as for a cluster with one region.  However, as part of the replication process, a huge number of REPLICATE requests can be sent between clusters over a low-speed WAN connection.  This can lead to a serious decline in the performance of the cluster as a whole. <br><br>  As a simple workaround for this problem, adding a counter to the replicator is used so that partitions are transferred to devices in a remote region for each Nth replication.  More sophisticated solutions may include dedicated replicator gateways in their respective regions, and will be developed as part of our research project. <br><br>  Original article <a href="http://www.mirantis.com/blog/configuring-multi-region-cluster-openstack-swift/">in English</a> </div><p>Source: <a href="https://habr.com/ru/post/176455/">https://habr.com/ru/post/176455/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../176435/index.html">Money and App Store</a></li>
+<li><a href="../176437/index.html">The light of time: to the roots</a></li>
+<li><a href="../176441/index.html">AOptix Stratus turns iPhone into a mobile biometric identification device.</a></li>
+<li><a href="../176443/index.html">Excel 2013 has a spectacular 3D visualization of data on a map.</a></li>
+<li><a href="../176449/index.html">Open data, Rosstat, Prosecutor's Office and all-all-all</a></li>
+<li><a href="../176457/index.html">Twitter Bootstrap 3: Unofficial First Look</a></li>
+<li><a href="../176459/index.html">Two-factor authentication on Citrix NetScaler</a></li>
+<li><a href="../176461/index.html">Probabilistic models: Bayesian networks</a></li>
+<li><a href="../176463/index.html">Solving the problem with the encoding of data from MySQL to Symfony</a></li>
+<li><a href="../176467/index.html">Dynamic Access Control: Reshaping Resource Management</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
