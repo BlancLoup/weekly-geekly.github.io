@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>ConcurrentDictionary as a cache</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Many developers often face a dilemma - to receive data only from the database or to keep the cache for a number of tables. Basically, these are some r...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>ConcurrentDictionary as a cache</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/storage2/611/e1b/a48/611e1ba484769bdf072d8c4f4efa7162.jpg" align="left">  Many developers often face a dilemma - to receive data only from the database or to keep the cache for a number of tables.  Basically, these are some reference books that contain few records and are always needed at hand.  This holivarny question will not be addressed in this article. <br><br>  The same problem arose in front of me when designing a high-loaded transport monitoring system server on .NET.  In the end, it was decided that the caches - to be.  Dictionary caches were stored in wrappers over ConcurrentDictionary.  This option was taken without much research, as it is the standard .NET tool for thread-safe dictionaries.  Now it's time to check the performance of this solution.  About this, in fact, the article.  Also at the end of the article there will be a small study of how the ConcurrentDictionary is arranged. <br><br><a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      <b>Formulation of the problem</b> <br><br>  A thread-safe collection of key-value pairs that can do the following is required: <br><br><ol><li>  An object request by key-identifier is, of course, used most often; </li><li>  Changing, deleting and adding new elements is rare, but it is necessary to ensure thread safety; </li><li>  Work with values ​​- request of all values, search by properties of the value object. </li></ol><br>  Point 3 is not typical for collections of dictionaries and therefore is the main brake on this design.  However, if caching of reference tables is used, such situations are inevitable (for example, it would be trite to display the entire dictionary in the admin panel for editing). <br><br>  Let's try to consider the different systems in which the cache will be used.  They will differ in the frequency of dictionary operations.  We formalize the types of these operations: <br><br><ul><li>  <b>GET</b> - request object by key, </li><li>  <b>ADD</b> - adding a new object by a new key (if such a key already exists, overwrite it), </li><li>  <b>UPDATE</b> - the new value for the existing key (if there is no key, we do nothing) </li><li>  <b>SEARCH</b> - work with an iterator, in this case - search for the first suitable value </li></ul><br><br>  <b>List of test participants</b> <br><br><ol><li>  <a href="http://msdn.microsoft.com/en-us/library/dd287191.aspx">ConcurrentDictionary</a> .  This is a turnkey solution from Microsoft with built-in thread safety.  Implements convenient TryGetValue, TryAdd, TryUpdate, AddOrUpdate, TryDelete methods that allow you to conveniently set a conflict resolution policy.  Features of implementation will be discussed at the end of the article. </li><li>  <a href="http://msdn.microsoft.com/en-us/library/xfhwa508.aspx">Dictionary</a> with blocking via <a href="http://msdn.microsoft.com/en-us/library/System.Threading.Monitor.aspx">Monitor</a> .  The most that there is no solution to the forehead - all non-thread-safe operations are wrapped in a lock construct. </li><li>  <b>Dictionary</b> with blocking through <a href="http://msdn.microsoft.com/en-us/library/system.threading.readerwriterlock.aspx">ReaderWriterLock</a> .  Optimization of the previous solution - operations are divided into read and write operations.  Accordingly, several streams can be read simultaneously, and exclusive access is required for writing. </li><li>  <b>Dictionary</b> with blocking through <a href="http://msdn.microsoft.com/en-us/library/system.threading.readerwriterlockslim.aspx">ReaderWriterLockSlim</a> .  In essence, the same, but using a newer class (recursion control settings added).  In the context of this task, it is unlikely that something different from ReaderWriterLock should be shown. </li><li>  <b>Dictionary</b> with blocking via OneManyResourceLocker from Wintellect's <a href="http://www1.wintellect.com/Resources/Details/76">PowerThreading library</a> is a tricky implementation of Jeff <a href="http://ru.wikipedia.org/wiki/%25D0%25A0%25D0%25B8%25D1%2585%25D1%2582%25D0%25B5%25D1%2580,_%25D0%2594%25D0%25B6%25D0%25B5%25D1%2584%25D1%2584%25D1%2580%25D0%25B8">Richter's</a> ReaderWriterLock.  I’ll clarify that the version from the official site was used, not the NuGet package - the version is different there and I didn’t like it. </li><li>  <a href="http://msdn.microsoft.com/en-us/library/system.collections.hashtable.synchronized.aspx">Hashtable.Synchronized</a> .  Too ready solution from Microsoft - provides a thread-safe indexer.  It is inconvenient to use due to the fact that it is a non-generic collection (boxing, readability is worse), and there are no methods with the Try prefix (it is impossible to establish a policy of simultaneous addition / update). </li></ol><br><br>  <b>Briefly tell you exactly how handlers are implemented.</b> <br><br><ol><li>  <b>GET</b> operation <b>:</b> all participants use the thread safe TryGetValue method from the IDictionary.  For Hashtable, an index with a type cast is used. </li><li>  <b>ADD</b> operation: for ConcurrentDictionary - AddOrUpdate, for Dictionary - write lock and add via indexer, for Hashtable - add via indexer without lock. </li><li>  <b>UPDATE</b> operation: for ConcurrentDictionary — TryGetValue first, then TryUpdate. <br>  This method is interesting in that a parallel update can occur between these two methods (which was what manifested itself during testing).  It is for this case that OldValue is passed to TryUpdate so that in this rare case rewriting fails.  For Dictionary, we check for availability through ContainsKey and, if successful, put a lock on the record and overwrite the value.  There is no convenient TryUpdate for Hashtable, so I didn’t bother checking the key and, as in the case of adding, the value is overwritten through the indexer (for this collection it doesn’t matter - it was still pretty bad). </li><li>  Operation <b>SEARCH</b> : LINOs FirstOrDefault is used for ConcurrentDictionary, for the rest, the read lock and the same FirstOrDefault is used. </li></ol><br><br>  <b>Test stand</b> <br><br>  A console application has been created for testing ( <a href="http://yadi.sk/d/ExAA7H2w0O3Xh">link</a> ). <br><ol><li>  A set of handlers is created that can handle operations of all defined types; </li><li>  A dictionary of N elements is created (10 000 by default); </li><li>  Creates a collection of tasks of different types in the amount of M (10,000 by default); </li><li>  Each processor handles parallel processing of all tasks using the generated dictionary (common for all processors); </li><li>  The experience (points 2-4) is carried out a specified number of times (10 by default) and the resulting time is averaged.  Measurements were made on a machine with a Core 2 Quad 2.66GHz and 8GB of memory. </li></ol><br>  The default values ​​are quite small, however, if you increase them, nothing fundamentally changes. <br><br>  <b>Test results</b> <br><br>  Testing was carried out with different distribution options for the types of operations and the table turned out to be too large, you can see it in its entirety here ( <a href="http://yadi.sk/d/n5ycSsDf0O3Sf">link</a> ).  For clarity, I will give a graph of the test run time in microseconds depending on the percentage of reading by value of the total number of operations (20% of the write operations are fixed, the rest are read by key). <br><br><img src="https://habrastorage.org/storage2/fca/819/392/fca81939226530244c9d1173bbe95eb3.png"><br><br>  <b>findings</b> <br><br>  The performance of all participants falls linearly on the number of reads by value, regardless of the number of write operations. <br><br><ol><li>  <b>ConcurrentDictionary</b> .  Experiments have shown that this tool is best suited for this task.  Reading by value significantly beats the performance, but it still remains faster than the other participants. </li><li>  <b>Dictionary + Monitor</b> .  Significantly slower, expected results. </li><li>  <b>Dictionary + ReaderWriterLock</b> .  Optimization of the previous version, everything is also expected. <br>  It should be noted that the more write operations prevail - the smaller the difference.  From a certain point on, the Monitor becomes even more preferable due to the lower overhead of the blocking process itself. </li><li>  <b>Dictionary + ReaderWriterLockSlim</b> .  For some reason, he managed to lose even a simple monitor.  Either the extended functionality (compared to the previous version) affected the performance, or I do not know how to cook it. </li><li>  <b>Dictionary + OneManyResourceLock</b> .  Richter seems to have squeezed everything out of the read / write lock.  According to test results, this is the fastest use of the Dictionary  But ConcurrentDictionary is still faster. </li><li>  <b>Hashtable</b> .  Expected failure.  Perhaps I used it incorrectly, but I do not think that it was possible to get a result comparable with other participants.  And generally it’s somehow sad to work with non-generic collections. </li></ol><br><br>  <b>Inside the ConcurrentDictionary</b> <br><br>  Let's take a closer look at the winner in more detail, namely: let's look at the sources of ConcurrentDictionary. <br><br>  At creation of this class 2 parameters are set: <b>Capacity</b> and <b>ConcurrencyLevel</b> .  The first ( <b>Capacity</b> ) is customary for collections and sets the number of elements that can be written without expanding the internal collections.  In this case, linked lists are created (m_buckets, therefore we will call them baskets (well, not buckets, yes?)) In the number of Capacity, and then the elements are added relatively evenly to them.  The default value is 31. <br><br>  The second parameter ( <b>ConcurrencyLevel</b> ) determines the number of threads that can simultaneously write to our dictionary.  This is accomplished by creating a collection of objects for blocking by monitors.  Each such blocking object is responsible for approximately the same number of baskets.  The default is Environment.ProcessorCount * 4. <br><br>  Thus, each object in the dictionary is uniquely associated with a basket, where it lies, and the blocking object for writing.  This is done by the following method: <br><br><pre><code class="cs hljs"><span class="hljs-comment"><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">///</span></span></span><span class="hljs-comment"> </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">&lt;summary&gt;</span></span></span><span class="hljs-comment"> </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">///</span></span></span><span class="hljs-comment"> Computes the bucket and lock number for a particular key. </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">///</span></span></span><span class="hljs-comment"> </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">&lt;/summary&gt;</span></span></span><span class="hljs-comment"> private void GetBucketAndLockNo( int hashcode, out int bucketNo, out int lockNo, int bucketCount, int lockCount) { bucketNo = (hashcode &amp; 0x7fffffff) % bucketCount; lockNo = bucketNo % lockCount; Assert(bucketNo &gt;= 0 &amp;&amp; bucketNo </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">&lt; bucketCount); Assert(lockNo &gt;</span></span></span><span class="hljs-comment">= 0 &amp;&amp; lockNo </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">&lt; lockCount); }</span></span></span></span></code> </pre> <br><br>  Curiously, even with ConcurrencyLevel = 1, the ConcurrentDictionary still works faster than a regular lock dictionary.  It is also worth noting that the class is optimized for use through an iterator (as shown by tests).  In particular, when calling the ToArray () method, locking is performed on all baskets, and the iterator is used relatively cheaply. <br><br>  For example: it’s better to use dictionary.Select (x =&gt; x.Value) .ToArray () than dictionary.Values.ToArray (). <br><br>  The article is written by the leading developer of the company. <br>  Thanks for attention! </div><p>Source: <a href="https://habr.com/ru/post/156125/">https://habr.com/ru/post/156125/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../156109/index.html">Presentation of the RUSSWI team</a></li>
+<li><a href="../156111/index.html">Basic cognitive psychotechnics: imagination, concentration, comparison, name</a></li>
+<li><a href="../156113/index.html">Eviterra.com - search and purchase tickets in the iPhone</a></li>
+<li><a href="../156115/index.html">Podcast Appprofessionals - Geolocation Mobile Services: How, Why and Why</a></li>
+<li><a href="../156121/index.html">Pro electronic secret voting</a></li>
+<li><a href="../156129/index.html">Library of "all" knowledge</a></li>
+<li><a href="../156133/index.html">Python random number security</a></li>
+<li><a href="../156141/index.html">Canonical hired creator Faenza to work on new Ubuntu icons.</a></li>
+<li><a href="../156145/index.html">Printing Circles with Thermal Transfer Paper</a></li>
+<li><a href="../156147/index.html">Intel PCI 910 PCI-E SSD Features</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

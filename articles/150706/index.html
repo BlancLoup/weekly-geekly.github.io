@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Comet server on Erlang</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="An article for people just starting out to get acquainted with an erlang: how to write a simple comet server. 
+
+ The ready code is here: github.com/ma...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Comet server on Erlang</h1><div class="post__text post__text-html js-mediator-article">  An article for people just starting out to get acquainted with an erlang: how to write a simple comet server. <br><br>  The ready code is here: <a href="http://github.com/maxlapshin/comet">github.com/maxlapshin/comet</a> <br><br><h2>  Description </h2>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The comet server will be written using cowboy, tinymq, and a piece of toad script. <br><br>  The code is laid out on the githaba with tags.  The main stages are tagged, you can roll back to see what exactly was done at one time or another. <br><br>  The article itself is written in parallel with the code, which is noticeable from the history in the gita. <br><br>  The logic is as follows: by http we post a message to the server, it enters the message queue, from where the client raises it through a long-poll request. <br><br><a name="habracut"></a><br><br>  Erlang here is good in two things: <br>  1) the ability to keep messages in memory <br>  2) the ability to cheaply keep in memory millions (!) Of unanswered requests, i.e.  the client is waiting for a response, the server will respond to it a little later. <br><br><h2>  Sundry stuff to get started </h2><br><br>  At first, we need every kind of routine: rebar, dependencies. <br><br><pre><code class="erlang hljs">mkdir comet cd comet git init wget https://github.com/basho/rebar/wiki/rebar chmod +x rebar</code> </pre> <br><br>  Next we create rebar.config to install the dependencies. <br><br><pre> <code class="erlang hljs">{lib_dirs, [<span class="hljs-string"><span class="hljs-string">"apps"</span></span>, <span class="hljs-string"><span class="hljs-string">"deps"</span></span>]}. {sub_dirs, [ <span class="hljs-string"><span class="hljs-string">"apps/comet"</span></span> ]}. {erl_opts, [ debug_info, warn_format, warn_export_vars, warn_obsolete_guard, warn_bif_clash ]}. {deps, [ {cowboy, <span class="hljs-string"><span class="hljs-string">"0.6.*"</span></span>, {git, <span class="hljs-string"><span class="hljs-string">"git://github.com/extend/cowboy.git"</span></span>, {tag, <span class="hljs-string"><span class="hljs-string">"0.6.1"</span></span>}}}, {tinymq, <span class="hljs-string"><span class="hljs-string">".*"</span></span>, {git, <span class="hljs-string"><span class="hljs-string">"git://github.com/evanmiller/tinymq.git"</span></span>, <span class="hljs-string"><span class="hljs-string">"386813add4"</span></span>}} ]}.</code> </pre><br><br>  <i>During the writing of the article, changes were made to the tinymq API.</i>  <i>It is recommended to lock a particular commit!</i> <br><br>  And pull out the dependencies: <br><pre> <code class="erlang hljs">./rebar get-deps</code> </pre><br><br>  Immediately create and Emakefile.  Many refuse to use emake, and I don’t, and will later show why I do it. <br><br><pre> <code class="erlang hljs">{<span class="hljs-string"><span class="hljs-string">"apps/comet/src/*"</span></span>, [debug_info, {outdir, <span class="hljs-string"><span class="hljs-string">"apps/comet/ebin"</span></span>}, {i, <span class="hljs-string"><span class="hljs-string">"apps/comet/src"</span></span>}]}. {<span class="hljs-string"><span class="hljs-string">"deps/cowboy/src/*"</span></span>, [debug_info, {outdir, <span class="hljs-string"><span class="hljs-string">"deps/cowboy/ebin"</span></span>}, {i, <span class="hljs-string"><span class="hljs-string">"deps/cowboy/src"</span></span>}]}. {<span class="hljs-string"><span class="hljs-string">"deps/tinymq/src/*"</span></span>, [debug_info, {outdir, <span class="hljs-string"><span class="hljs-string">"deps/tinymq/ebin"</span></span>}, {i, <span class="hljs-string"><span class="hljs-string">"deps/tinymq/src"</span></span>}]}.</code> </pre><br><br>  Now it remains to create the backbone for our application and everything will be ok. <br><br><pre> <code class="erlang hljs">mkdir -p apps/comet cd apps/comet ../../rebar create-app appid=comet cd -</code> </pre><br><br>  Add deps and ebin to .gitignore and compile what happened: <br><br><pre> <code class="erlang hljs">./rebar compile</code> </pre><br><br>  The moment is marked with a v1 tag. <br><br><h2>  Launch </h2><br><br>  In terms of how to run the application on the Erlang there is some confusion and vacillation.  In the sense of infrastructure launch. <br><br>  As a rule for development, I make a Makefile with a run rule in which I specify the following: <br><br><pre> <code class="erlang hljs">ERL_LIBS=apps:deps erl +K <span class="hljs-literal"><span class="hljs-literal">true</span></span> -name comet@<span class="hljs-number"><span class="hljs-number">127.0</span></span>.<span class="hljs-number"><span class="hljs-number">0.1</span></span> -boot start_sasl -s comet_app -sasl errlog_type error</code> </pre><br><br>  It is important to understand the following: Erlang does not have a development regime and production.  All this biliberda, with which many frameworks fool their heads, is missing. <br><br>  Now more about options. <br><br>  <code>ERL_LIBS=apps:deps</code> specifies erlanga directories for searching libraries.  A library is a directory in which there is ebin. <br><br>  <code>+K true</code> indicates that epoll / kqueue can be used. <br><br>  <code>-name comet@127.0.0.1</code> - long name with explicit indication of host <br><br>  <code>-boot start_sasl</code> - remember and repeat <br><br>  <code>-s comet_app</code> - run the start / 0 function from the comet_app module (it is not currently available) <br><br>  <code>-sasl errlog_type error</code> allows you to remove a squall from unnecessary messages that everything is fine. <br><br>  Now, in order to start everything up, you need to add the function start / 0 to comet_app.erl: <br><br><pre> <code class="erlang hljs"><span class="hljs-keyword"><span class="hljs-keyword">-export</span></span><span class="hljs-params"><span class="hljs-params">([start/</span><span class="hljs-number"><span class="hljs-params"><span class="hljs-number">0</span></span></span><span class="hljs-params">])</span></span>. start() -&gt; application:start(comet).</code> </pre><br><br>  After that, we compile everything: <br><br><pre> <code class="erlang hljs">&gt; ./rebar compile &gt; make run ERL_LIBS=apps:deps erl +K <span class="hljs-literal"><span class="hljs-literal">true</span></span> -name comet@<span class="hljs-number"><span class="hljs-number">127.0</span></span>.<span class="hljs-number"><span class="hljs-number">0.1</span></span> -boot start_sasl -s comet_app -sasl errlog_type error Erlang R15B (erts-<span class="hljs-number"><span class="hljs-number">5.9</span></span>) [source] [<span class="hljs-number"><span class="hljs-number">64</span></span>-bit] [smp:<span class="hljs-number"><span class="hljs-number">4</span></span>:<span class="hljs-number"><span class="hljs-number">4</span></span>] [async-threads:<span class="hljs-number"><span class="hljs-number">0</span></span>] [hipe] [kernel-poll:<span class="hljs-literal"><span class="hljs-literal">true</span></span>] Eshell V5.<span class="hljs-number"><span class="hljs-number">9</span></span> (abort with ^G) (comet@<span class="hljs-number"><span class="hljs-number">127.0</span></span>.<span class="hljs-number"><span class="hljs-number">0.1</span></span>)<span class="hljs-number"><span class="hljs-number">1</span></span>&gt;</code> </pre><br><br>  Those.  our empty application has started.  Exit Ctrl + c or halt ().  in the console. <br><br>  V2 tag <br><br><h2>  Web server launch </h2><br><br>  With the infrastructure so far finished, let's move on to launching the web server. <br><br>  From the start of our application, we will run a cowboy with several handlers, but for this you must first add another application mimetypes (https://github.com/spawngrid/mimetypes) in order to correctly render static files. <br><br>  Add the line <code>{mimetypes, ".*", {git, "git://github.com/spawngrid/mimetypes.git"}}</code> to rebar.config and pull out: <code>./rebar get-deps</code> <br><br>  We write the <a href="https://github.com/maxlapshin/comet/commit/990056040f81655fd1c3e896289b462ba6f76bf5">necessary code in comet_app.erl</a> , add the minimum code to www / index.html and run. <br>  make run and go to <a href="http://localhost/">localhost</a> : 8080 / <br><br>  Tag v3 <br><br><h2>  We write messages to queue </h2><br><br>  Add jquery, form, and separate sendmessage_handler handler for url / sendmessage <br><br>  We write the module itself clearly according to the cowboy’s instructions. <br><br>  With cowboy, it is important to remember one very, very important thing: all functions from the cowboy API return a response and a new state.  This is done to parse all the data on request. <br>  It is important that you always use the new state, otherwise there is a chance to continue to cool. <br><br>  Now it is important to tell why Emakefile.  There are different approaches to how to reload code in development.  I like only regular <code>make:all([load]).</code> <br><br>  Other options are reloader or sync.  They are all bad because they reload the devil code when, and what the hell.  sync so simply knocks into the crust due to some problems with ssl.  It is for working make: all ([load]).  (this command should be run in the Erlang console) and did Emakefile <br><br>  Next you need to enable the message queue.  We will add it to the supervisor of our application comet_sup. <br><br>  Now you can add directly the logic of the comet: <br><br><pre> <code class="erlang hljs"> {Post, Req2} = cowboy_http_req:body_qs(Req), {&lt;&lt;<span class="hljs-string"><span class="hljs-string">"body"</span></span>&gt;&gt;, Body} = lists:keyfind(&lt;&lt;<span class="hljs-string"><span class="hljs-string">"body"</span></span>&gt;&gt;, <span class="hljs-number"><span class="hljs-number">1</span></span>, Post), tinymq:push(&lt;&lt;<span class="hljs-string"><span class="hljs-string">"default_channel"</span></span>&gt;&gt;, Body),</code> </pre><br><br>  V4 tag <br><br><h2>  We read messages from the queue </h2><br><br>  In a comet, the following situations are possible: <br>  1) came, and there already for us there are messages in the queue <br>  2) came, no messages, waiting for when they appear. <br><br>  In order to understand that we have already seen the messages, you need to use sortable identifiers.  The most reliable in our case is real time.  This is exactly how tinymq works. <br><br>  Add comet_handler, which will use special cowboy chips to implement a comet. <br><br>  Let's take a closer look at what is happening. <br><br>  1) the client comes to / comet, having or not having the last timestamp on hand <br>  2) the handler checks with tinymq: poll if there are newer messages than this timestamp. <br>  3) if there is, it responds with a simple mechanism through handle / 2 <br>  4) if there are no such messages, it subscribes to the delivery of messages through tinymq: pull and hangs in the loop / 3 loop <br>  5) when the right message arrives, it packs it in JSON and sends it along with the new timestamp to the client <br><br>  Mochijson2 module added for json packaging <br><br>  V5 tag <br><br>  It remains only to attach HTML for this. <br><br><h2>  HTML for comet </h2><br><br>  There is a bunch of nuances that all go around the same thing: how not to dump the server with too frequent requests.  Those.  After an emergency disconnection, you need to wait a little.  But we will leave it all for later, at first just subscribe to comets. <br><br>  V6 tag <br><br><h2>  What's next? </h2><br>  So, in rough, the minimal example of a working comet is ready.  In this form, you can not run in production, you need to finish: <br>  1) authorization <br>  2) channel indication <br><br>  After that, the code described here can be rolled out to production.  Yes, erlang is good because as a rule a prototype can be thrown into battle. <br><br>  Also in the next article we will talk about web sockets, launch into production, etc. </div><p>Source: <a href="https://habr.com/ru/post/150706/">https://habr.com/ru/post/150706/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../150701/index.html">Two giants in one program - Nvidia CUDA and MPI</a></li>
+<li><a href="../150702/index.html">What is hidden under the ranking algorithm in the Apple App Store? Habra Quest</a></li>
+<li><a href="../150703/index.html">Philips at IFA 2012</a></li>
+<li><a href="../150704/index.html">The founder of The Pirate Bay was arrested in Cambodia</a></li>
+<li><a href="../150705/index.html">Future in event organization</a></li>
+<li><a href="../150707/index.html">Intel is working on a wireless laptop-smartphone charging</a></li>
+<li><a href="../150708/index.html">MIMB - Multi-installation and multi-boot flash drive</a></li>
+<li><a href="../150709/index.html">Announced hybrid smartphone reader with e-ink</a></li>
+<li><a href="../150712/index.html">How to open a coworking center: a detailed guide</a></li>
+<li><a href="../150713/index.html">How I Fought Contexts</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>AmazonVPC IPsec bypassing standard tools</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction and conditions of the problem 
+ We have an Amazon VPC with multiple subnets. 
+ Inside the VPC is divided into several subnets. 
+ Take two...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>AmazonVPC IPsec bypassing standard tools</h1><div class="post__text post__text-html js-mediator-article"><h4>  Introduction and conditions of the problem </h4><br>  We have an Amazon VPC with multiple subnets. <br>  Inside the VPC is divided into several subnets. <br>  Take two of them. <br>  In the first (10.0.0.0/24 network), we call it net1, routing outwards is performed by the native Amazonian Internet Gateway, which is different for each subnet.  You can bind Elastic IP to instances on this network and they will work. <br>  The second (subnet 10.0.1.0/24), let it be net2 - a completely closed subnet, access from which to external resources is possible only through a separate instance with NAT configured on it (let's call it service).  Direct access to this subnet from the outside, except through any instance from net1, will not work.  The service itself also exists in net1. <br>  Inside the VPC, the instances of both subnets see each other. <br>  There is also an office network, even if it is called net0 (subnet 192.168.5.0/24). <br>  There is a need to provide secure access from the office to the instances in net1 and back.  This can be done in a native way for Amazon - using Virtual Private Gateway and its associated services.  But there is one problem - routing is done through BGP, which is not and is not expected at the border router of the office.  It has only pure IPsec with password authorization.  In this situation, we must act through it. <br>  The following implementation scheme comes to mind: at the service instance, which has access to the Internet and to all instances inside net1, and also has an Elastic IP, deploy an IPSec client, connect to an office router, and set up routing between networks. <br><br><a name="habracut"></a><br><h4>  Instance setup </h4><br>  I did not use the native instance that is supplied by Amazon, I didn’t use it as a gate, it was painfully cut off, so I installed Ubuntu. <br>  In order for the server to perform its main function, it is necessary, in addition to the routing settings in the VPC control panel, to configure NAT on the instance. <br>  In this case - masquerading. <br>  This is done simply: <br> <code>iptables -t nat -A POSTROUTING -o eth0 -s _vpc -j MASQUERADE</code> <br>  Now we need to install the ipsec utilities: <br> <code>sudo aptitude install ipsec-tools</code> <br>  After installation is complete, you can begin to customize. <br> <code>sudo nano /etc/ipsec.conf</code> <br>  For key authorization, the configuration is as follows: <br><pre> <code class="bash hljs">config setup nat_traversal=yes plutodebug=<span class="hljs-string"><span class="hljs-string">"all"</span></span> protostack=netkey conn home left=%defaultroute <span class="hljs-comment"><span class="hljs-comment">#    ,    leftsubnet=%net1_network% leftid=%instance_ip% leftnexthop=%vpc_gateway% right=%dst_ip% rightid=%dst_ip% rightsubnet=%dst_net% authby=secret ike=3des-sha1-modp1024 #       esp=3des-sha1-96 #     pfs=yes forceencaps=yes auto=start</span></span></code> </pre><br>  In the file /etc/ipsec.secret we write: <br><pre> <code class="bash hljs">%instance_ip% %dst_ip%: PSK <span class="hljs-string"><span class="hljs-string">"YOUR_AUTH_KEY"</span></span></code> </pre> <br><br>  Where: <br>  1.% net1_network% - subnet that you announce for access from net0.  In my case, this is 10.0.1.0/24. <br>  2.% instance_ip% - ip insansa service on which you configure all this. <br>  3.% vpc_gateway% is the default router for your VPC.  It is specified as the default route in the service instance routing table. <br>  4.% dst_ip% - ip of the net0 router to which you will connect. <br>  5.% dst_net% - office network announced for net1.  In this case, 192.168.5.0/24. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Encryption algorithms set to taste, as you like. <br><br>  Do not forget to change the NAT settings to the following in order to eliminate the tension on the direction we don’t need: <br> <code>iptables -t nat -A POSTROUTING -o eth0 -s _vpc ! -d %dst_net% -j MASQUERADE</code> <br>  I will omit the setting of the second side, since everything is specific there depending on the piece of iron.  My Asus is done quite simply in a completely visual mode in 2 minutes. <br><br>  Thereafter <br> <code>sudo /etc/init.d/ipsec restart</code> <br>  Everything should start. <br>  If not, by the situation.  A common problem is a mismatch of encryption. <br>  In general, this is all that I wanted to tell. <br>  Successful setting! </div><p>Source: <a href="https://habr.com/ru/post/148434/">https://habr.com/ru/post/148434/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../148427/index.html">Clever adaptation of the width of block elements on pure CSS 2.0</a></li>
+<li><a href="../148428/index.html">Quick search for intact areas on a dying hard drive</a></li>
+<li><a href="../148429/index.html">Moscow - Cassiopeia?</a></li>
+<li><a href="../148430/index.html">Nokia Play 360 °</a></li>
+<li><a href="../148431/index.html">Pyxel Edit: pixelart tileset editor</a></li>
+<li><a href="../148435/index.html">Library files will be named after the abbreviated names of the objects they define.</a></li>
+<li><a href="../148436/index.html">Command Pattern Remote Procedure Call (RPC) in Android</a></li>
+<li><a href="../148437/index.html">How I used gem gon in Groupon</a></li>
+<li><a href="../148438/index.html">Erlang plugin for IntelliJ IDEA version 0.4</a></li>
+<li><a href="../148439/index.html">Is it possible to reduce the cost of implementing an ERP system?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

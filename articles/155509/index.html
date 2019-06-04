@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Timer Architecture in node.js</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I would like to talk about such a wonderful and commonly used tool in node.js as timers, and about their use in the setTimeout, setInterval functions ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Timer Architecture in node.js</h1><div class="post__text post__text-html js-mediator-article">  I would like to talk about such a wonderful and commonly used tool in node.js as timers, and about their use in the setTimeout, setInterval functions and in the net module.  In node.js, the <a href="">timers.js</a> kernel module is responsible for the timers.  setTimeout is just a globally accessible function from this module. <br><a name="habracut"></a><br>  In the source code, you can easily find a comment: <br><blockquote>  Due to the fact that many sockets will have the same timeout, we will not use our own timer (meaning the low-level <a href="">timer from libuv</a> ) for each of them.  This gives too much overhead.  Instead, we will use one such timer per packet of sockets, which have timeout times.  Sockets we will merge into <a href="http://ru.wikipedia.org/wiki/%25D0%25A1%25D0%25B2%25D1%258F%25D0%25B7%25D0%25BD%25D1%258B%25D0%25B9_%25D1%2581%25D0%25BF%25D0%25B8%25D1%2581%25D0%25BE%25D0%25BA">doubly linked lists</a> .  This technique is described in the libuv documentation: <a href="http://pod.tst.eu/">http://pod.tst.eu/http://cvs.schmorp.de/libev/ev.pod#Be_smart_about_timeouts</a> </blockquote><br><br>  I note that different techniques in this documentation describe 4 pieces.  The problem that was solved: every time the socket is active, for example, when new data is received, the timer must be extended. <br>  Techniques are listed in order of increasing complexity and efficiency: <br>  1. Stop, re-initialize and start the timer by activity.  Almost always bad.  There are no pluses. <br>  2. Extend the timer using ev_timer_again.  A very simple solution that will normally work fine. <br>  3. Let the timer work when it was originally planned, then check whether it needs to be extended further and by how much.  More difficult, but in some cases it works more efficiently. <br>  4. Use doubly linked lists for timeouts.  If the timer needs to be extended, it is simply transferred to the end of the doubly linked list.  Even more difficult, but extremely effective. <br>  It is the 4th option implemented in node.js. <br><br><h3>  setTimeout (callback, msecs, [arg], [...]) </h3><br>  What happens if you run the following code? <br><pre><code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> start = <span class="hljs-built_in"><span class="hljs-built_in">Date</span></span>.now(); <span class="hljs-comment"><span class="hljs-comment">//    ,     . var Timeout100 = setTimeout(function() {}, 100); //     10 var Timeout110 = setTimeout(function() {}, 100); var Timeout210 = setTimeout(function() {}, 200);</span></span></code> </pre> <br>  And the following will happen.  In the timers.js module, there is a module variable called lists, which is responsible for storing (almost) all active timers. <br>  Briefly, the internal logic of setTimeout can be represented as follows: <br><pre> <code class="javascript hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">setTimeout</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">callback, msecs</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> list = lists[msecs]; <span class="hljs-comment"><span class="hljs-comment">//      ,   ,     //     msecs. if (!list) { //    process.binding('timer_wrap').Timer ,  libuv' . list = lists[msecs] = new Timer(); //    ,   . list.ontimeout = ...; //  . list.start(msecs, 0); //  ,       . L.init(list); } //   ,       callback  msecs . var item = Timeout; item._idleStart = Date.now(); //    item._idleTimeout = msecs; //   item._onTimeout = callback; //    //      . // ,         //   item',  ..     ,    //      . L.append(list, item); return item; }</span></span></code> </pre>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Thus, the timer variable will contain 2 keys: <br><img src="https://habrastorage.org/storage2/3d6/3b6/c3e/3d63b6c3e18daabf02d3a978628c8b9c.png"><br><br>  At the moment of start + 100ms libuv will knock on Timer100, say, act.  The response to this will be the execution of that handler, which I promised to talk about later. <br><br>  What will this handler do?  Its logic is also not very complicated: <br><pre> <code class="javascript hljs"><span class="hljs-comment"><span class="hljs-comment">//      ,     ,    function callback(Timer list, msecs) { var now = Date.now(); var first; //       ,    ,    , //    ,   .   . while(first = L.peek()) { // ,     var wait = item._idleStart + item._idleTimeout - now; //     if (wait &lt;= 0) { //     L.remove(first); //  callback first.onTimeout(); } else { //    wait  list.start(wait, 0); // , ..      -   //       return; } } //     , ,   . //  . list.stop(); //   delete lists[msecs]; }</span></span></code> </pre><br>  This callback in our case will be called 3 times: <br><ol><li>  Moment start + 100: <br><ol><li>  perform Timeout1 </li><li>  we see that there is 10ms to Timeout2, we start a timer for this time </li><li>  we leave. </li></ol></li><li>  Moment start + 110: <br><ol><li>  perform Timeout2; </li><li>  see that the sheet is empty, delete Timer100 and key lists [100]. </li><li>  we leave. </li></ol></li><li>  Moment start + 210: <br><ol><li>  perform Timeout3; </li><li>  we see that the sheet is empty, delete Timer200 and key lists [200]. </li><li>  we leave. </li></ol></li></ol><br><br><h3>  clearTimeout (timeout) </h3><br>  Now let's see how clearTimeout works.  This function takes as argument the same Timeout object that was returned from setTimeout. <br><pre> <code class="javascript hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">clearTimeout</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">item</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-comment"><span class="hljs-comment">//    . L.remove(item); var msecs = item._idleTimeout; //   var list = lists[msecs]; //   ,  if (list &amp;&amp; L.isEmpty(list)) { list.close(); delete lists[msecs]; } }</span></span></code> </pre><br>  Thus, if the corresponding Timer continues to work, it will no longer detect the deleted item in the list, and, accordingly, will not execute it.  Having started clearTimeout (Timeout2) right after its initialization, we will transform: <br><img src="http://habrastorage.org/storage2/e16/770/df8/e16770df8a860242f42b6bd8599e1aec.png"><br>  at <br><img src="http://habrastorage.org/storage2/429/299/0ff/4292990ff03c45bbb40d493ec9804625.png"><br><br><h3>  setInterval (callback, msecs, [arg], [...]) and clearInterval (interval) </h3><br>  setInterval and clearInterval, unlike setTimeout, do not use any intricacies.  At each interval, a new timer is created in libuv'sh and charged in repeat mode every msecs milliseconds.  With clearinterval, it stops and deletes.  Everything. <br><br><h3>  Sockets (net module) </h3><br>  Sockets do not use the functions listed above. <br>  Sockets are characterized by frequent timeout extensions, so they do not create / delete timers for each packet, but add themselves to the lists structure.  To do this, they use the undocumented functions of the timers module (but I did not tell you this!). <br>  Thus, in reality, the structure of lists may look like this: <br><img src="http://habrastorage.org/storage2/34b/fd2/b21/34bfd2b217ccbfd1a10791c9448a50af.png"><br>  Sockets in the prototype already have a _onTimeout method, so no closures are needed for them. <br>  They are simply extended with the _idleStart, _idleTimeout (time keeping properties), _idleNext and _idlePrev properties (properties for a doubly linked list). <br>  When data is received and sent, the socket is simply deleted from the corresponding doubly linked list ... <br><img src="http://habrastorage.org/storage2/53c/315/7b6/53c3157b6a86fc7700b67f6db0f2aee9.png"><br>  ... and immediately added to its end: <br><img src="http://habrastorage.org/storage2/041/2af/9c2/0412af9c24a2288ac608b8c6d5762956.png"><br><br><h3>  Side effects of writing this article: </h3><br><ol><li>  A <a href="https://github.com/joyent/node/pull/4193">pull request was</a> sent to node.js, which speeds up setTimeout () by 5%, in rare cases by 50%. </li><li>  Sent a <a href="https://github.com/joyent/node/issues/4194">pull request</a> to node.js, correcting the false starts of the timers. </li><li>  I found out that on my machines running Ubuntu 12.04 (on the second - 11.04) 32 bit + PAE the Date.now () function in node.js and in browsers is 15 times slower than it should.  I think the point is in the underlying gettimeofday (2) call.  Upgrading to 64-bit Ubuntu 12.10 solves this problem. </li></ol><br><br><h3>  Findings: </h3><br><ol><li>  Read the source codes of the tools you use - you will learn a lot of new things. </li><li>  Node.js developers adhere to best practices for working with timers, however, there are some omissions in implementation. </li><li>  The raking of the queue of arrived timeouts occurs in a loop and synchronously. </li><li>  It is useful to use the same timeout values ​​in order not to produce internal timers. </li></ol></div><p>Source: <a href="https://habr.com/ru/post/155509/">https://habr.com/ru/post/155509/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../155497/index.html">Virus Formula or fortune?</a></li>
+<li><a href="../155501/index.html">FBI staff passwords are freely available Hackers Army</a></li>
+<li><a href="../155503/index.html">Failures of a three-year crowdsourcing project or why I almost stopped believing in myself and people</a></li>
+<li><a href="../155505/index.html">Java application debugging with JDI</a></li>
+<li><a href="../155507/index.html">Demonstration of program crashes in the absence of memory barriers</a></li>
+<li><a href="../155511/index.html">My bike for snippets</a></li>
+<li><a href="../155515/index.html">Multimethods in C ++. Library implementation. Introduction to MML</a></li>
+<li><a href="../155517/index.html">Linux memory access barriers</a></li>
+<li><a href="../155519/index.html">The next era of NASA's Remote Space Network (DSN) lies in the field of X-rays and lasers.</a></li>
+<li><a href="../155523/index.html">The continuation of a series of crash tests waterproof phones Sonim, Samsung and Sony. Part 2</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

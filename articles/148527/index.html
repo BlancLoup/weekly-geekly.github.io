@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Fighting race condition in PHP</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Errors like “Race condition” are rarely seen on lightly loaded projects, and as the load increases, the situation slowly but surely changes. And once ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Fighting race condition in PHP</h1><div class="post__text post__text-html js-mediator-article">  Errors like “Race condition” are rarely seen on lightly loaded projects, and as the load increases, the situation slowly but surely changes.  And once normal data caching in a file, for example, like this: <br><br><pre><code class="hljs bash"><span class="hljs-keyword"><span class="hljs-keyword">function</span></span> getFlagFromFile(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (file_exists(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>)) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!<span class="hljs-variable"><span class="hljs-variable">$this</span></span>-&gt;validate()) { //     ? unlink(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>); <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> file_get_contents(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>); } } <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; }</code> </pre> <br>  gives an error in the line unlink (): the file $ filename does not exist! <br><a name="habracut"></a><br>  The most interesting and incomprehensible is that the error occurs at random times, and when you try to debag - it does not play! <br><br>  Race condition error occurs when the system is in such a state in which the same code is executed simultaneously (several parallel threads).  In the above example, if the code is executed in several threads, file_exist ($ filename) and! $ This-&gt; validate () checks can be performed with a positive result on both threads simultaneously, but unlink ($ filename) can be done by one thread earlier than another - and then the second thread will cause an error. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Let's look at two ways to deal with this error within a single server that do not use the flock () file lock (with multiple requests from a critical section of code, unnecessary calls to the file system are not the best way out). <br><br>  It is possible to interfere with a race condition using APC and semaphores, and there and there there are corresponding atomic operations.  But let's do it in order. <br><br><h4>  APC solution </h4><br>  The alternative cache in PHP (Alternative PHP Cache - APC) caches the bytecode of the executed scripts, thereby preventing the expenditure of resources for analyzing the source code, they know this if not all, almost everything.  But not everyone knows that APC has its own key-value storage, a feature of which is the preservation of values ​​between requests.  The value specified once will be stored in APC until the web server is restarted, or until the value is forced to be deleted (or the value will expire if it has been set). <br><br>  For an exclusive lock, use the apc_add function (key, value, lifetime) —it will return false if the value has already been assigned before (apc_store () exists to re-assign the value to the key).  The full condition for using the solution is (changes in getFlagFromFile () are marked with comments ***): <br><br><pre> <code class="hljs bash"><span class="hljs-keyword"><span class="hljs-keyword">function</span></span> <span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">canUseApc</span></span></span></span>() { <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> extension_loaded(<span class="hljs-string"><span class="hljs-string">'apc'</span></span>) &amp;&amp; ini_get(<span class="hljs-string"><span class="hljs-string">'apc.enabled'</span></span>) &amp;&amp; php_sapi_name() !== <span class="hljs-string"><span class="hljs-string">'cli'</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">function</span></span> getFlagFromFile(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (file_exists(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>)) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!<span class="hljs-variable"><span class="hljs-variable">$this</span></span>-&gt;validate()) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (<span class="hljs-variable"><span class="hljs-variable">$this</span></span>-&gt;canUseApc() &amp;&amp; apc_add(<span class="hljs-string"><span class="hljs-string">'some_key'</span></span>, 1)) { //*** unlink(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>); apc_delete(<span class="hljs-string"><span class="hljs-string">'some_key'</span></span>); //*** } <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> file_get_contents(<span class="hljs-variable"><span class="hljs-variable">$filename</span></span>); } } <span class="hljs-built_in"><span class="hljs-built_in">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; }</code> </pre><br><br>  File deletion here will be performed only if the thread was able to set a value in APC, which means there will be no parallel deletions, as well as errors.  But if you forget to delete the value from APC using apc_delete (), then only restarting the web server will help to delete it. <br><br>  This is the easiest solution to implement.  However, the main disadvantage of the solution is that APC does not work for CLI scripts.  For them, the solution is suitable for semaphores. <br><br><h4>  Semaphore Solution </h4><br>  The semaphore is easier to imagine as a variable (flag) that can be increased or decreased.  When a semaphore is captured by one process, its value is reduced by one, and when released, it is increased by one.  However, if the current value of the semaphore is zero, the process will not succeed in capturing it and it will wait for the semaphore to be released. <br><br>  To obtain the semaphore resource, the sem_get function is used (integer identifier, semaphore value = 1).  By function, you can get a semaphore with a value different from one, and then several threads can capture the semaphore.  Actually, the sem_acquire function (semaphore resource) is used for the capture, which returns true if the capture was successful, and false otherwise. <br><br>  Our example using semaphores will look like this: <br><br><pre> <code class="hljs ruby">function getFlagFromFile($filename) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (file_exists($filename)) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!$this-&gt;validate()) { $sem = sem_get(<span class="hljs-number"><span class="hljs-number">1</span></span>); <span class="hljs-regexp"><span class="hljs-regexp">//</span></span>*** <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (sem_acquire($sem) &amp;&amp; file_exists($filename)) { <span class="hljs-regexp"><span class="hljs-regexp">//</span></span>*** unlink($filename); } sem_remove($sem); <span class="hljs-regexp"><span class="hljs-regexp">//</span></span>*** <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> file_get_contents($filename); } } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; }</code> </pre><br><br>  <b>UPD: FrenzyKryger correctly noted that sem_remove ($ sem) should be out of condition</b> <br><br>  The attentive reader will notice that we have added a re-check for the existence of the file.  When the first thread captures the semaphore, deletes the file and releases the semaphore, the second thread can continue execution and it should no longer delete the file that is not there, which is why we add the check again. <br><br>  Here, the sem_remove function (semaphore resource) plays an important role, which releases a busy semaphore.  If the semaphore is not released, the parallel thread will remain in the idle state until the end of the current one. <br><br>  This is the disadvantage of this decision: the situation in which a parallel flow can wait is not always acceptable.  Often, the server must respond as quickly as possible, rather than waiting for exclusive access, even though it was not possible to perform the required action.  Plus, in comparison with the previous solution, semaphores work in cli-scripts. <br><br><h4>  Let's sum up </h4><br>  Each of the considered methods has its own minuses and advantages.  It is most convenient to combine both solutions into one class, hiding the immediate implementation.  Then we get a good and simple tool to prevent the race condition: <br><br><pre> <code class="hljs ruby">function getFlagFromFile($filename) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (file_exists($filename)) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!$this-&gt;validate()) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ($race = RaceCondition::prevent(<span class="hljs-string"><span class="hljs-string">'FLAG_'</span></span>.$filename)) { <span class="hljs-regexp"><span class="hljs-regexp">//</span></span>*** unlink($filename); $race-&gt;release(); <span class="hljs-regexp"><span class="hljs-regexp">//</span></span>*** } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> file_get_contents($filename); } } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>; }</code> </pre><br><br>  I do not post a complete solution, leaving it as a homework =) And simple googling will quickly give more detailed answers about semaphores, streams and APC. <br><br>  Comments and edits are welcome in PM! </div><p>Source: <a href="https://habr.com/ru/post/148527/">https://habr.com/ru/post/148527/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../148520/index.html">Humanities programmer</a></li>
+<li><a href="../148521/index.html">Dark color scheme for IntelliJ IDEA: continuation and news</a></li>
+<li><a href="../148522/index.html">Steve Jobs as Rorschach test</a></li>
+<li><a href="../148524/index.html">Gtalk fell</a></li>
+<li><a href="../148525/index.html">Ruby NoName Podcast S04E14</a></li>
+<li><a href="../148529/index.html">To help those who want to start developing applications for iOS</a></li>
+<li><a href="../148530/index.html">Alternative SQL managers for Caché DBMS</a></li>
+<li><a href="../148531/index.html">Another algorithm for calculating Fibonacci numbers</a></li>
+<li><a href="../148532/index.html">Another calculation of the load on the department</a></li>
+<li><a href="../148533/index.html">ASP.NET MVC: customization of client validation mapping using jQuery.Validate.Hooks + Tipsy</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

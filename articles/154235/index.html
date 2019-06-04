@@ -1,0 +1,193 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>How to measure disk performance</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="abstract : the difference between current performance and theoretical performance; latency and IOPS, the concept of disk load independence; test prepa...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>How to measure disk performance</h1><div class="post__text post__text-html js-mediator-article">  <u>abstract</u> : the difference between current performance and theoretical performance;  latency and IOPS, the concept of disk load independence;  test preparation;  typical test parameters;  practical copypaste howto. <br><br>  Warning: many letters, long to read. <br><br><h1>  Lyrics </h1><br><img src="https://habrastorage.org/getpro/habr/post_images/0fb/64b/b01/0fb64bb01739566ffa27414287073bd7.png"><br>  A very common problem is trying to understand “how fast is the server?” Among all the tests, the most miserable are attempts to evaluate the performance of the disk subsystem.  Here are the horrors that I've seen in my life: <br><ul><li>  a scientific publication in which cluster FS speed was evaluated using dd (and the included file cache, that is, without the direct option) </li><li>  using bonnie ++ </li><li>  use iozone </li><li>  using cp pack with runtime measurement </li><li>  using iometer with dynamo on 64-bit systems </li></ul>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      These are all completely erroneous methods.  Then I will analyze the more subtle measurement errors, but with respect to these tests I can only say one thing - throw it out and not use it. <br><br><a name="habracut"></a><br>  bonnie ++ and iozone measure file system speed.  Which depends on the cache, the kernel reverie, the location of the FS on the disk, etc.  Indirectly, we can say that if iozone got good results, then this is either a good cache, a stupid set of parameters, or a really fast disk (guess which option you got).  bonnie ++ generally focuses on file open / close operations.  those.  disk performance, it is not particularly tested. <br><br>  dd without the direct option shows only the cache speed - no more.  In some configurations, you can get a linear speed without a cache higher than with a cache.  In some you will receive hundreds of megabytes per second, with linear performance in units of megabytes. <br><br>  With the direct option (iflag = direct for reading, oflag = direct for writing), dd checks only the linear velocity.  Which is absolutely not equal to the maximum speed (if we are talking about a raid on many disks, then a raid in several threads can give more speed than in one), not a real performance. <br><br>  IOmeter is best of all, but it has problems when working in linux.  The 64-bit version incorrectly calculates the type of load and shows understated results (for those who do not believe it, run it on ramdisk). <br><br>  Spoiler: the correct utility for linux - fio.  But it requires a very thoughtful preparation of the test and even more thoughtful analysis of the results.  Everything below is just the preparation of the theory and practical comments on working with fio. <br><br><h1>  Formulation of the problem </h1><br>  <em>(current VS maximum performance)</em> <br>  Now there will be even more boring letters.  If someone is interested in the number of parrots on his favorite SSD's, laptop screw, etc.  - see recipes at the end of the article. <br><br>  All modern media, except ramdisks, are extremely negative about random write operations.  For HDD there is no difference writing or reading, it is important that the heads drive on the disk.  For SSD, however, a random read operation is nonsense, but writing in a small block leads to copy-on-write.  The minimum recording size is 1-2 MB, write 4kb.  You need to read 2Mb, replace 4kb in them and write back.  As a result, for example, 400 requests per second are written to the SSD for recording 4kb, which turn into 800 Mb / s reading (!!!!) and write them back.  (For ramdisk, this problem could be the same, but the intrigue is that the size of the “minimum block” for DDR is about 128 bytes, and the blocks in the tests are usually 4kb, so the granularity of the DDR in the performance tests of the disk memory is not important) . <br><br>  This post is not about the specifics of different carriers, so we return to the general problem. <br><br>  We can not measure the record in MB / s.  What is important is how many head movements were, and how many random blocks we disturbed on the SSD.  Those.  the count goes to the number of IO operation, and the IO / s value is called <b>IOPS</b> .  Thus, when we measure random loads, we are talking about IOPS (sometimes wIOPS, rIOPS, write and read respectively).  In large systems, kIOPS is used, (attention, always and everywhere, no 1024) 1kIOPS = 1000 IOPS. <br><br>  And here many fall into the trap of the first kind.  They want to know "how many IOPS'ov" gives the disk.  Or a shelf of disks.  Or 200 server cabinets, full of disks under the most covers. <br><br>  Here it is important to distinguish the number of operations performed (it was recorded that from 12:00:15 to 12:00:16 245790 disk operations were performed - that is, the load was 245kIOPS) and how much the system can perform the maximum operations. <br><br>  The number of operations performed is always known and easy to measure.  But when we talk about disk operation, we talk about it in the future tense.  “How many operations can the system perform?” - “What operations?”.  Different operations give different load on the storage system.  For example, if someone writes random blocks of 1Mb each, he will get a lot less iops than if he reads sequentially in blocks of 4kb each. <br><br>  And if, in the case of the incoming load, we are talking about how many requests “which came, such were served”, then in the case of planning, we want to know what kind of iops will be. <br><br>  The drama is that no one knows exactly which requests will come.  Little ones?  Big?  Contract?  In discord?  Will they be read from the cache or will you have to go to the slowest place and pick out baitics from different halves of the disk? <br><br>  I will not whip up the drama further, I will say that there is a simple answer: <br><ul><li>  Disk test (storage / array) on best case (cache hit, sequential operations) </li><li>  Test drive for worst case.  Most often, such tests are planned with knowledge of the disk device.  “He has a 64MB cache?  And if I make the size of the testing area at 2GB? ”.  Does the hard disk read faster from the outside of the disk?  And if I place the test area on the inside (closest to the spindle) area, so much so that the path traveled by the heads was more like that?  Does he have a read ahead prediction?  And if I read in the reverse order?  Etc. </li></ul><br><br>  As a result, we get numbers, each one is wrong.  For example: 15kIOPS and 150 IOPS. <br><br>  What will be the actual system performance?  This is determined only by how close the load is to the good and bad end.  (Ie the banal "life will show"). <br><br>  Most often focus on the following indicators: <ol><li>  What is the best case after all the best.  Because it is possible to optimize to the point that the best case from the worst will be slightly different.  This is bad (well, or we have such awesome worst). </li><li>  At worst.  Having it we can say that the storage system will run faster than the resulting figure.  Those.  if we received 3000 IOPS, then we can safely use the system / disk in the load "up to 2000". </li></ol><br><br>  Well, about the block size.  Traditionally, the test comes with a block size of 4k.  Why?  Because it is the standard block size that the OS operates on when saving the file.  This is the size of the memory page and in general, a Very Round Computer Number. <br><br>  It should be understood that if the system processes 100 IOPS with 4k block (worst), then it will process less with 8k block (at least 50 IOPS, most likely in the region of 70-80).  Well, on the 1Mb block we will see completely different numbers. <br><br>  Everything?  No, it was just an introduction.  Everything that is written above is more or less well known.  Nontrivial things start below. <br><br>  To begin with, we will look at the concept of “dependent IOPS”.  Imagine that our application works like this: <ul><li>  read record </li><li>  change record </li><li>  write back </li></ul><br><br>  For convenience, we assume that the processing time is zero.  If each read and write request will be serviced by 1ms, how many records per second can the application handle?  That's right, 500. And if we run next to the second copy of the application?  On any decent system, we get 1000. If we get significantly less than 1000, then we have reached the limit of system performance.  If not, then the performance of an application with dependent IOPS is not limited by the performance of the storage system, but by two parameters: latency and the level of dependence of IOPS. <br><br>  Let's start with latency.  <b>Latency</b> - the time of the request, the delay before the answer.  Usually use the value, "average delay."  More advanced use the <a href="http://ru.wikipedia.org/wiki/%25D0%259C%25D0%25B5%25D0%25B4%25D0%25B8%25D0%25B0%25D0%25BD%25D0%25B0_(%25D1%2581%25D1%2582%25D0%25B0%25D1%2582%25D0%25B8%25D1%2581%25D1%2582%25D0%25B8%25D0%25BA%25D0%25B0)">median</a> among all operations for a certain interval (most often for 1s).  Latency is very difficult to measure.  This is due to the fact that on any storage system, some requests are executed quickly, some are slow, and some can get into an extremely unpleasant situation and be serviced ten times longer than others. <br><br>  The intrigue is enhanced by the presence of a queue of requests, within which reordering of requests and their parallel execution can be carried out.  With a typical SATA disk, the queue depth (NCQ) is 31; with powerful storage systems it can reach several thousand.  (note that the actual length of the queue (the number of pending requests) is a rather negative parameter, if there are many requests in the queue, they wait longer, that is, they slow down. Anyone who stood at rush hour in the supermarket would agree that the longer queue, that sucks service. <br><br>  Latency directly affects the performance of a sequential application, an example of which is given above.  Higher latency - lower performance.  At 5ms, the maximum number of requests is 200 items / s, at 20ms - 50. Moreover, if we have 100 requests processed within 1ms and 9 requests within 100ms, then we get only 109 IOPS in a second, with a median of 1ms and avg (average) at 10ms. <br><br>  Hence the rather difficult to understand conclusion: the type of load on performance affects not only the fact whether it is “sequential” or “random”, but also how the applications using the disk are arranged. <br><br>  Example: launching an application (typical desktop task) is almost 100% consistent.  They read the application, read the list of necessary libraries, read each library in turn ... That is why desktops love SSD so ardently - they have a microscopic delay (microsecond) for reading - of course, the favorite photoshop or blender starts in tenths of a second. <br><br>  And here, for example, the work of the loaded web server is almost parallel - each next client is serviced independently of the neighboring one, i.e.  latency affects only the service time of each client, not the “maximum number of clients”.  And, we admit that 1ms, that 10ms - for the web server anyway.  (But it’s not all the same how many such requests in parallel for 10ms can be sent). <br><br>  <b>Treshing</b> .  I think desktop users are even more familiar with this phenomenon than sysadmins.  Creepy hard disk crunch, unspeakable brakes, "nothing works and everything slows down." <br><br>  As we begin to drive the disk queue (or storage, I repeat, in the context of the article there is no difference between them), latency begins to grow sharply.  The disk works at the limit of opportunities, but incoming calls are more than the speed of their service.  Latency begins to grow rapidly, reaching horrific numbers in units of seconds (and this despite the fact that the application, for example, to complete the work you need to do 100 operations, which with a latency of 5 ms meant a half-second delay ...).  This condition is called thrashing. <br><br>  You will be surprised, but any disk or storage can show MORE IOPS in thrashing state than in normal boot.  The reason is simple: if in normal mode the queue is often empty <s>and the cashier is bored, waiting for customers</s> , then in the condition of tracing there is a constant service.  (By the way, here's an explanation of why people like to queue in supermarkets - in this case, the performance of cashiers is maximum).  True, customers do not like this much.  And in good <s>supermarkets, they</s> try to avoid such regimes.  If you continue to raise the queue depth, the performance will start to drop due to the fact that the queue is overflowing and requests are queuing up to stand in a queue (yes, and the sequence number is a ballpoint pen on the hand). <br><br>  And here we are waiting for the next frequent (and very difficult to refute) error of those who measure the performance of the disk. <br><br><h1>  Latency control during the test </h1><br>  They say "I have a 180 IOPS disk, so if you take 10 disks, it will be as much as 1800 IOPS."  (This is exactly what bad supermarkets think, planting fewer cashiers than necessary).  At the same time, latency turns out to be exorbitant - and “it’s impossible to live like that” <br><br>  The actual performance test requires latency control, that is, the selection of such test parameters so that latency remains below the stipulated limit. <br><br>  And here we are faced with the second problem: what is the limit?  The theory cannot answer this question - this indicator is an indicator of <em>quality of service</em> .  In other words, everyone chooses for himself. <br><br>  Personally, I conduct tests for myself so that latency remains no more than 10 ms.  I consider this indicator to be the ceiling of the storage performance.  (while in my mind I think for myself that the limiting figure, after which lags begin to be felt, is 20ms, but remember, about the example above from 900 to 1ms and 10 to 100ms, which has avg 10ms? That's what I reserve imagine + 10ms for occasional bursts). <br><br><h1>  Parallelism </h1><br>  Above, we have already addressed the issue with dependent and independent IOPS.  The performance of the dependent Iops is precisely controlled by latency, and we have already discussed this issue.  But the performance in independent iops (i.e. with parallel load), what does it depend on? <br><br>  The answer is from the fantasy of who invented the disc or designed the repository.  We can talk about the number of heads, spindles and parallel write queues in the SSD, but all this is speculation.  From the point of view of practical use, we are interested in one question: HOW MUCH?  How much can we run parallel load threads?  (Do not forget about latency, because if we allow to send latency to heaven, then the number of parallel streams will go there, though not at such a speed).  So, the question is: how many parallel threads can we perform when latency is below a given threshold?  Tests should answer this question. <br><br><h1>  SAN and NAS </h1><br>  Separately, you need to talk about the situation when the storage is connected to the host via a network using TCP.  About TCP you need to write, write, write and write again.  Suffice it to say that in Linux there are 12 different algorithms for controlling congestion in the network (congestion), which are designed for different situations.  And there are about 20 kernel parameters, each of which can radically affect the parrots at the exit (sorry, test results). <br><br>  From the point of view of performance evaluation, we should just accept this rule: for network storages, the test should be carried out from several hosts (servers) in parallel.  Tests from a single server will not be a storage test, but will be an integrated test of the network, storage and the correctness of the settings of the server itself. <br><br><h1>  bus saturation </h1><br>  The last question is the shading of the tire.  What are we talking about?  If we have ssd capable of delivering 400 MB / s, and we connect it via SATA / 300, then it is obvious that we will not see all the performance.  And from the point of view of latency, the problem will begin to appear long before approaching 300MB / s, because each request (and the answer to it) will have to wait its turn to slip through the bottleneck of the SATA cable. <br><br>  But there are more funny situations.  For example, if you have a shelf of disks connected via SAS / 300x4 (i.e., 4 SAS lines of 300MB each).  It seems to be a lot.  And if in the shelf 24 disks?  24 * 100 = 2400 MB / s, and we have only 1200 (300x4). <br><br>  Moreover, tests on some (server-based!) Motherboards showed that embedded SATA controllers are often connected via PCIx4, which does not give the maximum possible speed of all 6 SATA connectors. <br><br>  I repeat, the main problem in bus saturation is not getting to the “ceiling” strip, but increasing latency as the bus loads. <br><br><h1>  Manufacturers tricks </h1><br>  Well, before practical advice, I will say about the well-known tricks that can be found in industrial repositories.  First, if you read an empty disk, you will read it from “nowhere”.  Systems are smart enough to feed you with zeros from those areas of the disk where you have never written. <br><br>  Secondly, in many systems the first record is worse than the subsequent ones due to all sorts of snapshot mechanisms, thin provision, deduplication, compression, late allocation, sparse placement, etc.  In other words, testing should be done after the initial recording. <br><br>  Third - cash.  If we test the worst case, then we need to know how the system will behave when the cache does not help.  To do this, you need to take such a size of the test, so that we are guaranteed to read / write “past the cache”, that is, we were beaten out for cache volumes. <br><br>  A write cache is a special story.  He can save all write requests (sequential and random) and write them in a comfortable mode.  The only worst case method is “cache cracking,” that is, sending write requests in such a volume so long that the write cache ceases to run and has to write data not in a comfortable mode (combining adjacent areas), but throw off random data, performing random writing.  This can be achieved only by repeatedly exceeding the test area over the cache size. <br><br>  The verdict is at least x10 cache (frankly, the number was taken from the ceiling, I do not have an exact calculation mechanism). <br><br><h1>  Local OS Cache </h1><br>  Of course, the test should be without the participation of the local OS cache, that is, we need to run the test in a mode that would not use caching.  In Linux, this is the O_DIRECT option when opening a file (or disk). <br><br><h1>  Test description </h1><br>  Total: <br>  1) We test the worst case - 100% of the disk size, which is several times larger than the estimated cache size on the storage.  For a desktop, this is just “the whole disk”, for industrial storages - a LUN or a virtual machine disk with a size of 1TB or more.  (Hehe, if you think that 64GB of RAM-cache is a lot ...). <br>  2) We are testing in 4kb block size. <br>  3) We select such a depth of parallelism of operations that the latency remains within reasonable limits. <br><br>  At the output, we are interested in the parameters: IOPS number, latency, queue depth.  If the test was run on several hosts, then the indicators are summarized (iops and queue depth), and for latency, either avg or max of the indicators for all hosts is taken. <br><br><h1>  fio </h1><br>  Here we go to the practical part.  There is a utility <b>fio</b> which allows us to achieve the result we need. <br><br>  Normal fio mode involves the use of so-called.  job file, i.e.  config, which describes exactly how the test looks.  Examples of job files are listed below, but for now let's discuss the principle of fio. <br><br>  fio performs operations on the specified file / files.  Instead of a file, a device can be specified, i.e.  we can exclude the file system from consideration.  There are several test modes.  We are interested in randwrite, randread and randrw.  Unfortunately, randrw gives us dependent iops (reads after writing), so to get a completely independent test we have to do two parallel tasks - one for reading, the second for writing (randread, randwrite). <br><br>  And we have to tell fio to do “preallocation”.  (see above about manufacturers' stunts).  Next we fix the block size (4k). <br><br>  Another parameter is the disk access method.  The fastest is libaio, and that’s what we’ll use. <br><br><h1>  Practical recipes </h1><br>  Installing fio: apt-get install fio (debian / ubntu).  If anything, in squeze it is not yet. <br>  The utility is very cleverly hidden away, so it simply does not have a “home page”, only a git repository.  Here is one of the mirrors: <a href="http://freecode.com/projects/fio">freecode.com/projects/fio</a> <br><br>  When testing a disk, it must be run as root. <br><br><h2>  reading tests </h2><br>  Run: fio read.ini <br>  Read.ini content <br><pre> [readtest]
+ blocksize = 4k
+ filename = / dev / sda
+ rw = randread
+ direct = 1
+ buffered = 0
+ ioengine = libaio
+ iodepth = 32
+</pre><br>  The task is to select an iodepth so that avg.latency is less than 10ms. <br><br><h2>  Write tests </h2><br>  (attention! You are mistaken the drive letter - you will be left without data) <br><pre> [writetest]
+ blocksize = 4k
+ filename = / dev / sdz
+ rw = randwrite
+ direct = 1
+ buffered = 0
+ ioengine = libaio
+ iodepth = 32
+</pre><br><h2>  Hybrid Tests </h2><br>  the most delicious part: <br>  (attention! You are mistaken the drive letter - you will be left without data) <br><pre> [readtest]
+ blocksize = 4k
+ filename = / dev / sdz
+ rw = randread
+ direct = 1
+ buffered = 0
+ ioengine = libaio
+ iodepth = 32
+ [writetest]
+ blocksize = 4k
+ filename = / dev / sdz
+ rw = randwrite
+ direct = 1
+ buffered = 0
+ ioengine = libaio
+ iodepth = 32
+</pre><br><br><h1>  Output analysis </h1><br>  During the test, we see something like this: <br><pre> Jobs: 2 (f = 2): [rw] [2.8% done] [13312K / 11001K / s] [3250/2686 iops] [eta 05m: 12s]
+</pre><br><br>  In square brackets are the IOPS numbers.  But it's too early to rejoice - because we are interested in latency. <br><br>  At the exit (by Ctrl-C, or at the end), we get something like this: <br><br>  ^ C <br>  fio: terminating on signal 2 <br><pre> read: (groupid = 0, jobs = 1): err = 0: pid = 11048
+   read: io = 126480KB, bw = 14107KB / s, iops = 3526, runt = 8966msec
+     slat (usec): min = 3, max = 432, avg = 6.19, stdev = 6.72
+     clat (usec): min = 387, max = 208677, avg = 9063.18, stdev = 22736.45
+     bw (KB / s): min = 10416, max = 18176, per = 98.74%, avg = 13928.29, stdev = 2414.65
+   cpu: usr = 1.56%, sys = 3.17%, ctx = 15636, majf = 0, minf = 57
+   IO depths: 1 = 0.1%, 2 = 0.1%, 4 = 0.1%, 8 = 0.1%, 16 = 0.1%, 32 = 99.9%,&gt; = 64 = 0.0%
+      submit: 0 = 0.0%, 4 = 100.0%, 8 = 0.0%, 16 = 0.0%, 32 = 0.0%, 64 = 0.0%,&gt; = 64 = 0.0%
+      complete: 0 = 0.0%, 4 = 100.0%, 8 = 0.0%, 16 = 0.0%, 32 = 0.1%, 64 = 0.0%,&gt; = 64 = 0.0%
+      issued r / w: total = 31620/0, short = 0/0
+      lat (usec): 500 = 0.07%, 750 = 0.99%, 1000 = 2.76%
+      lat (msec): 2 = 16.55%, 4 = 35.21%, 10 = 35.47%, 20 = 3.68%, 50 = 0.76%
+      lat (msec): 100 = 0.08%, 250 = 4.43%
+ write: (groupid = 0, jobs = 1): err = 0: pid = 11050
+   write: io = 95280KB, bw = 10630KB / s, iops = 2657, runt = 8963msec
+     slat (usec): min = 3, max = 907, avg = 7.60, stdev = 11.68
+     clat (usec): min = 589, max = 162693, avg = 12028.23, stdev = 25166.31
+     bw (KB / s): min = 6666, max = 14304, per = 100.47%, avg = 10679.50, stdev = 2141.46
+   cpu: usr = 0.49%, sys = 3.57%, ctx = 12075, majf = 0, minf = 25
+   IO depths: 1 = 0.1%, 2 = 0.1%, 4 = 0.1%, 8 = 0.1%, 16 = 0.1%, 32 = 99.9%,&gt; = 64 = 0.0%
+      submit: 0 = 0.0%, 4 = 100.0%, 8 = 0.0%, 16 = 0.0%, 32 = 0.0%, 64 = 0.0%,&gt; = 64 = 0.0%
+      complete: 0 = 0.0%, 4 = 100.0%, 8 = 0.0%, 16 = 0.0%, 32 = 0.1%, 64 = 0.0%,&gt; = 64 = 0.0%
+      issued r / w: total = 0/23820, short = 0/0
+      lat (usec): 750 = 0.03%, 1000 = 0.37%
+      lat (msec): 2 = 9.04%, 4 = 24.53%, 10 = 49.72%, 20 = 9.56%, 50 = 0.82%
+      lat (msec): 100 = 0.07%, 250 = 5.87%
+</pre><br><br>  We are interested in this (in the minimal case) the following: <br>  read: iops = 3526 clat = 9063.18 (usec), i.e. 9ms. <br>  write: iops = 2657 clat = 12028.23 <br><br>  Do not confuse slat and clat.  slat is the time the request was sent (i.e., the Linux disk stack performance), and clat is complete latency, that is, the latency we talked about.  It is easy to see that reading is clearly more productive than writing, and I have indicated excessive depth. <br><br>  In the same example, I reduce the iodepth to 16/16 and get: <br><br>  read 6548 iops, 2432.79usec = 2.4ms <br>  write 5301 iops, 3005.13usec = 3ms <br><br>  Obviously, the depth of 64 (32 + 32) was brute force, but such that the final performance even fell.  Depth 32 is much more suitable for the test. <br><br><h1>  Performance Orientation </h1><br>  Of course, everyone is already uncovering pi ... parrots.  I give the values ​​that I observed: <br><ul><li>  RAMDISK (rbd) - ~ 200kIOPS / 0.1ms (iodepth = 2) </li><li>  SSD (intel 320th series) - 40k IOPS per reading (0.8ms);  about 800 IOPS per write (after a long time testing) </li><li>  SAS disk (15k RPM) - 180 IOPS, 9ms </li><li>  SATA disk (7.2, WD RE) - 100 IOPS, 12ms </li><li>  SATA WD Raptor - 140 IOPS, 12mc </li><li>  SATA WD Green - 40 IOPS, and I failed to achieve latency &lt;20 even with iodepth = 1 </li></ul><br>  Warning: If you run it on virtual machines, then <br>  a) if IOPS take money, it will be very tangible money. <br>  b) If a hoster has a bad storage, which relies only on a cache of several tens of gigabytes, then a test with a large disk (&gt; 1Tb) will lead to ... problems with the hoster and your hosting neighbors.  Some hosters may be offended and ask you out. <br>  c) Do not forget to reset the disk before the test (ie dd if = / dev / zero of = / dev / sdz bs = 2M oflag = direct) </div><p>Source: <a href="https://habr.com/ru/post/154235/">https://habr.com/ru/post/154235/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../154223/index.html">New version of NetWrix Active Directory Change Reporter 7.1 has been released.</a></li>
+<li><a href="../154225/index.html">We invite you to a press conference on the eve of the World Cyber ​​Games 2012 finals!</a></li>
+<li><a href="../154227/index.html">New Opera Mobile 12.1 and Opera 12.10 beta (Flexbox!)</a></li>
+<li><a href="../154229/index.html">How one-time passwords work</a></li>
+<li><a href="../154231/index.html">Why share experiences or Why write articles on Habr?</a></li>
+<li><a href="../154239/index.html">Ascetic reader for 9.90 euros</a></li>
+<li><a href="../154241/index.html">Presentation of the Personal Thermograph team</a></li>
+<li><a href="../154245/index.html">PHP SQL query generator</a></li>
+<li><a href="../154247/index.html">Yota launched real 4G: LTE Advanced</a></li>
+<li><a href="../154249/index.html">The global problems of the Internet, the second time collapses connectivity between Europe and America</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
