@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Lock-free memcache API</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Good day, habrazhiteli! 
+ This post is a brief summary of many hours of thinking, grub on paper, sketches of code, and, in the end, a really working c...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Lock-free memcache API</h1><div class="post__text post__text-html js-mediator-article">  Good day, habrazhiteli! <br>  This post is a brief summary of many hours of thinking, grub on paper, sketches of code, and, in the end, a really working code in production. <br>  Our site (and further - just a site) actively uses memkes for hot data.  The code that fills in the memkesh can work for a very long time (0.5 seconds is a long time) and at the same time, user requests manage to run another hundred update procedures.  The consequences are clear, but for a long time we just could not notice them at the level of the total load.  Only when we saw bursts of time for servicing some queries (from the increased load, they also got into SLOW_QUERIES_LOG MySQL) - then the work started to boil. <br><a name="habracut"></a><br><br><h4>  Problem clearly </h4><br>  Let us consider in more detail the script for requesting a key from memkesh, in which the key is “rotten” or has not been installed. <br>  To understand the problem, I drew a small diagram: <br><br><img src="https://habrastorage.org/storage1/cc09b86a/80c03b02/6d95c104/9d358d34.png" alt="Data request workflow">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The update logic is controlled by the code, i.e.  the application itself knows if the FALSE is returned to it, then the key must be regenerated.  As can be seen from the diagram, the trouble arises at the moment when the data on the first request have not yet had time to “get ready”, and we are already asking the same data. <br>  Thanks to <a href="http://habrahabr.ru/users/evilbloodydemon/" class="user_link">evilbloodydemon</a> habraouser for a precise definition - the situation is called “Dog pile effect”. <br><br><h4>  Decision </h4><br>  Numerous versions were put forward - how to avoid it. <br>  At first we thought about the locking system and the update queue.  But this scenario is so slow. <br>  Then they thought - if the code is able to regenerate the data - even if it does.  You just need to return him to FALSE.  And immediately - reinstall the old data.  Total: the update procedure will run once, and the data that will be returned to the application until the end of the regeneration process will “rotten” only during the regeneration time. <br>  To do this, we must not only add the data itself, but also the timeout and key invalidation time.  The array for a time is twice as large (for sure).  The documentation states that the longest key storage time is 30 days.  Those.  it is enough to put the data for 15 days in a “wrapper” - 1 second for fidelity.  The same applies to keys with timeout = 0 (i.e. forever, until it is superseded).  Situations when the data in memkesh are needed once every 15 days - I have not met.  If this happens to you, something needs to be changed. <br>  We also quickly noticed a problem with the increment.  I had to agree that all increment keys end with "_inc", for example.  And when such a key is detected, we simply get the necessary data, which the memory has itself recruited.  * I have removed this plug from the Memcache_Proxy :: get () method. <br><br><h4>  Code </h4><br>  The code is documented where it is necessary :) I apologize in advance for the code sheet, but I can’t cut it anymore. <br><pre><code class="php hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">MC</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> $_proxy; <span class="hljs-comment"><span class="hljs-comment">// Singleton for our class, extended of native Memcache class private static function _proxy() { if (is_null(self::$_proxy) || self::$_proxy-&gt;closed) self::$_proxy = new Memcache_Proxy; return self::$_proxy; } public static function get($key = '') { return self::_proxy()-&gt;get($key); } public static function set($key = '', $data = NULL, $flag = FALSE, $timeout = 3600) { return self::_proxy()-&gt;set($key, $data, $flag, $timeout); } public static function delete($key = '') { return self::_proxy()-&gt;delete($key); } public static function increment($key = '', $increment = 1) { return self::_proxy()-&gt;increment($key, $increment); } }</span></span></code> </pre> <br><br>  The MS class is needed to communicate with one copy of the memkesh within the entire code without the need to explicitly declare a connection to the memkesh.  It will be created when you first access the desired method in this class. <br><br><pre> <code class="php hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Memcache_Proxy</span></span></span><span class="hljs-class"> </span><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">extends</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">Memcache</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> $closed = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">__construct</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;connect(MEMCACHE_HOST, MEMCACHE_PORT, <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;closed = <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>; } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">__destruct</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;close(); <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;closed = <span class="hljs-keyword"><span class="hljs-keyword">true</span></span>; } <span class="hljs-comment"><span class="hljs-comment">/** * Mirror for $memcache-&gt;get() method */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">get</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">($key = </span></span><span class="hljs-string"><span class="hljs-function"><span class="hljs-params"><span class="hljs-string">''</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">empty</span></span>($key)) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FALSE</span></span>; $data = <span class="hljs-keyword"><span class="hljs-keyword">parent</span></span>::get($key); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ($data !== <span class="hljs-keyword"><span class="hljs-keyword">FALSE</span></span> &amp;&amp; <span class="hljs-keyword"><span class="hljs-keyword">$this</span></span>-&gt;_is_valid_cache($data)) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!<span class="hljs-keyword"><span class="hljs-keyword">isset</span></span>($data[<span class="hljs-string"><span class="hljs-string">'_dc_cache'</span></span>])) $data[<span class="hljs-string"><span class="hljs-string">'_dc_cache'</span></span>] = <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span>; <span class="hljs-comment"><span class="hljs-comment">//check lifetime if (time() &gt; $data['_dc_life_end']) { //expired, save the same for a longer time for other connections $this-&gt;set($key, $data['_dc_cache'], FALSE, $data['_dc_cache_time']); return FALSE; } else { //still alive return $data['_dc_cache']; } } return FALSE; } /** * Mirror for $memcache-&gt;set() method */ public function set($key = '', $data, $flag = FALSE, $timeout = 3600) { if (empty($key)) return FALSE; // Place here "_inc" key check if (is_int($data) || $data === FALSE) parent::delete($key . '_increment'); // Maximum timeout = 15 days - 1 second if ((int)$timeout == 0 || (int)$timeout &gt; 1295999) $timeout = 1295999; return $this-&gt;_set($key, $data, $flag, $timeout * 2); } /** * Mirror for $memcache-&gt;delete() method */ public function delete($key = '') { if (empty($key)) return FALSE; // Magic for increment. Place here "_inc" key check parent::delete($key . '_increment'); return parent::delete($key); } public function increment($key, $increment = 1) { $inc_value = parent::increment($key . '_increment', $increment); $data = parent::get($key); if ($data === FALSE) return FALSE; if ($this-&gt;_is_valid_cache($data)) { if ($inc_value === FALSE) { $inc_value = $data['_dc_cache'] + $increment; parent::set($key . '_increment', $inc_value, FALSE, $data['_dc_cache_time'] * 2); } $time = $data['_dc_life_end'] - time(); if ($time &gt; 0) { $this-&gt;_set($key, $inc_value, FALSE, $time); return $inc_value; } } return $inc_value; } private function _set($key = '', $data, $flag = FALSE, $timeout = 3600) { $cache = array('_dc_cache' =&gt; $data, '_dc_life_end' =&gt; time() + $timeout, '_dc_cache_time' =&gt; $timeout); return parent::set($key, $cache, $flag, $timeout); } // Maybe we have pure Memcache data, not our array structure private function _is_valid_cache($value) { return (is_array($value) &amp;&amp; isset($value['_dc_life_end']) &amp;&amp; isset($value['_dc_cache_time']) &amp;&amp; !empty($value['_dc_life_end']) &amp;&amp; !empty($value['_dc_cache_time']) ) ? TRUE : FALSE; } }</span></span></code> </pre><br><br><h4>  Examples of using </h4><br>  Code, just code.  If the data is sour, we start the generation by returning FALSE only to the requester and resetting the same data at the same time.  Thus, the next requestor will receive the old data until the first process finishes the generation and executes MC :: set () with the actual data.  Immediately after this, all processes will receive the actual data. <br><br><pre> <code class="php hljs">$data = MC::get(<span class="hljs-string"><span class="hljs-string">'some_key'</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ($data === <span class="hljs-keyword"><span class="hljs-keyword">FALSE</span></span>) { <span class="hljs-comment"><span class="hljs-comment">//     $data = huge_generate_func_call(); MC::set('some_key', $data, FALSE, 3600); }</span></span></code> </pre><br><br>  Those.  We continue to use memkesh as before.  If there was a wrapper for addressing memkesh, you can fix it and DO NOT touch anything in the application code.  This, by the way, was one of the requirements: minimum refactoring for the implementation of a new memkesh class. <br><br><h4>  Summary </h4><br>  You can close your eyes for the overhead of storing the timestamp and timeout, the memory is now cheap. <br>  The fact that the data “get rotten” by the amount of time equal to the time of data generation is not fatal and tolerable, however, new flows for the generation of the same data are not created.  CTD! <br><br>  <b>PS</b> <br>  Suggestions and comments are welcome!  Spelling - in a personal, essentially - in the comments! <br><br>  <b>UPD.</b> <br>  Comrades minus - we argue our choice.  Not everyone was born with the talents of Pushkin and Stroustrup! <br><br>  <b>UPD.</b>  <b>2</b> <br>  Understand the minuses: <br>  one. <br>  The MS class is needed to change nothing in the code.  Totally.  Replace it with the name of your wrapper over the memok, if there is one.  If not, most decent IDEs support Refactor -&gt; Change ClassName. <br>  2 <br>  MS class is static.  So it happened historically - the minimum of refactoring is the main requirement.  I did not begin to alter the code for Habr - the main idea is reflected there. </div><p>Source: <a href="https://habr.com/ru/post/128275/">https://habr.com/ru/post/128275/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../128269/index.html">Data structures in pictures. ArrayList</a></li>
+<li><a href="../128270/index.html">Microsoft has implemented an analogue of Synergy (control of several PCs with one mouse)</a></li>
+<li><a href="../128271/index.html">YAF - the fastest php framework *</a></li>
+<li><a href="../128273/index.html">Multilingual Django Starter Models</a></li>
+<li><a href="../128274/index.html">Work for Watson</a></li>
+<li><a href="../128276/index.html">September issue of UserAndLINUX magazine released</a></li>
+<li><a href="../128277/index.html">How to connect your Ruby project to Travis and cook Martini in 15 minutes</a></li>
+<li><a href="../128278/index.html">Happy programmer!</a></li>
+<li><a href="../128279/index.html">Happy 0b100000000 day!</a></li>
+<li><a href="../128280/index.html">Free books</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

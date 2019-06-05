@@ -1,0 +1,136 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>UIWebView Synchronous Download</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Greetings, Habr! 
+
+ It all started with finding a solution to the problem of displaying formatted text inside a UITableViewCell, and not a strictly sp...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>UIWebView Synchronous Download</h1><div class="post__text post__text-html js-mediator-article">  Greetings, Habr! <br><br>  It all started with finding a solution to the problem of displaying formatted text inside a UITableViewCell, and not a strictly specified format (then you could use the UILabel set with a given font) but an arbitrary one.  Yes, so that the formatting can be set with simple html tags.  This problem can be solved in different ways: <br><ul><li>  Implement a custom component using CoreText (not suitable if you need iOS3.x compatibility) </li><li>  Implement a custom component using CoreGraphics (very voluminous work) </li><li>  Implement a custom component with a dynamic number of UILabels as subviews (rather dull due to hyphenation and other things) </li><li>  UIWebView loaded with loadHTMLString </li></ul><br><br>  As the reader could have guessed from the title of the article, I stopped at the last method, but those of you who have tried this method know about a very unpleasant reef.  How to get rid of it, I will tell under the cut. <br><a name="habracut"></a><br><h4>  UIWebView inside UITableViewCell </h4><br>  And so, in what a bit of this problem - UIWebView loads its content asynchronously.  And if we place a UIWebView inside a UITableViewCell, and in cellForRowAtIndexPath: we will load the content itself, the actual download will be asynchronous after all the touch events related to scrolling have passed.  It will not look very nice: the content will begin to update only after the scrolling stops. <br>  To get around this limitation, you need to understand a little theory.  Asynchrony in our case is implemented using RunLoops.  Since the runloop is set for a thread, we can make a call asynchronously in the same thread.  In addition, each call is made with its RunLoopMode - which is an analogue of priorities, so first of all the calls of the highest priority are selected from the current loop, and then downward.  Also important is the ability to run nested runloop. <br>  What happens when we call loadHTMLSTring: in UIWebView?  Most likely, performSelector is done with an indication of not the highest priority RunLoopMode.  In principle, this is correct, since uploading content to a UIWebView is not an easy task and takes time, if you do this as you roll the table, it can noticeably slow down the rollout itself.  But if the content is light enough (the simplest html in two lines, let's say) - the download will go quite quickly. <br>  In order to perform this load without waiting until all the event touch events are completed, after calling loadHTMLString, you need to start the nested run loop with a lower RunLoopMode priority - NSDefaultRunLoopMode. <br><blockquote>  CFRunLoopRunInMode <font color="#002200">(</font> <font color="#002200">(</font> CFStringRef <font color="#002200">)</font> NSDefaultRunLoopMode, <font color="#2400d9">1</font> , <font color="#a61390">NO</font> <font color="#002200">)</font> ; </blockquote><br>  It is important that after WebView has loaded all the same, stop this RunLoop because otherwise the UI will just hang. <br><blockquote>  CFRunLoopRef runLoop <font color="#002200">=</font> <font color="#002200">[</font> <font color="#002200">[</font> <font color="#400080">NSRunLoop</font> currentRunLoop <font color="#002200">]</font> getCFRunLoop <font color="#002200">]</font> ; <br>  CFRunLoopStop <font color="#002200">(</font> runLoop <font color="#002200">)</font> ; </blockquote><br><h4>  UISynchedWebView </h4><br>  Let's take out everything related to running nested runloop and stopping it in the WebView itself.  Make a subclass UIWebView, name it UISynchedWebView and override its loadHTMLString so that it starts the nested runloop after calling the base implementation.  The question arises when to stop it?  You need to stop it immediately after the content has loaded.  To determine this, we need to make our new WebView our own delegate, but in order to preserve transparency for external user code.  To do this, we will create a member variable of the class for the external delegate, redefine its setters and getters, and after calling the code of our delegate, we will call the appropriate methods of the external delegate.  Like that: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <blockquote>  <font color="#a61390">@interface</font> UISynchedWebView <font color="#002200">:</font> UIWebView &lt;UIWebViewDelegate&gt; <br>  <font color="#002200">{</font> <br>  <font color="#a61390">id</font> anotherDelegate; <br>  <font color="#002200">}</font> <br>  <font color="#a61390">@end</font> </blockquote><br><br><blockquote>  <font color="#002200">-</font> <font color="#002200">(</font> <font color="#a61390">void</font> <font color="#002200">)</font> webView <font color="#002200">:</font> <font color="#002200">(</font> UIWebView <font color="#002200">*</font> <font color="#002200">)</font> webView didFailLoadWithError <font color="#002200">:</font> <font color="#002200">(</font> <font color="#400080">NSError</font> <font color="#002200">*</font> <font color="#002200">)</font> error <br>  <font color="#002200">{</font> <br>  <font color="#002200">[</font> self performSelector <font color="#002200">:</font> <font color="#a61390">@selector</font> <font color="#002200">(</font> stopRunLoop <font color="#002200">)</font> withObject <font color="#002200">:</font> <font color="#a61390">nil</font> afterDelay <font color="#002200">:</font> .01 <font color="#002200">]</font> ; <br><br>  <font color="#a61390">if</font> <font color="#002200">(</font> <font color="#002200">[</font> anotherDelegate respondsToSelector <font color="#002200">:</font> <font color="#a61390">@selector</font> <font color="#002200">(</font> webView <font color="#002200">:</font> didFailLoadWithError <font color="#002200">:)</font> <font color="#002200">]</font> <font color="#002200">)</font> <br>  <font color="#002200">[</font> anotherDelegate webView <font color="#002200">:</font> webView didFailLoadWithError <font color="#002200">:</font> error <font color="#002200">]</font> ; <br>  <font color="#002200">}</font> <br><br>  <font color="#002200">-</font> <font color="#002200">(</font> <font color="#a61390">BOOL</font> <font color="#002200">)</font> webView <font color="#002200">:</font> <font color="#002200">(</font> UIWebView <font color="#002200">*</font> <font color="#002200">)</font> webView shouldStartLoadWithRequest <font color="#002200">:</font> <font color="#002200">(</font> <font color="#400080">NSURLRequest</font> <font color="#002200">*</font> <font color="#002200">)</font> request navigationType <font color="#002200">:</font> <font color="#002200">(</font> UIWebViewNavigationType <font color="#002200">)</font> navigationType <br>  <font color="#002200">{</font> <br>  <font color="#a61390">if</font> <font color="#002200">(</font> <font color="#002200">[</font> anotherDelegate respondsToSelector <font color="#002200">:</font> <font color="#a61390">@selector</font> <font color="#002200">(</font> webView <font color="#002200">:</font> shouldStartLoadWithRequest <font color="#002200">:</font> navigationType <font color="#002200">:)</font> <font color="#002200">]</font> <font color="#002200">)</font> <br>  <font color="#a61390">return</font> <font color="#002200">[</font> anotherDelegate webView <font color="#002200">:</font> webView shouldStartLoadWithRequest <font color="#002200">:</font> request navigationType <font color="#002200">:</font> navigationType <font color="#002200">]</font> ; <br>  <font color="#a61390">return</font> <font color="#a61390">YES</font> ; <br>  <font color="#002200">}</font> <br><br>  <font color="#002200">-</font> <font color="#002200">(</font> <font color="#a61390">void</font> <font color="#002200">)</font> webViewDidFinishLoad <font color="#002200">:</font> <font color="#002200">(</font> UIWebView <font color="#002200">*</font> <font color="#002200">)</font> webView <br>  <font color="#002200">{</font> <br>  <font color="#002200">[</font> self performSelector <font color="#002200">:</font> <font color="#a61390">@selector</font> <font color="#002200">(</font> stopRunLoop <font color="#002200">)</font> withObject <font color="#002200">:</font> <font color="#a61390">nil</font> afterDelay <font color="#002200">:</font> .01 <font color="#002200">]</font> ; <br>  <font color="#a61390">if</font> <font color="#002200">(</font> <font color="#002200">[</font> anotherDelegate respondsToSelector <font color="#002200">:</font> <font color="#a61390">@selector</font> <font color="#002200">(</font> webViewDidFinishLoad <font color="#002200">:)</font> <font color="#002200">]</font> <font color="#002200">)</font> <br>  <font color="#002200">[</font> anotherDelegate webViewDidFinishLoad <font color="#002200">:</font> webView <font color="#002200">]</font> ; <br>  <font color="#002200">}</font> <br><br>  <font color="#002200">-</font> <font color="#002200">(</font> <font color="#a61390">void</font> <font color="#002200">)</font> stopRunLoop <br>  <font color="#002200">{</font> <br>  CFRunLoopRef runLoop <font color="#002200">=</font> <font color="#002200">[</font> <font color="#002200">[</font> <font color="#400080">NSRunLoop</font> currentRunLoop <font color="#002200">]</font> getCFRunLoop <font color="#002200">]</font> ; <br>  CFRunLoopStop <font color="#002200">(</font> runLoop <font color="#002200">)</font> ; <br><br>  <font color="#002200">}</font> <br><br>  <font color="#002200">-</font> <font color="#002200">(</font> <font color="#a61390">void</font> <font color="#002200">)</font> webViewDidStartLoad <font color="#002200">:</font> <font color="#002200">(</font> UIWebView <font color="#002200">*</font> <font color="#002200">)</font> webView <br>  <font color="#002200">{</font> <br>  <font color="#a61390">if</font> <font color="#002200">(</font> <font color="#002200">[</font> anotherDelegate respondsToSelector <font color="#002200">:</font> <font color="#a61390">@selector</font> <font color="#002200">(</font> webViewDidStartLoad <font color="#002200">:)</font> <font color="#002200">]</font> <font color="#002200">)</font> <br>  <font color="#002200">[</font> anotherDelegate webViewDidStartLoad <font color="#002200">:</font> webView <font color="#002200">]</font> ; <br>  <font color="#002200">}</font> </blockquote><br><br><h4>  Warning </h4><br>  Lastly, I would like to note that this method allows you to get beautifully formatted text, where you need to be highlighted in bold, or highlighted by background - in table cells without much effort and has iOS3.x compatibility.  However, as has been said, downloading such content blocks the UI and if the content is heavy enough, the blocking will become noticeable and it will be very bad.  Not everywhere this method can be used, be careful! <br><br>  PS Demoproject can be found <a href="https://github.com/gavrix/UISynchedWebView-demo">here</a> . </div><p>Source: <a href="https://habr.com/ru/post/125931/">https://habr.com/ru/post/125931/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../125917/index.html">10 blunders novice online businessman</a></li>
+<li><a href="../125920/index.html">Luxoft Corporate Blog: how to find us?</a></li>
+<li><a href="../125923/index.html">Monkey Business, or how to use Kinect</a></li>
+<li><a href="../125925/index.html">NFC vs biometric identification - who is first?</a></li>
+<li><a href="../125927/index.html">Defcon presents an Android program to test the reliability of computer network protection.</a></li>
+<li><a href="../125932/index.html">The story of how lightning "killed" the Amazon cloud</a></li>
+<li><a href="../125933/index.html">Taiwanese Research Institute has developed a rewritable thermal paper</a></li>
+<li><a href="../125934/index.html">Restrictions in the secure_link "real" world</a></li>
+<li><a href="../125935/index.html">Hi, Habr</a></li>
+<li><a href="../125936/index.html">Viral marketing: basic rules</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

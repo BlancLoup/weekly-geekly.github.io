@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Notes on restoring embedded systems</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I tried to collect my experience of porting OpenWRT to embedded equipment. In this article I will talk about how to work with the u-boot bootloader an...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Notes on restoring embedded systems</h1><div class="post__text post__text-html js-mediator-article">  I tried to collect my experience of porting OpenWRT to embedded equipment.  In this article I will talk about how to work with the u-boot bootloader and the main problems encountered when loading the operating system. <br><a name="habracut"></a><br><br><h4>  Work with u-boot </h4><br>  The embedded ones do not have a separate BIOS card, so the bootloader (u-boot in our case) is located directly on the flash drive.  Therefore, you need to be very careful when working with flash drives, and do not forget <b>to dump the bootloader</b> before any dangerous actions!  Also note the feature of NOR-flash drives: drive cells are presented in the form of RAM.  This allows you to run programs on the fly - without copying to memory.  In the case of NAND flash drives, special programs are used for recording.  So we have a loader, straight arms, and an awareness of what to do.  We study the output printenv in search of aliases that we can greatly facilitate life.  Find something like this: <br><br>  kimage = $ {download} $ {memtmp_addr} $ {kimagename}; run erase_kimage; cp.b $ {memtmp_addr} $ {kernel_addr} $ {filesize}. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      I will analyze in more detail what is happening here.  When you run run kimage, execute download (by default download = tftp, you can change to nfs or serial line), the file is loaded into the address recorded in memtmp_addr, kimagename is equal to vmlinux.gz.uImage and so on through the list, the variables are visible by printenv.  After downloading the file to the RAM, the process of erasing the flash drive starts and then the file is copied from the memory to the USB flash drive.  I note that the variable filesize is equal to the size of the last downloaded file and will be filled with the tftp command in this case.  Also note that when you run run erase_kimage (erase $ {kernel_addr} $ {kernel_size} is hidden under it), the volume is not erased from the new kernel, but from the variable kernel_size.  Accordingly, if your kernel is larger than the kernel_size equal to the default partition for the kernel, it will write to sectors that have not been reset.  That in the case of NOR memory will lead to data corruption in those cells.  Be alert. <br><br>  And so, we check the network settings, again the IP-address of the tftp-server is specified in printenv.  Put the kernel in the tftp directory and run the run kimage.  In order to avoid troubles, it is not bad to check the checksum, run the crc32 $ {memtmp_addr} $ {filesize} command in the loader and check with the data received via the crc32 vmlinux.gz.uImage on the host machine, or use the iminfo utility, which will do this check itself but only if headers were inserted into the kernel via mkimage. <br><br>  An example of a sequence of actions in the absence of aliases: <br><br>  tftp 0x80060000 openwrt-ar71xx-generic-uImage-gzip.bin <br>  erase 0xbf050000 + $ {filesize} <br>  cp.b 0x80060000 0xbf050000 $ {filesize} <br>  reset <br><br>  0x80010000 - address of a place in RAM, usually tftp, knows where to write. <br>  0xbf050000 - address (from the range of destination for flash) where the download starts.  You can look at the variable bootcmd. <br><br>  <b>Attention.</b>  <b>All the addresses in the article are fictional and their use can turn your system into a brick!</b> <br><br>  You can also pass parameters to the kernel via the bootloader: <br><br>  setenv bootargs console = ttyS0,115200 rootfstype = jffs2 <br><br>  Some flash drive drivers support MTD markup management via the command line: <br><br>  mtdparts = spi0.0: 320k (u-boot) ro, 128k (u-boot-env) ro, 1024k (kernel), 14848k (rootfs), 64k (art) ro, 15872k @ 0x70000 (firmware) <br><br>  MTD is an intermediary mechanism between flash memory and the file system driver.  Allows you to work with a flash drive as with a conventional block or character device.  It is necessary because the blocks on flash drives (NOR, NAND ..) must be erased before recording. <br>  With the bootloader finished, then I will list the most popular causes of boot problems. <br><br><h4>  Causes of failures </h4><br>  <b>The bootloader does not load:</b> <br>  1. The loader was corrupted. <br>  The processor cannot start the bootloader.  This problem can be solved by several methods.  If possible, you can use JTAG for recovery.  Or program the flash drive with a programmer - usually flash drives are connected via SPI. <br><br>  2. Hardware problems. <br>  If you have electronic skills and a good soldering station, then we study specifications, measure voltages, and so on, until you find the cause of the problem. <br><br>  <b>The kernel does not boot:</b> <br>  1. Unexpected data format. <br>  The loader waits for lzma without the mkimage signature, and gets a gzip with the signature.  Usually, the developer throws all the unnecessary things out of the bootloader, so if he himself uses gzip to compress the kernel, then lzma will most likely not understand the bootloader.  Also, there are more advanced cases when the loader waits for certain headers before the kernel.  It may also not like the fully striped kernel, since the loader expected to see the signature of the elf file. <br><br>  2. The kernel was incorrectly written. <br>  For example, sectors where it was recorded were not previously erased.  Or a spoiled image was recorded. <br><br>  <b>Do not mount FS:</b> <br>  1. Unspecified root fs. <br>  The kernel does not know which FS to use as root.  You must specify root =, or in the case of openwrt, the kernel can be patched so that the rootfs partition is automatically used as root. <br><br>  2. The kernel does not support this fs. <br>  Support for this file system is not included in the kernel, or enabled by a module (initrd is not usually used).  Or features of FS, for example compression, are not supported. <br><br>  3 Actually there is no data in the root section. <br>  Perhaps there was a miss with the FS entry due to an incorrectly specified offset or partition. </div><p>Source: <a href="https://habr.com/ru/post/128045/">https://habr.com/ru/post/128045/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../128039/index.html">Nexus Prime is already in pre-order</a></li>
+<li><a href="../128040/index.html">Remote access from Windows on FreeBSD for beginners</a></li>
+<li><a href="../128041/index.html">New Wi-Fi standard</a></li>
+<li><a href="../128042/index.html">DIY disassembler</a></li>
+<li><a href="../128044/index.html">1080p on Raspberry Pi</a></li>
+<li><a href="../128047/index.html">Graph visualization using arbor.js library</a></li>
+<li><a href="../128048/index.html">We lift several Ruby on Rails projects on the same server under different versions of ruby ​​(Nginx + Unicorn)</a></li>
+<li><a href="../128050/index.html">Google bought the company Zagat</a></li>
+<li><a href="../128051/index.html">Twitter has 100 million active users.</a></li>
+<li><a href="../128052/index.html">SQLAlchemy for Django</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
