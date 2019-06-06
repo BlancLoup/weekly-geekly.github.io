@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Distribution of CPU resources between VMs in the Scalax cloud</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Many of you are familiar with Oversan on articles in our blog on Habré, where we talked a lot about the architecture of DC Oversan-Mercury systems. We...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Distribution of CPU resources between VMs in the Scalax cloud</h1><div class="post__text post__text-html js-mediator-article">  Many of you are familiar with Oversan on articles in our blog on Habré, where we talked a lot about the architecture of DC Oversan-Mercury systems.  We also talked about the architecture of the <a href="http://scalaxy.ru/">Scalaxi</a> cloud, but mostly at <a href="http://www.highload.ru/papers2009/12226.html">specialized conferences</a> , many of our reports and presentations are already outdated and have become irrelevant. <br><br>  We think that many of the subsystems and architectural solutions in Scalaxi will be interesting to you and decided to talk about them.  We decided to start with the topic of allocation of CPU resources because the issue of guaranteed computing resources is always heard: we regularly hear it from customers who are just interested, critics and bloggers. <br><br>  To deal with the distribution of resources, it is necessary to consider the architecture of our virtualization system, at least in general terms, and to study in detail particulars.  In this article, I will try to explain how the distribution of CPU computing power between client virtual machines works: how long a CPU goes to each VM and how it is achieved. <br><a name="habracut"></a><br><h5>  Definitions </h5><br>  We in the Scalaxi team have become accustomed to some of the terms and definitions with which this text will be dazzled, so I will list them here: <br><ul><li>  <b>A VRT host</b> or just VRT is one virtualization host, a physical server that hosts users' virtual machines; </li><li>  <b>VM</b> is a user's virtual machine, it is also a virtual server.  In the world of classic hosting, a very simple version of this thing is called VPS. </li></ul><br>  Many other definitions and terms are described below, in the course of the material. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h5>  General Xen architecture </h5><br>  The easiest way to start the story about the CPU scheduler in Xen is with a short introductory description of the basic principles of the Xen hypervisor.  Xen is a paravirtualization system that allows you to run several guest virtual machines on the same physical machine (host) that use Xen to access physical resources.  At the same time, there are two possible ways to launch a guest VM - para-virtualization (PV), when a virtual machine starts up with a modified kernel and knows that it is running in Xen, or the machine starts up from any unmodified OS, and a special process is launched for it iron (qemu-dm), this mode is called HVM. <br><br>  In Xen, guest virtual machines are also called domains.  There is one privileged domain (Dom0) through which the hypervisor is managed, other guest machines work with I / O, and other virtual machines are managed.  Guest virtual machines (DomU) can only be started after Dom0 has been loaded. <br><br><img src="https://habrastorage.org/storage/7fbee3a8/7c546ed2/898fa9ea/272dee40.png"><br><br>  In general, the architecture of the Xen hypervisor has already been much discussed at habr, it is not worth being sprayed and disclosed in one article again. <br><br><h5>  CPU power planning &amp; distribution </h5><br>  So, it turns out that we have a hardware level at which the hypervisor runs, on top of which several guest virtual machines (Dom0 &amp; DomU) are running.  Each of these virtual machines has access to the CPU.  How is it organized? <br><br>  Each virtual machine works with so-called virtual CPUs (vCPU), this is a virtualized representation of a single core.  The number of vCPUs is assigned to each virtual machine individually, either in its configuration or using the xm vcpu-set command.  At the same time, the number of vCPU on each virtual machine can be at least one and not more than the number of host cores. <br><br><img src="https://habrastorage.org/storage/262c29db/7f3aabb9/39ef068a/b4ff2967.png"><br><br>  The task of the hypervisor is to properly distribute the time of the physical CPUs between the vCPUs, the solution to this problem is dealt with by a component called cpu scheduler.  In the course of writing this article, I found information about the three existing schedulers and a description of a certain scheduler, which should replace the fact that the default is used in Xen now.  But the purpose of this article is to tell how this works in the cloud, so I’ll dwell on only one thing: credit scheduler. <br><br>  If you search, then on Habré you can find <a href="http://habrahabr.ru/blogs/virtualization/105262/">articles on this topic</a> .  Therefore, here we briefly summarize the basic principles of the scheduler and once again examine the algorithm of its work: <br><ul><li>  The scheduler works with vCPU as an object in the queue.  Xen does not plan tasks inside the VM, it only controls the execution time of the vCPU, and the guest OS takes care of the work of the processes inside the VM; </li><li>  A virtual machine can limit the number of vCPUs - from one to the total number of cores; </li><li>  A virtual machine is assigned a weight, which controls the priority of the allocation of CPU time for its vCPU; </li><li>  Cap is an artificial limit on the maximum amount of CPU time allocated as a percentage of one physical core.  20 - 20% of one core, 400 - 4 cores completely, 0 - no limit; </li><li>  Dom0 also uses these parameters (and vCPU) and gets processor time according to its weight and cap parameters. </li></ul><br>  Now more about the algorithm: <br><ul><li>  Each CPU in Xen has its own queue, in which vCPUs become.  The vCPU in the queue has a credit level (number) and status (over / under), which indicates whether the virtual core received its CPU portion in this distribution period, or has not received enough; </li><li>  The settlement period is a certain period of time, once in which the external thread recalculates the number of credits of all vCPUs and changes their statuses according to the number of credits (points); </li><li>  CPU Time slice - a period of time (by default 30ms), which the CPU provides for one vCPU. </li></ul><br><img src="https://habrastorage.org/storage/b4013ff7/2f4bbf55/b139b6bc/50f9f40b.png"><br><br>  After working one time slice (vCPU blocked, went to idle, on the contrary woke up), the CPU moves to the next vCPU in the queue.  At the same time, consuming CPU time-slices, points are written off from the vCPU account, if the number of points becomes negative, the vCPU will receive the status over and take its place in the queue.  If the queue runs out of under-vCPUs, the CPU will look for such vCPUs in queues of other cores.  If there is no one there either - he will look for the next vCPU in himself and others with the over status, but with a cap that allows to issue vCPU for a little more time.  This approach ensures that even vCPUs with sufficiently low weight will get processor time, if the CPU of the system and other virtual machines is idle, and also ensures that the VM gets its processor time. <br><br><h5>  How it is organized in Scalaxi </h5><br>  In Skalaxi, we use Xen-hypervisor, user virtual machines run on VRT hosts.  Our own development, CloudEngine, chooses which VRT host to run the machine on.  The algorithm for choosing a suitable host is called an allocator, but if to explain it in a simple way, it chooses a suitable place for it on the basis of the number of VM slots so that the cloud is “properly” equipped: so that there is where to start other virtual machines and virtual the machines got more resources (in the paragraph above, we said that if the physical host is not 100% full, then the CPU will be allocated more than the guaranteed minimum). <br><br>  SLES is launched in dom0, in which cap = 0 and weight = 16384. Next, client VMs sent by CloudEngine are launched in domU, and their weight is calculated based on one unit of weight per megabyte of RAM.  Thus, it turns out that the total weight of domU-machines with a full load of VRT-host is 32768. That is, even if the host is loaded to capacity, dom0 will get enough computing resources if they are suddenly needed, and the host does not “choke” under the weight of domU-machines . <br><br>  In fact, dom0 is almost always in idle, so we can assume that the CPU is distributed between client virtual machines with some minor losses on dom0.  Frank Köhler, in his presentation, asserts that dom0 “eats up” up to 0.5% of the CPU after loading in the regular mode. <br><br>  Also a very important point: CloudEngine puts the machines into the cloud so that up to 50% of its resources are used on one host.  This is achieved quite simply: we are guaranteed to ensure that the cloud is reserved, that is, a drop of up to 50% of the hosts should lead to the migration of the VM to other hosts and the continuation of work, which means that a maximum of half of the cloud can be occupied.  And this, in turn, means that, ideally, on each host no more than 50% of the occupied resources: this facilitates VM scaling (fewer migrations when scaling) and increases the share of CPU that goes to each machine. <br><br><h5>  What's next </h5><br>  In this article, I explained how CPU is distributed between VMs in a cloud.  In the next I want to show how it works in practice.  Wait for performance tests next week :) If you want to conduct an independent test - write, we will provide resources for this for free. <br><br><h5>  Materials on the topic </h5><br>  If you are interested in reading the materials on the allocation of CPU resources in Xen - below are the sources from which I used.  If you find other interesting articles - write about it, please, in the comments. <br><ul><li>  <a href="http://www.xen.org/files/Marketing/HowDoesXenWork.pdf">General overview of the Xen-hypervisor architecture</a> ; </li><li>  <a href="http://eurosys2010.sigops-france.fr/poster_demo/eurosys2010-final14.pdf">Information about the distribution system CPU in Xen</a> ; </li><li>  <a href="http://wiki.xensource.com/xenwiki/CreditScheduler">Details on credit scheduler</a> ; </li><li>  <a href="http://searchsystemschannel.techtarget.com/generic/0,295582,sid99_gci1379710,00.html">And more about resource allocation in Xen</a> ; </li><li>  <a href="http://www.highload.ru/papers2008/8207.html">Video presentation of Frank Kohler (Citrix) by XenServer</a> ; </li></ul><br>  Subscribe to our <a href="http://twitter.com/scalaxy">twitter</a> , we try to look for interesting materials about virtualization and cloud computing for you.  And <a href="http://scalaxy.ru/">come</a> and <a href="http://scalaxy.ru/">test us</a> / <a href="https://oversun.zendesk.com/forums/149794">give us an idea about the functionality you need</a> :) </div><p>Source: <a href="https://habr.com/ru/post/109796/">https://habr.com/ru/post/109796/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../109789/index.html">Ruby Programming Tutorials - Classes Continue</a></li>
+<li><a href="../109790/index.html">ReactOS: anniversary 50 000 build</a></li>
+<li><a href="../109791/index.html">Guglobag</a></li>
+<li><a href="../109792/index.html">Why I left Google and went to Facebook: Lars Rasmussen</a></li>
+<li><a href="../109794/index.html">1 million rubles for hosting 96 sites of the Ministry of Emergency Situations for 2011</a></li>
+<li><a href="../109799/index.html">YouTube lifted restrictions on the duration of videos</a></li>
+<li><a href="../109800/index.html">Microchips will be implanted in all puppies in the Netherlands</a></li>
+<li><a href="../109802/index.html">Corporate Dropbox: 350 GB Packages with Central Administration</a></li>
+<li><a href="../109803/index.html">Microsoft wanted to buy Facebook in 2007</a></li>
+<li><a href="../109808/index.html">Google helps to reach Santa Claus (Santa Claus)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Transactions and multithreaded database access</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, I needed to execute the following code (presented in the most simplified form): 
+
+
+
+public void Start() { using (var transactionScope = new ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Transactions and multithreaded database access</h1><div class="post__text post__text-html js-mediator-article">  Recently, I needed to execute the following code (presented in the most simplified form): <br><br><pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Start</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> transactionScope = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> TransactionScope()) { ... GetOrCreateCompany(someValue); ... transactionScope.Complete(); } } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> Company </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetOrCreateCompany</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> companyName</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> company = _companiesRepository.GetCompany(companyName); <span class="hljs-comment"><span class="hljs-comment">//     ;     -  null if (company == null) company = _companiesRepository.Add(companyName); return company; }</span></span></code> </pre> <br><br>  This code was executed in a multi-threaded environment, where each stream received a Start method at the input (which means each thread had its own transaction). 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      This seemingly simple code has several nuances, which will be discussed under the cut. <br><br><a name="habracut"></a><br><br>  There is a general solution for the task: set the necessary constraints, conclude a transaction in a cycle, and if an exception occurs - try again (if a certain number of attempts is exceeded - throw the exception up).  However, in the case of a large number of threads as a result of conflicting locks, this approach works very slowly (it is easier to say that it does not work).  Therefore, I began to implement a more specific solution. <br><br>  Below is the code of my first solution (hereinafter, the specifics of transactions and locks will be considered using MySQL as an example): <br><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Start</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> transactionScope = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> TransactionScope(TransactionScopeOption.Requires, <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> TransactionOptions() { IsolationLevel = IsolationLevel.Serializable })) { ... GetOrCreateCompany(someValue); ... transactionScope.Complete(); } } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> Company </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetOrCreateCompany</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> companyName</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> company = _companiesRepository.GetCompanyWithWriteLock(companyName); <span class="hljs-comment"><span class="hljs-comment">//    SELECT ... FOR UPDATE if (company == null) company = _companiesRepository.Add(companyName); return company; }</span></span></code> </pre><br><br>  In the code above, the company selection is blocked together with the corresponding range (due to the use of Serializable) and is unlocked only after a commit.  The next transaction that tries to count the same company will wait for a commit to block the transaction. <br><br>  In general, this solution works.  But we look at the <a href="http://ru.wikipedia.org/wiki/%25D0%2597%25D0%25B0%25D0%25BA%25D0%25BE%25D0%25BD_%25D0%2590%25D0%25BC%25D0%25B4%25D0%25B0%25D0%25BB%25D0%25B0">law of Amdal</a> , then at our code, then again at the Law of Amdal - and it becomes sad: not only are we forced to block records up to the transaction commit (and the amount of code below the lock / locks is not fixed), so also We put write-lock even if the sample returns the desired company (and therefore do not need to add it).  If the first point is the basis of this decision, and there’s no way out of it, then we’ll deal with the second one. <br><br>  Selection of the company will not return us null in two cases: <br><ol><li>  The company was added as part of a previous transaction, which is already committed </li><li>  The company was added as part of the current transaction, and will become visible to other transactions only after committing the current transaction. </li></ol>  Let's try to handle the first case separately, and before blocking, we will execute the query outside the current transaction, which will check if there are no required data among the already committed transactions: <br><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> Company </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetOrCreateCompany</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> companyName</span></span></span><span class="hljs-function">)</span></span> { Company company; <span class="hljs-comment"><span class="hljs-comment">//    ,  ,       .   -    ,      using (var independentTransactionScope = new TransactionScope(TransactionScopeOption.Suppress)) { company = _companiesRepository.GetCompany(companyName); } //      ,        -     if (company != null) return; //company   null   : 1.      ,        2.      var company = _companiesRepository.GetCompanyWithWriteLock(companyName); if (company == null) //       -       company = _companiesRepository.Add(companyName); } }</span></span></code> </pre><br><br>  A small minus of this optimization is that you have to duplicate the sample, if the values ​​are not visible outside the current transaction (in other words, if the sample returned from the independent TransactionScope).  But against the background of performance gains on this extra sample, you can close your eyes. <br><br>  Why did I write this article?  I do not leave the feeling that I went in the wrong direction: the problem is trivial, and the solution ... not so much.  In addition, I could not find examples of solutions to this problem, and this puzzles me even more.  I hope the commentators will clarify the situation by proposing alternative solutions, or by agreeing with mine. <br><br>  <b>Update</b> <br>  In personal correspondence, the Shaddix <a href="http://habrahabr.ru/users/shaddix/" class="user_link">habrachelok</a> (in combination, my colleague) suggested an interesting development of the idea of ​​using an independent transaction — to place in an independent transaction not only reading, but also adding.  This, at first glance, a small modification changes everything very much. <br><br>  First implementation: <br><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-keyword"><span class="hljs-keyword">class</span></span> <span class="hljs-title"><span class="hljs-title">TransactionCode</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">static</span></span> <span class="hljs-keyword"><span class="hljs-keyword">readonly</span></span> <span class="hljs-keyword"><span class="hljs-keyword">object</span></span> _lockObject = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-keyword"><span class="hljs-keyword">object</span></span>(); <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Start</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> transactionScope = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> TransactionScope()) { ... GetOrCreateCompany(someValue); ... transactionScope.Complete(); } } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> Company </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetOrCreateCompany</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> companyName</span></span></span><span class="hljs-function">)</span></span> { Company company; <span class="hljs-comment"><span class="hljs-comment">//,        using (var indepdentTransactionScope = new TransactionScope(TransactionScopeOption.RequiresNew)) { var company = _companiesRepository.GetCompany(companyName); } if (company != null) return; //   ,     //    using (var independentTransactionScope = new TransactionScope(TransactionScopeOption.RequiresNew)) { var company = _companiesRepository.GetCompanyWithWriteLock(companyName); if (company == null) company = _companiesRepository.Add(companyName); independentTransactionScope.Complete(); } } }</span></span></code> </pre><br><br>  Now we are not adding a company to the main transaction, but using an independent transaction for this purpose.  The main feature here is that since the addition takes place in an independent transaction that commits immediately, the added value immediately (and not after the commit transaction of the main transaction, as it was in the previous decision) will be visible to other transactions.  Well, there is no doubt that this approach is more efficient: in my case, the performance gain was 300% (and the more dynamic the data, the greater the gain due to the shorter locking time). <br>  But this solution also has disadvantages: <br>  1. The main drawback is that if the main transaction is rolled back, then the data added in the independent transaction will not be rolled back (we committed them).  In general, the disadvantage is rather critical ... but not for me: in methods like GetOrCreate, I add relatively independent data that will be added sooner or later: not in this transaction, so in the next one. <br>  2. I have personal prejudices against using not-readonly transactions with TransactionScopeOption.RequiresNew and TransactionScopeOption.Suppress (I will cut them in the next post). <br><br>  Thus, despite the fact that I like the latter solution more generally, it cannot be said that one of them is better than the other — they are different. </div><p>Source: <a href="https://habr.com/ru/post/115156/">https://habr.com/ru/post/115156/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../115148/index.html">What are dangerous cheap GPS jammers</a></li>
+<li><a href="../115149/index.html">Droider Chart. Release 42</a></li>
+<li><a href="../115150/index.html">Installing Remote Server Administration Tools (RSAT) on Windows 7 SP1</a></li>
+<li><a href="../115154/index.html">Best tablets 2011</a></li>
+<li><a href="../115155/index.html">LG Optimus 2X video review</a></li>
+<li><a href="../115157/index.html">Calling a .NET service (WCF RESTful) from an Android application</a></li>
+<li><a href="../115158/index.html">Qiwi disables Yandex.Money</a></li>
+<li><a href="../115159/index.html">Netbeans IDE 7.0 Beta 2 for PHP</a></li>
+<li><a href="../115160/index.html">The first meeting of the Club Innovators in Moscow</a></li>
+<li><a href="../115162/index.html">Paradox search web designer in the region</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Comet – application for Mochiweb with a load of 1 000 000 users. Part 1/3</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Part 2 
+ Part 3 
+
+ In this series of articles, I’ll share what I learned empirically about how Mochiweb handles a large number of open connections, an...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Comet – application for Mochiweb with a load of 1 000 000 users. Part 1/3</h1><div class="post__text post__text-html js-mediator-article">  <a href="http://habrahabr.ru/blogs/erlang/111350/"><i>Part 2</i></a> <br>  <a href="http://habrahabr.ru/blogs/erlang/111600/"><i>Part 3</i></a> <br><br>  In this series of articles, I’ll share what I learned empirically about how Mochiweb handles a large number of open connections, and show you how to create a Comet application using Mochiweb, where each connection is registered in the router.  We will end up with a working application that is able to cope with 1,000,000 parallel connections, and find out how much memory we need for this. <br><br>  In part one: <br>  • Creating a simple Comet - an application that sends a message to customers every 10 seconds. <br>  • Configure the Linux kernel to support a large number of connections. <br>  • Creating a testing utility to create a large number of connections. <br>  • Determine the required amount of memory. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The following parts of this cycle will tell how to build a real system, show additional tricks to reduce memory usage, and contain tests with 100,000 and 1,000,000 concurrent connections. <br><br>  It is assumed that you are familiar with bash, and a little with Erlang. <br><a name="habracut"></a><br><h4>  Creating a testing application </h4><br>  In short: <br><br>  1. Install Mochiweb. <br>  2. Run: /your-mochiweb-path/scripts/new_mochiweb.erl mochiconntest <br>  3. cd mochiconntest and change src / mochiconntest_web.erl <br><br>  This code (mochiconntest_web.erl) only accepts connections and sends a welcome message, and one message every 10 seconds to each client. <br><br><pre><code class="hljs rust">-module(mochiconntest_web). -export([start/<span class="hljs-number"><span class="hljs-number">1</span></span>, stop/<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">loop</span></span>/<span class="hljs-number"><span class="hljs-number">2</span></span>]). %% External API start(Options) -&gt; {DocRoot, Options1} = get_option(docroot, Options), Loop = fun (Req) -&gt; ?MODULE:<span class="hljs-keyword"><span class="hljs-keyword">loop</span></span>(Req, DocRoot) end, %we<span class="hljs-symbol"><span class="hljs-symbol">'ll</span></span> set our maximum to <span class="hljs-number"><span class="hljs-number">1</span></span> million connections. mochiweb_http:start([{max, <span class="hljs-number"><span class="hljs-number">1000000</span></span>}, {name, ?MODULE}, {<span class="hljs-keyword"><span class="hljs-keyword">loop</span></span>, Loop} | Options1]). stop() -&gt; mochiweb_http:stop(?MODULE). <span class="hljs-keyword"><span class="hljs-keyword">loop</span></span>(Req, DocRoot) -&gt; <span class="hljs-string"><span class="hljs-string">"/"</span></span> ++ Path = Req:get(path), case Req:get(method) of Method when Method =:= <span class="hljs-symbol"><span class="hljs-symbol">'GET</span></span>'; Method =:= <span class="hljs-symbol"><span class="hljs-symbol">'HEAD</span></span>' -&gt; case Path of <span class="hljs-string"><span class="hljs-string">"test/"</span></span> ++ Id -&gt; Response = Req:ok({<span class="hljs-string"><span class="hljs-string">"text/html; charset=utf-8"</span></span>, [{<span class="hljs-string"><span class="hljs-string">"Server"</span></span>,<span class="hljs-string"><span class="hljs-string">"Mochiweb-Test"</span></span>}], chunked}), Response:write_chunk(<span class="hljs-string"><span class="hljs-string">"Mochiconntest welcomes you! Your Id: "</span></span> ++ Id ++ <span class="hljs-string"><span class="hljs-string">"\n"</span></span>), %% router:login(list_to_atom(Id), <span class="hljs-keyword"><span class="hljs-keyword">self</span></span>()), feed(Response, Id, <span class="hljs-number"><span class="hljs-number">1</span></span>); _ -&gt; Req:not_found() end; <span class="hljs-symbol"><span class="hljs-symbol">'POST</span></span>' -&gt; case Path of _ -&gt; Req:not_found() end; _ -&gt; Req:respond({<span class="hljs-number"><span class="hljs-number">501</span></span>, [], []}) end. feed(Response, Path, N) -&gt; receive %{router_msg, Msg} -&gt; % Html = io_lib:format(<span class="hljs-string"><span class="hljs-string">"Recvd msg #~w: '~s' "</span></span>, [N, Msg]), % Response:write_chunk(Html); after <span class="hljs-number"><span class="hljs-number">10000</span></span> -&gt; Msg = io_lib:format(<span class="hljs-string"><span class="hljs-string">"Chunk ~w for id ~s\n"</span></span>, [N, Path]), Response:write_chunk(Msg) end, feed(Response, Path, N+<span class="hljs-number"><span class="hljs-number">1</span></span>). %% Internal API get_option(<span class="hljs-built_in"><span class="hljs-built_in">Option</span></span>, Options) -&gt; {proplists:get_value(<span class="hljs-built_in"><span class="hljs-built_in">Option</span></span>, Options), proplists:delete(<span class="hljs-built_in"><span class="hljs-built_in">Option</span></span>, Options)}.</code> </pre> <br><br><h4>  Launch Mochiweb application </h4><br><pre> <code class="bash hljs">make &amp;&amp; ./start-dev.sh</code> </pre><br><br>  By default, mochiweb listens to port 8000. If you are working on a home computer, you can check with any web browser: <a href="http://localhost:8000/test/foo">http: // localhost: 8000 / test / foo</a> . <br><br>  Below is the command line test: <br><pre> <code class="bash hljs">$ lynx --<span class="hljs-built_in"><span class="hljs-built_in">source</span></span> <span class="hljs-string"><span class="hljs-string">"http://localhost:8000/test/foo"</span></span> Mochiconntest welcomes you! Your Id: foo&lt;br/&gt; Chunk 1 <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> id foo&lt;br/&gt; Chunk 2 <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> id foo&lt;br/&gt; Chunk 3 <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> id foo&lt;br/&gt; ^C</code> </pre><br><br>  Yes it works. <br><br><h4>  Configuring the Linux Kernel for a large number of tcp connections </h4><br>  Save yourself some time and configure the kernel before conducting tests with a large number of connections, or your test will not work, and you will see a lot of "Out of socket memory" messages. <br><br>  Here is the sysctl setting: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># General gigabit tuning: net.core.rmem_max = 16777216 net.core.wmem_max = 16777216 net.ipv4.tcp_rmem = 4096 87380 16777216 net.ipv4.tcp_wmem = 4096 65536 16777216 net.ipv4.tcp_syncookies = 1 # this gives the kernel more memory for tcp # which you need with many (100k+) open socket connections net.ipv4.tcp_mem = 50576 64768 98152 net.core.netdev_max_backlog = 2500 # I was also masquerading the port comet was on, you might not need this net.ipv4.netfilter.ip_conntrack_max = 1048576</span></span></code> </pre><br><br>  Put them in / etc / sysctl.conf, then run sysctl -p to apply them.  There is no need to reboot the system; now the kernel should be able to handle many more open connections. <br><br><h4>  Creating a large number of connections </h4><br>  There are many ways to do this.  Tsung is pretty sexy, and even less sexual ways to create httpd spam with more requests (ab, httperf, httpload, etc.) are enough.  None of them is ideal for testing our application, so I wrote a basic Erlang test for this purpose. <br><br>  Just because we can, does not mean that we should ... One process for each connection would definitely be expensive.  I used one process to load a URL from a file, and another process to establish a connection and receive messages from all http connections (and one process as a timer to print a report every 10 seconds).  All data received from the server is discarded, but the counter is incremented, so we can track how many HTTP messages were delivered. <br><br><pre> <code class="hljs pgsql">-module(floodtest). -export([<span class="hljs-keyword"><span class="hljs-keyword">start</span></span>/<span class="hljs-number"><span class="hljs-number">2</span></span>, timer/<span class="hljs-number"><span class="hljs-number">2</span></span>, recv/<span class="hljs-number"><span class="hljs-number">1</span></span>]). <span class="hljs-keyword"><span class="hljs-keyword">start</span></span>(Filename, Wait) -&gt; inets:<span class="hljs-keyword"><span class="hljs-keyword">start</span></span>(), spawn(?MODULE, timer, [<span class="hljs-number"><span class="hljs-number">10000</span></span>, self()]), This = self(), spawn(fun()-&gt; loadurls(Filename, fun(U)-&gt; This ! {loadurl, U} <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>, Wait) <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>), recv({<span class="hljs-number"><span class="hljs-number">0</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>}). recv(Stats) -&gt; {Active, Closed, Chunks} = Stats, receive {stats} -&gt; io:format("Stats: ~w\n",[Stats]) <span class="hljs-keyword"><span class="hljs-keyword">after</span></span> <span class="hljs-number"><span class="hljs-number">0</span></span> -&gt; noop <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>, receive {http,{_Ref,stream_start,_X}} -&gt; recv({Active+<span class="hljs-number"><span class="hljs-number">1</span></span>,Closed,Chunks}); {http,{_Ref,stream,_X}} -&gt; recv({Active, Closed, Chunks+<span class="hljs-number"><span class="hljs-number">1</span></span>}); {http,{_Ref,stream_end,_X}} -&gt; recv({Active<span class="hljs-number"><span class="hljs-number">-1</span></span>, Closed+<span class="hljs-number"><span class="hljs-number">1</span></span>, Chunks}); {http,{_Ref,{error,Why}}} -&gt; io:format("Closed: ~w\n",[Why]), recv({Active<span class="hljs-number"><span class="hljs-number">-1</span></span>, Closed+<span class="hljs-number"><span class="hljs-number">1</span></span>, Chunks}); {loadurl, Url} -&gt; http:request(<span class="hljs-keyword"><span class="hljs-keyword">get</span></span>, {Url, []}, [], [{sync, <span class="hljs-keyword"><span class="hljs-keyword">false</span></span>}, {stream, self}, {<span class="hljs-keyword"><span class="hljs-keyword">version</span></span>, <span class="hljs-number"><span class="hljs-number">1.1</span></span>}, {body_format, binary}]), recv(Stats) <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>. timer(T, Who) -&gt; receive <span class="hljs-keyword"><span class="hljs-keyword">after</span></span> T -&gt; Who ! {stats} <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>, timer(T, Who). % <span class="hljs-keyword"><span class="hljs-keyword">Read</span></span> lines <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> a file <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> a specified delay <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> lines: for_each_line_in_file(<span class="hljs-type"><span class="hljs-type">Name</span></span>, Proc, Mode, Accum0) -&gt; {ok, Device} = file:<span class="hljs-keyword"><span class="hljs-keyword">open</span></span>(<span class="hljs-type"><span class="hljs-type">Name</span></span>, Mode), for_each_line(Device, Proc, Accum0). for_each_line(Device, Proc, Accum) -&gt; <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> io:get_line(Device, "") <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> eof -&gt; file:<span class="hljs-keyword"><span class="hljs-keyword">close</span></span>(Device), Accum; <span class="hljs-type"><span class="hljs-type">Line</span></span> -&gt; NewAccum = Proc(<span class="hljs-type"><span class="hljs-type">Line</span></span>, Accum), for_each_line(Device, Proc, NewAccum) <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>. loadurls(Filename, Callback, Wait) -&gt; for_each_line_in_file(Filename, fun(<span class="hljs-type"><span class="hljs-type">Line</span></span>, List) -&gt; Callback(string:strip(<span class="hljs-type"><span class="hljs-type">Line</span></span>, right, $\n)), receive <span class="hljs-keyword"><span class="hljs-keyword">after</span></span> Wait -&gt; noop <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>, List <span class="hljs-keyword"><span class="hljs-keyword">end</span></span>, [<span class="hljs-keyword"><span class="hljs-keyword">read</span></span>], []).</code> </pre><br><br>  Every connection we create requires a port, and by default their number is limited to 1024. To avoid problems, we need to change the ulimit parameter for the shell.  This is done in / etc / security / limits.conf, but requires a reboot of the system. <br><pre> <code class="bash hljs">$ sudo bash <span class="hljs-comment"><span class="hljs-comment"># ulimit -n 999999</span></span></code> </pre><br><br>  We can also increase the range of available ports to the maximum: <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># echo "1024 65535" &gt; /proc/sys/net/ipv4/ip_local_port_range</span></span></code> </pre><br>  Generate a file with the URL for our testing utility: <br><pre> <code class="bash hljs">( <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> `seq 1 10000`; <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"http://localhost:8000/test/</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$i</span></span></span><span class="hljs-string">"</span></span> ; <span class="hljs-keyword"><span class="hljs-keyword">done</span></span> ) &gt; /tmp/mochi-urls.txt</code> </pre><br><br>  Next, we compile and run our utility using the Erlang console: <br><pre> <code class="bash hljs">erl&gt; c(floodtest). erl&gt; floodtest:start(<span class="hljs-string"><span class="hljs-string">"/tmp/mochi-urls.txt"</span></span>, 100).</code> </pre><br><br>  The code will establish 10 new connections per second (i.e., 1 connection every 100 ms). <br>  Statistics will be displayed in the form {Active, Closed, Chunks}, where Active is the number of connections currently established, Closed is the number of connections that were terminated for some reason, and Chunks is the number of messages sent from Mochiweb.  Closed must remain at 0, and Chunks must be larger than Active, because each active connection causes many messages (1 every 10 seconds). <br><br>  The size of the Mochiweb process with 10,000 active connections was 450 MB - this is 45 KB for each connection.  The CPU utilization on the machine was virtually zero. <br><br><h4>  Findings. </h4><br>  This was the first attempt.  45 KB for each connection seems to be quite large - you can probably collect something on C using libevent, which could do the same, at a cost of 4.5K for each connection (this is only an assumption, if anyone has a similar experience, please leave a comment).  If we take into account the amount of code and the time it took to do this in Erlang compared to C, I think that the increased memory used is more excusable. <br><br>  In future articles, I will show the message router (so we can uncomment lines 25 and 41-43 in mochiconntest_web.erl), and talk about some ways to reduce memory usage.  I will also show test results with 100,000 and 1,000,000 connections. <br><br>  Update: <a href="http://habrahabr.ru/blogs/erlang/111350/">Part 2</a> </div><p>Source: <a href="https://habr.com/ru/post/111252/">https://habr.com/ru/post/111252/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../111242/index.html">Symfony Code'n'Coffee Minsk (Belarus) Jan 2011</a></li>
+<li><a href="../111243/index.html">Evernote: 2010 in numbers</a></li>
+<li><a href="../111244/index.html">Pro Video Compression - Introduction</a></li>
+<li><a href="../111246/index.html">Lab DC power supply from power supply</a></li>
+<li><a href="../111249/index.html">Video hosting with their own hands</a></li>
+<li><a href="../111253/index.html">New generation media</a></li>
+<li><a href="../111254/index.html">PHP 5.2.17 and 5.3.5 release</a></li>
+<li><a href="../111257/index.html">Qualcomm buys Atheros for $ 3.1 billion</a></li>
+<li><a href="../111258/index.html">About C ++ Location</a></li>
+<li><a href="../111259/index.html">10 years of practice. Part 2: Resources</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
