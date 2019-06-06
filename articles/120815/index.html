@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Non-blocking TCP server without undocumented features</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Introduction 
+ A great article with trapexit “Building a Non-blocking TCP server using OTP principles” tells you how to build a non-blocking TCP serve...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Non-blocking TCP server without undocumented features</h1><div class="post__text post__text-html js-mediator-article"><h4>  Introduction </h4><br>  A great article with trapexit “Building a Non-blocking TCP server using OTP principles” tells you how to build a non-blocking TCP server using OTP principles.  I think everyone who began to study elrlang sooner or later came across this article.  To build a non-blocking TCP server, the above article uses undocumented functionality from the prim_inet module. <br><br>  I will not make good or bad use of undocumented features, in some “crutch” solutions this is really necessary, in production I would prefer to use proven tools.  Note, even in the article itself, the author warns: " <i>This is a non-documented property. OTP team is free to change this implementation, we will exploit this functionality in the construction of our server [1].</i> " <br><a name="habracut"></a><br>  <i>By a non-blocking server, we mean that the listening process and the FSM should not make any blocking calls and quickly respond to incoming messages (for example, changes in configuration, restart, etc.) without causing timeouts [2].</i> <br><br>  Regarding the clipping above: problems may arise (with the listening process), if it carries additional functional load (for example, contains any additional user APIs that need to be twitched in the process), FSM for architectural reasons does not must contain blocking calls.  Therefore, if the listener’s only function is to listen, then there is nothing terrible that its flow will be blocked by waiting for a connection, in case it is necessary to restart this element of the system, it will be forcibly stopped by the supervisor, at a predetermined timeout and then restarted (unless rights correct).  Problems may arise during the hot update of the code (the author didn’t check what rake could be encountered in this case, who tried to share experience). 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      We set the task to implement a non-blocking TCP server using only documented methods. <br><br><h4>  Server structure </h4><br>  The first thing that comes to mind about the task at hand is to implement the connection wait in a separate process.  Thus, the server structure can be represented as follows. <br><br><img src="https://habrastorage.org/storage1/ffc637e2/2ebe3f91/ed0abc28/ca43e762.png"><br>  Picture 1 <br><br>  1. application_master: main_loop / 2 <br>  2. application_master: loop_it / 4 <br><br>  When an application is launched, an application_master process is created, in a logical structure it is one process, but two processes are created on the physical layer.  Application master is the group leader for all processes in an application. <br><br>  3. Supervisor of our TCP server (supervisor) <br>  4. A listener (gen_server) that hits a listener process (simple process) <br>  5. Supervisor client processes (supervisor) <br>  6. The listener process (simple process) <br>  7. Client processes (gen_fsm) <br><br><h4>  Source </h4><br>  I think it makes no sense to provide the source code for all parts of the system, we’ll dwell only on the tcp_listener module and the process it starts. <br><br><pre><code class="lisp hljs">-module(<span class="hljs-name"><span class="hljs-name">tcp_listener</span></span>). -behaviour(<span class="hljs-name"><span class="hljs-name">gen_server</span></span>). -export([start_link/1]). -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]). -export([accept_func/1]). -define(<span class="hljs-name"><span class="hljs-name">SERVER</span></span>, ?MODULE). <span class="hljs-number"><span class="hljs-number">1</span></span>. -define(<span class="hljs-name"><span class="hljs-name">LOGIC_MODULE</span></span>, tcp_fsm). <span class="hljs-number"><span class="hljs-number">2</span></span>. -record(<span class="hljs-name"><span class="hljs-name">state</span></span>, { listener, %% Listening socket module %% FSM handling module }). start_link(<span class="hljs-name"><span class="hljs-name">Port</span></span>) -&gt; gen_server:start_link({local, ?SERVER}, ?MODULE, [Port], []). init([Port]) -&gt; Options = [{packet, raw}, {active, once}, {reuseaddr, true}], case gen_tcp:listen(<span class="hljs-name"><span class="hljs-name">Port</span></span>, Options) of {ok, LSocket} -&gt; %% Create first accepting process <span class="hljs-number"><span class="hljs-number">3</span></span>. spawn_link(?MODULE, accept_func, [LSocket]), {ok, #state{listener = LSocket, module = ?LOGIC_MODULE}}<span class="hljs-comment"><span class="hljs-comment">; {error, Reason} -&gt; error_logger:error_msg("Error: ~p~n", [Reason]), {stop, Reason} end. handle_call(_Request, _From, State) -&gt; Reply = ok, {reply, Reply, State}. handle_cast(_Msg, State) -&gt; {noreply, State}. handle_info(_Info, State) -&gt; {noreply, State}. terminate(_Reason, #state{listener = LSocket} = _State) -&gt; gen_tcp:close(LSocket), ok. code_change(_OldVsn, State, _Extra) -&gt; {ok, State}. accept_func(LSocket) -&gt; 4. {ok, Socket} = gen_tcp:accept(LSocket), error_logger:info_msg("Accept connection: ~p.\n", [Socket]), 5. {ok, Pid} = tcp_client_sup:start_child(), 6. ok = gen_tcp:controlling_process(Socket, Pid), 7. tcp_fsm:set_socket(Pid, Socket), 8. accept_func(LSocket).</span></span></code> </pre> <br>  1. Macro declaring a client connection handling module. <br>  2. Structure for storing the state of the gen-server. <br>  3. We create an additional process that will “listen”. <br>  4. We are waiting for the connection. <br>  5. Create a gen_fsm (tcp_fsm module) to handle the connection to the client. <br>  6. Change the controlling socket process to the newly created process in Section 5. <br>  7. Pass the socket to the tcp_fsm module. <br>  8. Starting to "listen" again. <br><br><h4>  We are testing </h4><br><pre> <code class="bash hljs">(emacs@host)2&gt; make:all(). <span class="hljs-comment"><span class="hljs-comment">#  Recompile: tcp_server_sup Recompile: tcp_listener Recompile: tcp_fsm Recompile: tcp_client_sup Recompile: erltcps up_to_date (emacs@host)3&gt; code:add_path("../ebin"). #    ebin true (emacs@host)4&gt; application:load(erltcps). #   ok (emacs@host)5&gt; application:start(erltcps). #   ok (emacs@host)6&gt; =INFO REPORT==== 22-Jun-2011::13:10:07 === Accept connection: #Port&lt;0.2353&gt;. #   (emacs@host)6&gt; =INFO REPORT==== 22-Jun-2011::13:10:07 === IP: {127,0,0,1} # IP  (emacs@host)6&gt; =INFO REPORT==== 22-Jun-2011::13:10:15 === &lt;&lt;"hello\r\n"&gt;&gt; #   (emacs@host)6&gt; =INFO REPORT==== 22-Jun-2011::13:10:23 === {127,0,0,1} Client disconnected. #   (emacs@host)6&gt;</span></span></code> </pre><br><br><h4>  findings </h4><br>  As a result, we built a TCP server frame “as it were” not blocking.  In our implementation, a special process remains blocked, the only function of which is to wait for a connection and create a process for its processing.  In the tcp_listener module itself, you can add additional logic (for example, starting / stopping receiving connections by stopping the listening process). <br>  Pros: <br><ul><li>  We did not use undocumented features, which in production can cost us a lot. </li><li>  A specially created process remains blocked. </li></ul><br>  Minuses: <br><ul><li>  In our OTP application there is a process created not according to the principles of OTP. </li><li>  If the listening process fails (accept_func / 1 in the tcp_listener module), then the signal propagates, and tcp_listener also drops, since the supervisor restarts tcp_listener, and he in turn creates the listening process from the accept_func / 1 function. </li></ul><br>  These two minuses are interconnected.  For everyone there is a solution.  Here are a couple of tasks for readers: <br>  1. What should be done to prevent tcp_lictener from falling if the listening process falls (accept_func / 1)? <br>  2. What needs to be added for a safer use of simple processes in an OTP application? <br><br><h4>  Download </h4><br>  The source code for the article can be downloaded on <a href="https://github.com/LiveStalker/erltcps/tree/habr-article-1">github</a> . <br><br><h4>  What to read? </h4><br>  1. <a href="http://www.trapexit.org/Building_a_Non-blocking_TCP_server_using_OTP_principles">Building a Non-blocking TCP server using OTP principles</a> <br>  2. <a href="http://habrahabr.ru/blogs/erlang/111268/">Creating a non-blocking TCP server using OTP principles</a> <br>  3. <a href="http://www.trapexit.org/forum/viewtopic.php%3Fp%3D29157">Erlang questions mailing list ~ prim_inet</a> <br>  4. <a href="http://erldocs.com/">Excellent documentation</a> <br>  5. <a href="http://www.erlang.org/documentation/doc-4.9.1/doc/design_principles/applications.html">Erlang applications</a> </div><p>Source: <a href="https://habr.com/ru/post/120815/">https://habr.com/ru/post/120815/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../120798/index.html">“Solar” electric train appeared in the EU</a></li>
+<li><a href="../120810/index.html">PyCharm 1.5: fresh update IDE for Python / Django</a></li>
+<li><a href="../120811/index.html">Review and crash test of the school netbook: “Mari Ivanovna, and if you pour water on my netbook - what will happen to him !?”</a></li>
+<li><a href="../120812/index.html">Webnames.ru helps ICANN solve problems with Cyrillic domains</a></li>
+<li><a href="../120814/index.html">We do nginx as front-end to apache</a></li>
+<li><a href="../120816/index.html">Droider Chart 55. Hit parade of Android applications</a></li>
+<li><a href="../120818/index.html">May: RIF + CIB, Labor Day and early successes</a></li>
+<li><a href="../120819/index.html">Gold rush startups</a></li>
+<li><a href="../120821/index.html">cPanel and Parallels Plesk Panel from the point of view of a hoster. Part one</a></li>
+<li><a href="../120824/index.html">Pdmenu or how not to give a novice a mistake</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

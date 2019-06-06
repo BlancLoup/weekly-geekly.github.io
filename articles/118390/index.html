@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Thread-safe lazy initialization in C ++</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Raymond Chen wrote an interesting series of blogposts about lockless synchronization. I would like to publish these notes for hack readers. This post ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Thread-safe lazy initialization in C ++</h1><div class="post__text post__text-html js-mediator-article">  Raymond Chen wrote an interesting series of blogposts about lockless synchronization.  I would like to publish these notes for hack readers.  This post is an introduction to a series compiled from three old Chen posts. <ol><li>  Lazy initialization with built-in C ++ tools </li><li>  Lockless synchronization </li><li>  Bezamochnaya thread-safe lazy initialization </li></ol><br><br><h3>  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/03/08/85901.aspx">Lazy initialization with built-in C ++ tools</a> </h3><br>  Initializing static local variables in C ++ is not thread safe, and intentionally! <br><br>  The specification establishes that static local variables (as opposed to global ones) are initialized when they first execute a block of code in which they are declared. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Try to find flight-condition yourself in a code fragment that calculates the result of a certain function “lazily” - at the first call, and then saves this result for subsequent calls. <br><br> <code>int ComputeSomething() <br> { <br> static int cachedResult = ComputeSomethingSlowly(); <br> return cachedResult; <br> } <br></code> <br>  (Approximately this code is advised in the popular <a href="http://www.parashift.com/c%2B%2B-faq-lite/ctors.html">C ++ FAQ</a> , so as not to depend on the order of initialization of <i>global</i> static variables chosen by the compiler.) <br><a name="habracut"></a><br>  The thing is, the compiler turns the initialization of static local variables into something like this: <br> <code>int ComputeSomething() <br> { <br> <font color="#000080">static bool cachedResult_computed = false; <br> static int cachedResult; <br> if (!cachedResult_computed) { <br> cachedResult_computed = true; <br> cachedResult = ComputeSomethingSlowly(); <br> }</font> <br> return cachedResult; <br> } <br></code> <br>  Now the flight-condition is visible to the naked eye.  Imagine that two threads called <code>ComputeSomething()</code> at the same time.  The first stream only has time to perform <code>cachedResult_computed = true</code> before the system switches to the second stream.  Now the second thread sees the set <code>cachedResult_computed</code> flag, skips the initialization of the variable, and takes its uninitialized value. <br><br>  And this is not a compiler bug - <b>it was prescribed by the C ++ standard</b> .  (Then, in the TC1 edition, the thread safety requirement was removed, leaving “undefined behavior” in case of simultaneous initialization.) <br><br>  Multi-threaded initialization of static local variables can lead to more significant problems: <br><br> <code>class Something { ... }; <br> int ComputeSomething() <br> { <br> static Something s; <br> return s.ComputeIt(); <br> } <br></code> <br>  This code will unfold in <br><br> <code>class Something { ... }; <br> int ComputeSomething() <br> { <br> <font color="#000080">static bool s_constructed = false; <br> static uninitialized Something s; <br> if (!s_constructed) { <br> s_constructed = true; <br> new(&amp;s) Something; //  s <br> atexit(DestructS); <br> }</font> <br> return s.ComputeIt(); <br> } <br> <font color="#000080">//  s    <br> void DestructS() <br> { <br> ComputeSomething::s.~Something(); <br> }</font> <br></code> <br>  Now flight-kondishnov perhaps several.  As before, one of the threads can get ahead of the other, and grab the value of <code>s</code> before it is initialized.  But in addition to that, if the first thread managed to check the value of <code>s_constructed</code> , but <b>did not</b> manage to set it to <code>true</code> , then the object <code>s</code> <b>will be created twice and destroyed twice</b> .  (Rather, one object will “leak”, and the second one will be destroyed twice.) No jokes! <br><br>  But that's not all.  Look what happens if there are <i>two</i> initialized static local variables: <br> <code>int ComputeSomething() <br> { <br> static Something s(0); <br> static Something t(1); <br> return s.ComputeIt() + t.ComputeIt(); <br> } <br></code> <br>  The compiler, to save memory, will save both flags in one variable: <br> <code>class Something { ... }; <br> int ComputeSomething() <br> { <br> <font color="#000080">static char constructed = 0; <br> static uninitialized Something s; <br> if (!(constructed &amp; 1)) { <br> constructed |= 1; <br> new(&amp;s) Something; //  s <br> atexit(DestructS); <br> } <br> static uninitialized Something t; <br> if (!(constructed &amp; 2)) { <br> constructed |= 2; <br> new(&amp;t) Something; //  t <br> atexit(DestructT); <br> }</font> <br> return s.ComputeIt() + t.ComputeIt(); <br> } <br></code> <br>  Great, now we have several threads perform logical operations on a common variable <b>without any synchronization</b> .  Let's see what happens if one stream attempts to <code>constructed |= 1</code> at the same time as another stream performs <code>constructed |= 2</code> . <br><br>  In x86 / x64 processors there are commands that work with the operand in memory directly.  Compiler will generate machine code <br> <code>or constructed, 1 <br> ... <br> or constructed, 2 <br></code> <br>  without <code>lock</code> prefixes, so that on multiprocessor machines both operations may have time to read the same old value, and one of the set bits will be “lost”. <br><br>  In ia64 / alpha processors, logical commands work only with registers, so this can happen even on a single-processor machine.  The compiler splits each of the <code>|=</code> operations into three machine commands: <br> <code>ldl t1,0(a0)     ;  <br> addl t1,1,t1     ;  <br> stl t1,1,0(a0)   ;  <br></code> <br>  If the execution of a thread is interrupted between reading the old value and writing a new one, then the new value can “wipe out” changes made from other threads. <br><br>  It may be worth protecting the initialization of static variables by the critical section: <br> <code>int ComputeSomething() <br> { <br> <font color="#000080">EnterCriticalSection(...);</font> <br> static int cachedResult = ComputeSomethingSlowly(); <br> <font color="#000080">LeaveCriticalSection(...);</font> <br> return cachedResult; <br> } <br></code> <br>  Now initialization can be performed only by one thread at a time. <br><br>  But what if <code>ComputeSomething()</code> is called again from <i>the same</i> thread?  <i>(“We've traced the call; it's coming from inside the thread!”)</i> For example, if <code>ComputeSomethingSlowly()</code> explicitly or implicitly calls <code>ComputeSomething()</code> .  (Sounds far-fetched? And imagine that <code>ComputeSomethingSlowly()</code> shows a dialog box, and the message loop through <code>DispatchMessage()</code> calls an event handler, and this handler uses <code>ComputeSomething()</code> ) <br>  In this case, the calling thread will already own the critical section, will go inside without any difficulty, and catch the same uninitialized value. <br><br>  So, when you see the initialization of a static local variable at run time - be vigilant. <br><br><h3>  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/15/229915.aspx">Lockless synchronization</a> </h3><br>  <a href="http://msdn.microsoft.com/en-us/library/ms684122"><code>InterlockedXxx</code> operations</a> are an efficient implementation of atomic operations on 32-bit values ​​and pointers.  But atomicity alone does not guarantee flow-safety. <br><br>  Suppose you have a shared variable protected by a critical section, and somewhere in another function you want to increase this variable by one.  “Great, I can do without the critical section, and just call <code>InterlockedIncrement</code> .” <br><br>  Is there anything that the goal of the critical section is to ensure that no one changes the value of a variable simultaneously with the execution of the protected code?  You just took it and "quietly" changed it. <br><br>  Another misconception is the implementation of complex atomic operations using the critical section.  For example, this is how they try to implement <code>InterlockedMultiply</code> : <br><br> <code>// ! <br> LONG InterlockedMultiply(volatile LONG *plMultiplicand, LONG lMultiplier) <br> { <br> EnterCriticalSection(&amp;SomeCriticalSection); <br> LONG lResult = *plMultiplicand *= lMultiplier; <br> LeaveCriticalSection(&amp;SomeCriticalSection); <br> return lResult; <br> } <br></code> <br>  Yes, this code prevents the conflict between two <code>InterlockedMultiply</code> calls, but does not guarantee atomicity with respect to other operations on the variable.  Take this example: <br><br> <code>int x = 2; <br> Thread1() <br> { <br> InterlockedIncrement(&amp;x); <br> } <br> <br> Thread2() <br> { <br> InterlockedMultiply(&amp;x, 5); <br> } <br></code> <br>  If the multiplication is atomic, then as a result of two operations, the result can be <code>x</code> = 15 or <code>x</code> = 11, depending on which of the operations has time to be executed earlier.  But our “atomic” multiplication allows us to obtain other values, rather unexpected ones: <br><br><table><tbody><tr><th>  Stream 1 </th><th>  Stream 2 </th></tr><tr><td>  initial: <code>x</code> = 2 </td></tr><tr><td></td><td> <code>InterlockedMultiply(&amp;x, 5)</code> </td> </tr><tr><td></td><td> <code>EnterCriticalSection</code> </td> </tr><tr><td></td><td>  read <code>x</code> (read: 2) </td></tr><tr><td> <code>InterlockedIncrement(&amp;x);</code> <br>  now <code>x</code> = 3 </td><td></td></tr><tr><td></td><td>  multiply by 5 (result: 10) </td></tr><tr><td></td><td>  write <code>x</code> (written: 10) </td></tr><tr><td></td><td> <code>LeaveCriticalSection</code> </td> </tr><tr><td>  result: <code>x</code> = 10 </td></tr></tbody></table>  It is not so atomic!  How to fix it? <br><br>  If the operation being performed is a “pure function” that does not depend on global data, then for its atomic implementation you can use <code>InterlockedCompareExchange</code> : <br><br> <code>LONG InterlockedMultiply(volatile LONG *plMultiplicand, LONG lMultiplier) <br> { <br> LONG lOriginal, lResult; <br> do { <br> lOriginal = *plMultiplicand; <br> lResult = lOriginal * lMultiplier; <br> } while (InterlockedCompareExchange(plMultiplicand, <br> lResult, lOriginal) != lOriginal); <br> return lResult; <br> } <br></code> <br>  The operation consists of three steps. <br><br>  The first is the “capture” of parameter values: <code>lOriginal = *plMultiplicand;</code> <br><br>  The second is to perform an operation on the captured values: <code>lResult = lOriginal * lMultiplier;</code> <br><br>  The third is to save the result only if the parameter values ​​have not changed: <code>InterlockedCompareExchange(plMultiplicand, lResult, lOriginal)</code> <br><br>  If they have changed, it means that some other operation has overtaken our operation;  and this means that our operation needs to be performed again. <br><br>  Returning to the example above: after an interlocked <code>InterlockedIncrement</code> call, the operation will notice that the value of <code>x</code> has changed and will try to multiply in a new way.  The atomicity of the comparison in <code>InterlockedCompareExchange</code> ensures that the result will be recorded only if the parameters have not changed. <br><br>  Do not forget that the operation should not use any other data!  <code>InterlockedCompareExchange</code> unable to check if the values ​​of the global variables used by the operation have changed.  Otherwise, a situation known as “ABA problem” is possible: the first time the operation was performed, the parameter value was A;  then, imperceptibly for the running thread, its value has changed to B, and then again to A. <code>InterlockedCompareExchange</code> will not notice that something has changed, and will save the value calculated for the first time.  If, together with the parameter, other data influencing the result have changed, the recorded result will be incorrect. <br><br><hr><br>  If all the operations on the common variable can be implemented as atomic, then it will not need to be protected by the critical section;  gain is achieved in performance, and in scalability, and in the consumption of system resources.  This approach to the design of multi-threaded programs is called "lockless synchronization."  Its advantage lies mainly in the fact that if one of the threads captures a <i>lock</i> (critical section, mutex, semaphore, etc.) and then for one reason or another “gets stuck”, then <b>all the</b> streams using the same lock, “ get stuck after him.  With lockless synchronization, none of the "stuck" threads can stop the entire system: no matter how many threads are stuck, at least one of the remaining ones will continue to work.  Lockless synchronization is required in real-time systems, where the task execution time should not depend on the vicissitudes of the allocation of operating time by the operating system to each thread. <br><br><h3>  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/07/10150728.aspx">Bezamochnaya thread-safe lazy initialization</a> </h3><br>  Suppose we decided to lazily initialize a couple of variables.  In a single-threaded program, this does not cause difficulties: <br><br> <code>//    a  b : a ≥ 0  b ≥ a. <br> //   -1   ,    <br> //     "  " <br> int a = -1, b = -1; <br> <br> void LazyInitialize() <br> { <br> if (a != -1) return; //   <br> <br> a = calculate_nominal_a(); <br> b = calculate_nominal_b(); <br> <br> //     <br> a = max(0, a); <br> b = max(a, b); <br> } <br></code> <br>  As in the examples above, in a multithreaded program, such initialization can lead to flight-condition: <br><table><tbody><tr><th>  Stream 1 </th><th>  Stream 2 </th></tr><tr><td>  <code>if (a != -1)</code> [not satisfied] </td><td></td></tr><tr><td> <code>a = calculate_nominal_a();</code>  // returns 2 </td></tr><tr><td></td><td> <code>if (a != -1) return;</code>  // too early! </td></tr></tbody></table>  The first thread interrupted execution before it could calculate <code>b</code> , so the second thread takes its uninitialized value. <br><br>  “Ah, well, it's easy to fix!  To find out if initialization is done, we will check not <code>a</code> , but <code>b</code> . ” <br><br> <code>void LazyInitialize() <br> { <br> if ( <font color="#000080">b</font> != -1) return; //   <br> <br> a = calculate_nominal_a(); <br> b = calculate_nominal_b(); <br> <br> //     <br> a = max(0, a); <br> b = max(a, b); <br> } <br></code> <br>  Still possible flight-condition: <br><table><tbody><tr><th>  Stream 1 </th><th>  Stream 2 </th></tr><tr><td>  <code>if (b != -1)</code> [not satisfied] </td><td></td></tr><tr><td> <code>a = calculate_nominal_a();</code>  // returns 2 </td></tr><tr><td> <code>b = calculate_nominal_b();</code>  // returns 1 </td></tr><tr><td></td><td> <code>if (b != -1) return;</code>  // too early! </td></tr></tbody></table>  The second thread will take the values <code>a</code> and <code>b</code> that do not meet the imposed restrictions. <br><br>  “You can protect yourself from this!  I will calculate the values ​​of <code>a</code> and <code>b</code> in local variables, and write them to global variables only when the calculation is completed - so that the second thread cannot see the “semi-ready” values. ” <br><br> <code>void LazyInitialize() <br> { <br> if (b != -1) return; //   <br> <br> <font color="#000080">//       <br> int temp_a</font> = calculate_nominal_a(); <br> <font color="#000080">int temp_b</font> = calculate_nominal_b(); <br> <br> //     <br> <font color="#000080">temp_a</font> = max(0, <font color="#000080">temp_a</font> ); <br> <font color="#000080">temp_b</font> = max( <font color="#000080">temp_a, temp_b</font> ); <br> <br> <font color="#000080">//       <br> a = temp_a; <br> b = temp_b;</font> <br> } <br></code> <br>  Almost perfect;  but flight-condition <i>is still</i> possible: <br><table><tbody><tr><th>  Stream 1 </th><th>  Stream 2 </th></tr><tr><td>  <code>if (b != -1)</code> [not satisfied] </td><td></td></tr><tr><td> <code>temp_a = calculate_nominal_a();</code>  // returns 2 </td></tr><tr><td> <code>temp_b = calculate_nominal_b();</code>  // returns 1 </td></tr><tr><td> <code>temp_a = max(0, temp_a);</code>  // temp_a = 2 </td></tr><tr><td> <code>temp_b = max(temp_a, temp_b);</code>  // temp_b = 2 </td></tr><tr><td> <code>a = temp_a;</code>  // written to processor cache </td></tr><tr><td> <code>b = temp_b;</code>  // written to processor cache </td></tr><tr><td>  <code>b</code> value is stored in memory </td></tr><tr><td></td><td> <code>if (b != -1) return;</code>  // too early! </td></tr><tr><td>  the value of <code>a</code> stored in memory </td></tr></tbody></table>  The compiler does not guarantee that the new value of <code>b</code> will be available to other processors earlier than the new value of <code>a</code> .  Although the processor performs the assignments in this order, the shared memory control circuits in a multiprocessor system can write them in reverse order, so that the other processor will see <code>a</code> = -1 and <code>b</code> = 2. <br><br>  Record <code>b</code> in memory must be issued as a <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/03/08/85901.aspx">Release operation</a> ;  then all previous operations have to be reflected in memory before other processors see the new value of <code>b</code> . <br><br> <code>void LazyInitialize() <br> { <br> if (b != -1) return; //   <br> <br> //       <br> int temp_a = calculate_nominal_a(); <br> int temp_b = calculate_nominal_b(); <br> <br> //     <br> temp_a = max(0, temp_a); <br> temp_b = max(temp_a, temp_b); <br> <br> //       <br> a = temp_a; <br> <font color="#000080">//    b    <br> // ,     , <br> //   Release <br> InterlockedCompareExchangeRelease( <br> reinterpret_cast&lt;LONG*&gt;&amp;b, temp_b, -1);</font> <br> } <br></code> <br>  The resulting code is similar to a non-locked atomic operation, only without input parameters: first, all calculations are performed in local variables, and then written to memory in a single <code>InterlockedCompareExchangeRelease</code> operation.  Assuming that <code>calculate_nominal_a()</code> and <code>calculate_nominal_b()</code> always return the same values, we do not need to perform the operation again in case of failure: if the variables are not initialized by us, it means that the other thread has already done our work for us.  (Note: if <code>InterlockedCompareExchangeRelease</code> fails, the variable <code>a</code> will still be overwritten by our thread!) <br><br>  Finally, Raymond offered a riddle: can the <code>temp_a</code> variable be dispensed with?  Indeed, in any case, the value of <code>a</code> used only after the thread has made sure that initialization is complete. </div><p>Source: <a href="https://habr.com/ru/post/118390/">https://habr.com/ru/post/118390/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../118380/index.html">Digest of the best vacancies of Runet startups (April 25-29)</a></li>
+<li><a href="../118382/index.html">You will go to the right - you will lose the horse, you will go to the left ...</a></li>
+<li><a href="../118383/index.html">Canobuvosti, 89th edition</a></li>
+<li><a href="../118386/index.html">Experts from CA found a fake Kaspersky Anti-Virus for mobile devices</a></li>
+<li><a href="../118387/index.html">I propose to mark the author of the post in the comments</a></li>
+<li><a href="../118391/index.html">ICANN hired Jeff Moss, Black Hat and Defcon conference organizer</a></li>
+<li><a href="../118392/index.html">Do you use Google Maps in the first place when searching for stores, companies, organizations, etc.?</a></li>
+<li><a href="../118393/index.html">Sencha Touch Tutorial 1: First Steps</a></li>
+<li><a href="../118395/index.html">Deniskin and Medvedev</a></li>
+<li><a href="../118396/index.html">Rollin 'Justin robot can catch two balls at the same time + make coffee</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

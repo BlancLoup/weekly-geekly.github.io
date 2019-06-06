@@ -1,0 +1,239 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Plug-in Algorithms: Non-robust Cache</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="(The fact that the Russian translation of the concept of "lock-free" in the literature has not yet been settled, does not at all convince me that ther...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Plug-in Algorithms: Non-robust Cache</h1><div class="post__text post__text-html js-mediator-article">  <i>(The fact that the Russian translation of the concept of <b>"lock-free"</b> in the literature has not yet been settled, does not at all convince me that there should not be such a translation.)</i> <br><br>  Suppose analysis of the performance of your application revealed that a significant part of the processor time is spent in some computational function, and moreover, this function is repeatedly called with the same parameters - performing the same calculations again and again.  A simple optimization suggests itself - a cache from one record in which the source data and the result of the last calculation would be stored. <br><br><pre> BOOL IsPrime (int n)
+ {
+  static int nLast = 1;
+  static BOOL fLastIsPrime = FALSE;<font></font>
+<font></font>
+  // if the parameter value has not changed since last time,
+  // use the finished result
+  if (n == nLast) return fLastIsPrime;<font></font>
+<font></font>
+  // calculate and remember the new result
+  nLast = n;
+  fLastIsPrime = slow_IsPrime (n);
+  return fLastIsPrime;
+ }
+</pre><br>  Of course, this code is not safe: if one thread is inside a <code>slow_IsPrime()</code> call, the other thread that calls <code>IsPrime()</code> will find the values ​​of the <code>nLast</code> and <code>fLastIsPrime</code> inappropriate for each other. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      A simple solution is to wrap the code in a critical section;  but simplicity is at the expense of performance: if, say, <code>nLast</code> = 5, <code>fLastIsPrime</code> = TRUE, and two threads simultaneously call <code>IsPrime(5)</code> , then they have absolutely no need to line up: nothing prevents them from simultaneously using the cached value. <br><br>  Let's see how you can implement our cache without a lock. <a name="habracut"></a>  We will use two tricks from the <a href="http://habrahabr.ru/blogs/system_programming/118466/">last post</a> at once: updating the version number with each data change, and the “make, write, (drop)” model to synchronize the write to the cache. <br><br><pre> #define IsLocked (l) ((l) &amp; 1)<font></font>
+<font></font>
+ BOOL IsPrime (int n)
+ {
+  static int nLast = 1;
+  static BOOL fLastIsPrime = FALSE;
+  static LONG lCounter = 0;<font></font>
+<font></font>
+  // try to take the value from the cache
+  LONG lCounterStart = InterlockedReadAcquire (&amp; lCounter, -1);
+  if (! IsLocked (lCounterStart) &amp;&amp; n == nLast) {
+   BOOL fResult = fLastIsPrime;
+   // nobody touched the cache behind our back?
+   if (InterlockedReadRelease (&amp; lCounter, -1) == lCounterStart)
+    return fResult;
+  }<font></font>
+<font></font>
+  // either the reading from the cache failed, or the value did not fit:
+  // calculated in the usual way
+  BOOL fIsPrime = slow_IsPrime (n);<font></font>
+<font></font>
+  // try to save the value in the cache
+  lCounterStart = lCounter;
+  if (! IsLocked (lCounterStart) &amp;&amp;
+      InterlockedCompareExchangeAcquire (&amp; lCounter,
+               lCounterStart + 1, lCounterStart) == lCounterStart) {
+   nLast = n;
+   fLastIsPrime = fIsPrime;
+   InterlockedCompareExchangeRelease (&amp; lCounter,
+               lCounterStart + 2, lCounterStart + 1);
+  }
+  return fIsPrime;
+ }
+</pre><br>  The <code>lCounter</code> order bit in <code>lCounter</code> means that the cache is “locked” during recording;  the remaining bits store the version number.  This organization allows you to combine unlocking and updating the version number into one simple operation. <br><br>  The function consists of two parts: reading from the cache and writing to the cache.  When reading from the cache, we first read the <code>lCounter</code> operation Acquire to make sure that the read values <code>nLast</code> and <code>fLastIsPrime</code> were written before the version number.  If, judging by the number read, the cache is not blocked, then we read from it the last values ​​of the parameter and the result.  If the result fits, we take it;  but first you need to make sure that the version number has not changed during the time we read from the cache.  If it has changed, then perhaps the values ​​we read do not match each other, so the “suitable” result is in fact unreliable. <br><br>  In both cases - if the cached result did not fit, or if the read data turned out to be unreliable, - just wipe the cache on the cache that turned out to be useless, and perform the calculations completely. <br><br>  When writing to the cache, we not only check that the cache is not locked, but at the same time we also block it ourselves, setting the low bit.  (If it turns out that the cache was blocked, it is also not scary: no one will be offended if we do not write the calculated result into it. The goal is to save time and avoid recomputing at any cost.) By blocking the cache, we update it data, and then one operation <code>InterlockedCompareExchangeRelease</code> remove the lock and increase the version number.  The operation must be Release, so that changes to the data are recorded in memory before the lock is released. <br><br>  We use the fact that the success of operations on the cache is not necessary: ​​when reading and writing, if the cache is blocked, then, in theory, it is better to abandon the advantages of caching - “To hell with everything!  I will do everything myself! ”- than lining up for the right to access the cache.  At the cost of redundant computation, we avoid problems like priority inversion (when a high priority thread is waiting for the lock to be released, occupied by a low priority thread). <br><br>  It is important to note that the resulting system is <i>not completely lockless</i> : using lockless algorithms, we actually implemented an effective lock.  If the thread that locked the cache for writing is “stuck”, all the other threads, although they continue to run, will no longer be able to use the cache. <br><br>  A similar system can be implemented using <code>TryEnterCriticalSection</code> : <br><br><pre> BOOL IsPrime (int n)
+ {
+  static int nLast = 1;
+  static BOOL fLastIsPrime = FALSE;
+  BOOL fHaveAnswer = FALSE;
+  BOOL fIsPrime;<font></font>
+<font></font>
+  // try to take the value from the cache
+  if (TryEnterCriticalSection (&amp; g_cs)) {
+   if (n == nLast) {
+    fHaveAnswer = TRUE;
+    fIsPrime = fLastIsPrime;
+   }
+   LeaveCriticalSection (&amp; g_cs);
+  }
+  if (fHaveAnswer) return fIsPrime;<font></font>
+<font></font>
+  // either the critical section is busy or the value did not fit:
+  // calculated in the usual way
+  fIsPrime = slow_IsPrime (n);<font></font>
+<font></font>
+  // try to save the value in the cache
+  if (TryEnterCriticalSection (&amp; g_cs)) {
+   nLast = n;
+   fLastIsPrime = fIsPrime;
+   LeaveCriticalSection (&amp; g_cs);
+  }
+  return fIsPrime;
+ }
+</pre><br>  The first way is better because the threads reading from the cache do not interfere with each other;  while using the critical section, simultaneous reads are not possible. <br><br>  Starting with Windows 7, we can also enable <a href="http://msdn.microsoft.com/en-us/library/aa904937.aspx">slim reader-writer locks</a> : <br><br><pre> BOOL IsPrime (int n)
+ {
+  static int nLast = 1;
+  static BOOL fLastIsPrime = FALSE;
+  BOOL fHaveAnswer = FALSE;
+  BOOL fIsPrime;<font></font>
+<font></font>
+  // try to take the value from the cache
+  if (TryAcquireSRWLockShared (&amp; g_lock)) {
+   if (n == nLast) {
+    fHaveAnswer = TRUE;
+    fIsPrime = fLastIsPrime;
+   }
+   ReleaseSRWLockShared (&amp; g_lock);
+  }
+  if (fHaveAnswer) return fIsPrime;<font></font>
+<font></font>
+  // either the cache is locked for writing, or the value did not fit:
+  // calculated in the usual way
+  fIsPrime = slow_IsPrime (n);<font></font>
+<font></font>
+  // try to save the value in the cache
+  if (TryAcquireSRWLockExclusive (&amp; g_lock)) {
+   nLast = n;
+   fLastIsPrime = fIsPrime;
+   LeaveSRWLockExclusive (&amp; g_lock);
+  }
+  return fIsPrime;
+ }
+</pre><br>  But in this implementation, threads reading from the cache can interfere with writing to the cache;  whereas in our first implementation, “without a lock in the spirit”, only simultaneous recording attempts lead to conflict.  If <code>IsPrime()</code> is called several times with one value (for example, 13), and then many times in a row with another value (for example, 17) - then the head of the streams that check if the result is not cached for 17 simply won't let any stream through <i>to cache the</i> result for 17!  It turns out that if the load on the cache is very high (which is exactly why we added it!), Then the implementation based on slim reader-writer locks turns the cache into an almost useless one. </div><p>Source: <a href="https://habr.com/ru/post/118515/">https://habr.com/ru/post/118515/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../118505/index.html">The SLG 3000 adapter improves the “picture” of old console games on HDTV-TVs</a></li>
+<li><a href="../118506/index.html">Top 25 Russian sites</a></li>
+<li><a href="../118508/index.html">Sony promises step by step recovery of PSN</a></li>
+<li><a href="../118510/index.html">Time to tie</a></li>
+<li><a href="../118511/index.html">Is there at least one project to which you did not attach, being intoxicated?</a></li>
+<li><a href="../118516/index.html">Large-scale news release ReactOS No. 83</a></li>
+<li><a href="../118518/index.html">VKontakte cancels the rating. Users resent</a></li>
+<li><a href="../118519/index.html">Protection of online project from the "removal"</a></li>
+<li><a href="../118520/index.html">New Google Docs Features - Fill in Entire Folders and Drag & Drop</a></li>
+<li><a href="../118522/index.html">Researchers reach data transfer rates of 100 terabits / sec</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

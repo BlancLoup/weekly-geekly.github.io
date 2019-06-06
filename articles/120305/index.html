@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Large Files and Sinatra</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I recently encountered an interesting problem when trying to give a large file through Sinatra::Helpers.send_file resulted in the release of all RAM (...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Large Files and Sinatra</h1><div class="post__text post__text-html js-mediator-article"> I recently encountered an interesting problem when trying to give a large file through <code>Sinatra::Helpers.send_file</code> resulted in the release of all RAM (typical file size is 14Gb). <br><br>  The study showed that <a href="http://www.sinatrarb.com/">Sinatra</a> itself reads and sends the file in pieces of 512 bytes, but the web server thin (as well as WEBrick) buffers the output in RAM at its own level, which leads to such sad consequences. <br><br>  To solve the problem, it was enough to go to the <a href="http://rainbows.rubyforge.org/">Rainbows</a> web server (a web server based on unicorn code, but designed to work without proxying, for slow clients and / or services).  But with the return of large files, the process ate about 30% of the CPU on a single core. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Rainbows allows you to <a href="http://rainbows.rubyforge.org/Static_Files.html">optimize file</a> delivery using, for example, the sendfile gem, which provides the appropriate operating system APIs.  But for this, it is necessary that the file is returned via the Rack :: File API. <br><br>  In the current Sinatra master branch, the send_file method was rewritten using the Rack :: File API, so we can simply backport the corresponding functionality into existing versions of the Sinatra gem: <a name="habracut"></a><br><br><pre> <code class="ruby hljs"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> Sinatra::VERSION &lt; <span class="hljs-string"><span class="hljs-string">'1.3.0'</span></span> &amp;&amp; Rack.release &gt;= <span class="hljs-string"><span class="hljs-string">'1.3'</span></span> <span class="hljs-comment"><span class="hljs-comment"># Monkey patch old Sinatra to use Rack::File to serve files. Sinatra::Helpers.class_eval do # Got from Sinatra 1.3.0 sources def send_file(path, opts={}) if opts[:type] or not response['Content-Type'] content_type opts[:type] || File.extname(path), :default =&gt; 'application/octet-stream' end if opts[:disposition] == 'attachment' || opts[:filename] attachment opts[:filename] || path elsif opts[:disposition] == 'inline' response['Content-Disposition'] = 'inline' end last_modified opts[:last_modified] if opts[:last_modified] file = Rack::File.new nil file.path = path result = file.serving env result[1].each { |k,v| headers[k] ||= v } halt result[0], result[2] rescue Errno::ENOENT not_found end end end</span></span></code> </pre><br><br>  The rainbows configuration file will look something like this: <br><pre> <code class="ruby hljs"><span class="hljs-comment"><span class="hljs-comment"># try to use sendfile when available begin require 'sendfile' rescue LoadError end Rainbows! do use :ThreadSpawn end</span></span></code> </pre><br><br>  Now we use an effective file upload technique if the system has a rack gem version 1.3 or higher installed and the sendfile gem is installed.  By the way, when using ruby ​​1.9 hem, sendfile is most likely not required. <br><br>  PS: If your service is located behind a proxy server, then it is more optimal to use the capabilities provided by proxy servers, for example, the API <a href="http://wiki.nginx.org/XSendfile">X-Accel-Redirect (nginx)</a> or X-Sendfile (Lighttpd, Apache). </div><p>Source: <a href="https://habr.com/ru/post/120305/">https://habr.com/ru/post/120305/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../120300/index.html">Twitter will launch its own photo hosting</a></li>
+<li><a href="../120301/index.html">Jinni: Movie Search by Mood</a></li>
+<li><a href="../120302/index.html">Tuning Canabalt</a></li>
+<li><a href="../120303/index.html">CLODO - again we lie or need to warn in advance</a></li>
+<li><a href="../120304/index.html">One of the creators of Kinect will read a lecture at the Polytechnic Museum on June 3</a></li>
+<li><a href="../120307/index.html">Does Bitcoin have a chance to become serious?</a></li>
+<li><a href="../120311/index.html">Interactive articles on various interfaces and devices</a></li>
+<li><a href="../120312/index.html">Say No to Smoking with your iPhone</a></li>
+<li><a href="../120315/index.html">Chapter Two, in which Bookmate releases an Android app</a></li>
+<li><a href="../120316/index.html">The best fonts for programming</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
