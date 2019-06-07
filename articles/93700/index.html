@@ -1,0 +1,140 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Fighting redundant logging in Openstack</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Content: The heartbreaking growth rate of auth.log on hosts with neutron-plugin-openvswitch-agent. Analysis of the causes, the method of elimination. ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Fighting redundant logging in Openstack</h1><div class="post__text post__text-html js-mediator-article">  Content: The heartbreaking growth rate of auth.log on hosts with neutron-plugin-openvswitch-agent.  Analysis of the causes, the method of elimination.  A little about the work of sudo, PAM and its session. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/2d5/a7d/9f2/2d5a7d9f2eac9b95f3477fb4fd6d237a.jpg"><br><br>  What are we talking about?  Openstack - a platform for building clouds.  Neutron is the name of its subsystem responsible for the network, a <s>fashionable hipster webmaster</s> , considered more advanced and functional than the first attempt called nova-networking.  openvswitch-plugin is a neutron plugin that implements its functionality using an Open vSwitch, a soft switch that allows you to do smart things, like GRE tunnels, bonding and port mirroring, imposing rules on a port inside a virtual switch in iptables style, etc. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      neutron-openvswitch-plugin-agent is one of the components of this plug-in that works on all hosts that have at least some real relation to the transfer of virtual machine network traffic.  In other words, these are all compute nodes (where the virtual machines work), networking sites (which make the Internet for virtual women).  Only API servers and other service servers drop out of the list.  Given that most of the cloud consists of compute + networking, it is possible, slightly coarsening, to say that this neutron-openvswitch-plugin-agent is installed on all hosts.  Logstash is a system for centralized logging, Elasticsearch is a database for working with these logs. <br><br>  For timely response to software problems, all logs of all applications must be collected and analyzed by the monitoring system.  We have already <a href="http://habrahabr.ru/company/webzilla/blog/220707/">written</a> more about this.  However, even good can be too much.  It was quickly discovered that most of the data collected from the hosts are absurd messages of the following type: <br><a name="habracut"></a><br><pre> server sudo: neutron: TTY = unknown;  PWD = /;  USER = root;  COMMAND = / usr / bin / neutron-rootwrap /etc/neutron/rootwrap.conf ovs-vsctl --timeout = 2 --format = json - --columns = name, external_ids list Interface
+ server sudo: pam_unix (sudo: session): session opened for root by (uid = 108)
+ server sudo: pam_unix (sudo: session): session closed for user root
+ server sudo: nova: TTY = unknown;  PWD = /;  USER = root;  COMMAND = / usr / bin / nova-rootwrap /etc/nova/rootwrap.conf chown 107 / var / lib / nova / instances / _base / 421f0808ac5dd178bc574eff6abe8df949edc319
+ server sudo: pam_unix (sudo: session): session opened for root by (uid = 107)
+ server sudo: pam_unix (sudo: session): session closed for user root
+</pre><br><br>  These messages were repeated every two (!) Seconds.  From each server on which there is an agent.  It turns out that from every hundred servers we will receive 730 GB of garbage per year.  Logs are collected in Elasticsearch, that is, it is, sorry, terabytes in the database.  Good luck in query queries, so to speak. <br><br>  On the one hand, all this rubbish is asking for a shutdown. <br><br>  On the other hand, the complete disconnection of auth.log or its rigid local rotation is a bad decision, because information about suspicious activity should be collected and stored as carefully as possible, and, preferably, away from the greedy pens of a compromised host (if such a one appears). <br><br>  In addition to the neutron-plugin-openvswitch-agent, the nova-compute (virtualizers manager in Openstack) also appeared nearby, although not so often. <br><br><h1>  PAM and its sessions </h1><br>  Most likely, many readers use sudo.  Most likely, many of those who use sudo do not particularly think about what happens when it is launched. <br><br>  When sudo asks for a password, it can request authentication from the user.  Most often this is a password, but, for example, on my laptop it is a fingerprint scanner (which is not used when logging in, because the password at login decrypts the disk, but is great for secure sudo).  In order not to implement the code for working with passwords and other things in each program, PAM was created - a user authentication system that allows you to verify that the user knows the password, without writing the / etc / shadow parser and supporting all other authorizations (including LDAP, kerberos) , OpenID, OTP and any other crazy things that will only come up). <br><br>  PAM sessions are a collection of rituals that PAM performs when a user logs in.  Among other things, the ritual includes an entry in auth.log. <br><br>  Generally speaking, PAM sessions are not required for normal operation.  Request a user check and create a session for him — three big differences (the third is the “close session” function).  All self-respecting programs use them.  But in our case it causes some problems. <br><br>  More information about PAM, its history and principles of operation are on <a href="http://www.ibm.com/developerworks/linux/library/l-pam/index.html%3Fca%3Ddat">the IBM website</a> , for the meticulous ones - the <a href="http://www.linux-pam.org/Linux-PAM-html/Linux-PAM_SAG.html">Linux-PAM System Administration Guide</a> . <br><br><h1>  But why so often? </h1><br><br>  Let me remind you that the problem is that the logs from sudo and pam_session took place almost constantly - every two seconds. <br><br>  What kind of messages about pam_session we have already figured out.  It remains to find out why neutron (and a little bit nova) to run something so often, and even with sudo? <br><br>  In the Openstack model, components are not particularly eager to learn the subtleties of the underlying technologies.  Instead of receiving information about changes from ovs-vswitchd, libvirtd, etc., and for a long time to understand “what would this mean and should we react to it?” A much more crude and efficient approach is used: when is the api-server which - either the subsystem wants to know the status of the service, it sends a request through the message queue to it - and the service, in turn, requests the current state from the used programs. <br><br>  At the output, the server has a lot of information: firstly, that the service is still alive (heartbeats), and secondly, information about the current configuration.  Without any nuances, “missed a Very Important State Update”. <br><br>  For neutron to work properly, it needs to know the state of the ports.  In the context of openvswitch-plugin-agent, this is launching ovs-vsctl show and the like to get the current status of all ports. <br><br>  Unfortunately, this requires privilege. <br><br>  To manage privileges, Openstack uses its own wrapper, root-wraper, which performs a more subtle check of the arguments to run than the usual sudo.  But the root-wraper itself is written on Python (like everything in Openstack), and you cannot put suid on the interpreted files.  As a simple and reasonable solution, root-wraper is invoked as <code>sudo root-wraper</code> . <br><br><h1>  And what to do? </h1><br>  Our goal: <ol><li>  Do not save information about root-warp performance by nova / neutron users via sudo </li><li>  Save all other information. </li></ol><br><br>  The first item boils down to two independent questions: disable recording information from sudo, and disable recording information from pam_session. <br><br>  Preliminary: if you are using old distros, upgrade sudo to version 1.8.7 or newer (Ubuntu 12.04 comes with 1.8.3, everything is fine with Ubuntu 14.04). <br><br>  Then for neutron, in the /etc/sudoers.d/neutron_sudoers file, we replace the lines: <br><pre> <code class="diff hljs"><span class="hljs-deletion"><span class="hljs-deletion">- Defaults:neutron !requiretty + Defaults:neutron !requiretty, !syslog, !pam_session</span></span></code> </pre><br>  For nova, the changes are similar, in the /etc/sudoers.d/nova_sudoers file. <br><br>  A brief summary of sudoers syntax, for those who don’t like BNF from the man pages - the exclamation mark inverts the meaning, Defaults: apply to a specific section. <ul><li>  syslog - enables logging in syslog,! <code>!syslog</code> , respectively, disables. </li><li>  pam_session - indicates to create a new PAM session <code>!pam_session</code> - says not to create a new session.  It was for pam_session that we needed a new version of sudo. </li></ul><br><br><h1>  Neutron polling frequency control </h1><br><br>  The obvious thought - and let's lower the frequency of the survey?  From a practical point of view, reducing the frequency means increasing the interval between “done” and “saw the changes”.  If two seconds seem too frequent, then you can do, for example, ten.  But to put there a minute is already a bust (there will be trouble with interactivity).  At the same time, ten seconds will not save us much - instead of 43 thousand calls per day (for each server), we will have almost 9 thousand. <br><br>  For frequency reduction, this is the configuration variable of the neutron-server: <code>report_interval</code> (in seconds). </div><p>Source: <a href="https://habr.com/ru/post/93700/">https://habr.com/ru/post/93700/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../93692/index.html">Apple's cool patent</a></li>
+<li><a href="../93693/index.html">Eight-Bit Starcraft</a></li>
+<li><a href="../93695/index.html">Automate the creation of a virtual host for web development based on Apache + Nginx</a></li>
+<li><a href="../93697/index.html">Portal: Prelude - open your brain on the eve of the release of Portal 2</a></li>
+<li><a href="../93698/index.html">The task of the backpack: what's inside?</a></li>
+<li><a href="../93707/index.html">HTC Wildfire - a new light in the camp of Android-smartphones</a></li>
+<li><a href="../93708/index.html">Will Android OS be installed on Chevrolet Volt?</a></li>
+<li><a href="../93711/index.html">Invitations to Google Voice are already available to students.</a></li>
+<li><a href="../93712/index.html">World Information Community Day</a></li>
+<li><a href="../93714/index.html">5 Years Youtube</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

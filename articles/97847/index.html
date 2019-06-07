@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Interprocess communication and Unix Domain Socket</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, the work had to solve a rather interesting task. 
+ It was necessary to write an application - a daemon that writes a multicast stream to a f...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Interprocess communication and Unix Domain Socket</h1><div class="post__text post__text-html js-mediator-article">  Recently, the work had to solve a rather interesting task. <br>  It was necessary to write an application - a daemon that writes a multicast stream to a file. <br>  It was necessary to write several multicast streams in parallel ... <br>  Moreover ... you need to centrally manage these demons! <br><a name="habracut"></a><br><h5>  A bit of theory </h5><br>  In essence, the application itself is quite simple ... But the control question arises ... When the demon is already running, it needs to send commands ... for example, change the file to which the stream is written ... or stop recording altogether.  There was a question - how to manage such demons ... <br><br>  Having overlapped several Google pages and having read abstruse articles, it was decided to dwell on the version with the Unix Domain Socket ... <br><br>  The architecture is simple ... The application at launch, in addition to the “where to write” parameters, is transmitted its unique id, which generates the name of the controlling socket (trite sock_ [id]).  All sockets are created in a predefined directory on the server ... let it be / tmp / my_socks /. <br>  Thus, the application manager, when launched, makes a listing of this directory and looks at which processes it has started ... then pings these processes (through the same sockets) and checks which of them are really alive ... Dead sockets (which have reasons for missing) - you can immediately delete ... 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Well, after the socket is open, you can exchange any commands with a specific process ... you get this two-way interprocess communication. <br><br>  But this is a theory!  Below is a little practice ... <br><br><h5>  Implementation </h5><br>  The application recording the stream was implemented on gcc <br>  Inclusion and structure we need <br><br><blockquote><code><font color="black"><font color="#cc6633">#include</font> &lt;sys/types.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;sys/socket.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;sys/un.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;netdb.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;arpa/inet.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;unistd.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;netinet/ <font color="#0000ff">in</font> .h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;stdlib.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;stdio.h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt; <font color="#0000ff">string</font> .h&gt;&lt;br/&gt; <font color="#cc6633">#include</font> &lt;fcntl.h&gt;&lt;br/&gt; &lt;br/&gt; <font color="#0000ff">int</font> ctrlsock, ns;&lt;br/&gt; <font color="#0000ff">struct</font> <font color="#2b91af">sockaddr_un</font> saun;&lt;br/&gt; &lt;br/&gt;</font></code> </blockquote> <br><br>  Initialize the socket and start listening to it: <br><br><blockquote> <code><font color="black"><font color="#0000ff">void</font> init_ctrl_socket() {&lt;br/&gt; <font color="#008000">//  ..  AF_UNIX      unix-socket</font> &lt;br/&gt; <font color="#0000ff">if</font> ( ( ctrlsock = socket(AF_UNIX, SOCK_STREAM, <font color="#A31515">0</font> ) ) &lt; <font color="#A31515">0</font> ) {&lt;br/&gt;    savelog( <font color="#A31515">"ERROR: control socket creating error"</font> );&lt;br/&gt;    exit( <font color="#A31515">1</font> );&lt;br/&gt;  }&lt;br/&gt; &lt;br/&gt; <font color="#008000">//   ..     ..</font> &lt;br/&gt; <font color="#0000ff">int</font> flags = fcntl(ctrlsock, F_GETFL, <font color="#A31515">0</font> );&lt;br/&gt; <font color="#0000ff">if</font> ( fcntl(ctrlsock, F_SETFL, flags | O_NONBLOCK) &lt; <font color="#A31515">0</font> ) {&lt;br/&gt;    savelog( <font color="#A31515">"ERROR: don't set socket on nonblocket mode"</font> );&lt;br/&gt;    exit( <font color="#A31515">1</font> );&lt;br/&gt;  }&lt;br/&gt; &lt;br/&gt; <font color="#008000">//    ..</font> &lt;br/&gt; <font color="#008000">//  .   -   ..</font> &lt;br/&gt; &lt;br/&gt;  saun.sun_family = AF_UNIX;&lt;br/&gt;  strcpy(saun.sun_path, <font color="#A31515">"/tmp/my_socks/sock_01"</font> ); <font color="#008000">//     </font> &lt;br/&gt; <font color="#0000ff">int</font> len = <font color="#0000ff">sizeof</font> (saun.sun_family) + strlen(saun.sun_path);&lt;br/&gt; &lt;br/&gt; <font color="#0000ff">if</font> (bind(ctrlsock, ( <font color="#0000ff">struct</font> <font color="#2b91af">sockaddr</font> *)&amp;saun, len) &lt; <font color="#A31515">0</font> ) {&lt;br/&gt;        savelog( <font color="#A31515">"ERROR: control socket binding error"</font> );&lt;br/&gt;        exit( <font color="#A31515">1</font> );&lt;br/&gt;  }&lt;br/&gt; &lt;br/&gt; <font color="#0000ff">if</font> (listen(ctrlsock, <font color="#A31515">5</font> ) &lt; <font color="#A31515">0</font> ) {&lt;br/&gt;        savelog( <font color="#A31515">"ERROR: control socket listening error"</font> );&lt;br/&gt;        exit( <font color="#A31515">1</font> );&lt;br/&gt;  }&lt;br/&gt;}&lt;br/&gt; &lt;br/&gt; &lt;br/&gt;</font></code> </blockquote> <br><br>  Receiving commands from the socket: <br><br><blockquote> <code><font color="black"><font color="#0000ff">void</font> check_ext_command() {&lt;br/&gt; <font color="#0000ff">int</font> fromlen = <font color="#0000ff">sizeof</font> ( <font color="#0000ff">struct</font> <font color="#2b91af">sockaddr</font> );&lt;br/&gt; <font color="#0000ff">if</font> ( (ns = accept(ctrlsock, ( <font color="#0000ff">struct</font> <font color="#2b91af">sockaddr</font> *) &amp;fsaun, &amp;fromlen) ) &gt; <font color="#A31515">0</font> ) {&lt;br/&gt; <font color="#0000ff">char</font> lbuf[ <font color="#A31515">255</font> ];&lt;br/&gt; <font color="#0000ff">int</font> ilen;&lt;br/&gt;            ilen = recv( ns, &amp;lbuf, <font color="#A31515">255</font> , <font color="#A31515">0</font> );&lt;br/&gt;            lbuf[ilen]= <font color="#A31515">'\0'</font> ;&lt;br/&gt;            do_remote_command( lbuf ); <font color="#008000">//     ..</font> &lt;br/&gt;            close(ns);&lt;br/&gt;      } &lt;br/&gt;}&lt;br/&gt; &lt;br/&gt;</font></code> </blockquote> <br><br>  Writing to the socket is done as usual: <br><br><blockquote> <code><font color="black"><font color="#0000ff">char</font> msg = <font color="#A31515">"my message"</font> ;&lt;br/&gt;send( ns, msg, strlen(msg), <font color="#A31515">0</font> );&lt;br/&gt; &lt;br/&gt;</font></code> </blockquote> <br><br><h5>  Process Manager </h5><br>  The process manager was written in php.  In order to be convenient to manage them through a browser ... <br>  Here is an example of polling existing processes. <br><br><blockquote> <code><a href="http://www.php.net/manual/en/function.unlink.php"></a> <a href="http://www.php.net/manual/en/function.strlen.php"></a> <font color="black"><font color="#0000ff">class</font> reccontrol {&lt;br/&gt; &lt;br/&gt; <font color="#0000ff">var</font> <font color="#cc6633">$socket_path</font> = <font color="#008000">'/tmp/my_socks/'</font> ; <font color="#696969">//     </font> &lt;br/&gt; <font color="#0000ff">var</font> <font color="#cc6633">$socket_prefix</font> = <font color="#008000">'sock_'</font> ; <font color="#696969">//    (   :))</font> &lt;br/&gt; <font color="#0000ff">var</font> <font color="#cc6633">$list</font> = <font color="#0000ff">array</font> ();&lt;br/&gt; &lt;br/&gt; <font color="#0000ff">function</font> getList() {&lt;br/&gt; <font color="#cc6633">$this</font> -&gt;writers_info = <font color="#0000ff">array</font> ();&lt;br/&gt; <font color="#cc6633">$arr</font> = scandir( <font color="#cc6633">$this</font> -&gt;socket_path);&lt;br/&gt; <font color="#0000ff">unset</font> ( <font color="#cc6633">$arr</font> [ <font color="#008000">0</font> ]); <font color="#696969">// .</font> &lt;br/&gt; <font color="#0000ff">unset</font> ( <font color="#cc6633">$arr</font> [ <font color="#008000">1</font> ]); <font color="#696969">// ..</font> &lt;br/&gt; <font color="#0000ff">foreach</font> ( <font color="#cc6633">$arr</font> <font color="#0000ff">as</font> <font color="#cc6633">$k</font> =&gt; <font color="#cc6633">$s_name</font> ) {&lt;br/&gt; <font color="#0000ff">if</font> ( ! <font color="#cc6633">$this</font> -&gt;ping( <font color="#cc6633">$s_name</font> ) ) { &lt;br/&gt; <font color="#696969">//      -     </font> &lt;br/&gt;                      @unlink( <font color="#cc6633">$this</font> -&gt;socket_path . <font color="#cc6633">$s_name</font> ); &lt;br/&gt; <font color="#0000ff">unset</font> ( <font color="#cc6633">$arr</font> [ <font color="#cc6633">$k</font> ] ); &lt;br/&gt;               }&lt;br/&gt;        }&lt;br/&gt; <font color="#cc6633">$this</font> -&gt; <font color="#0000ff">list</font> = <font color="#cc6633">$arr</font> ;&lt;br/&gt; &lt;br/&gt;    }&lt;br/&gt; &lt;br/&gt; <font color="#696969">//  " "</font> &lt;br/&gt; <font color="#0000ff">function</font> ping( <font color="#cc6633">$s_name</font> ) {&lt;br/&gt; <font color="#cc6633">$socket_name</font> = <font color="#cc6633">$this</font> -&gt;socket_path. <font color="#cc6633">$s_name</font> ; <font color="#696969">//  </font> &lt;br/&gt; <font color="#cc6633">$sock</font> = <font color="#cc6633">$this</font> -&gt;getSock( <font color="#cc6633">$socket_name</font> ); <font color="#696969">//      </font> &lt;br/&gt; &lt;br/&gt; <font color="#0000ff">if</font> ( ! <font color="#cc6633">$sock</font> ) <font color="#0000ff">return false</font> ; <font color="#696969">//   -    </font> &lt;br/&gt; &lt;br/&gt; <font color="#cc6633">$buf</font> = <font color="#008000">"ping"</font> ;&lt;br/&gt; <font color="#0000ff">if</font> ( @socket_send( <font color="#cc6633">$sock</font> , <font color="#cc6633">$buf</font> , strlen( <font color="#cc6633">$buf</font> ), <font color="#008000">0</font> ) == <font color="#0000ff">false</font> ) {&lt;br/&gt; <font color="#0000ff">return false</font> ; <font color="#696969">//   -    </font> &lt;br/&gt;        }&lt;br/&gt; &lt;br/&gt; <font color="#cc6633">$buf</font> = <font color="#008000">''</font> ;&lt;br/&gt;        @socket_recv( <font color="#cc6633">$sock</font> , <font color="#cc6633">$buf</font> , <font color="#008000">1024</font> , <font color="#008000">0</font> );&lt;br/&gt; <font color="#0000ff">if</font> ( <font color="#cc6633">$buf</font> ) { &lt;br/&gt; <font color="#696969">//  $buf - ,    .. -    </font> &lt;br/&gt;             addlog( <font color="#008000">" "</font> . <font color="#cc6633">$s_name</font> . <font color="#008000">" : "</font> . <font color="#cc6633">$buf</font> ); &lt;br/&gt;        }&lt;br/&gt; &lt;br/&gt;        socket_close( <font color="#cc6633">$sock</font> ); &lt;br/&gt; <font color="#0000ff">return true</font> ; <font color="#696969">//   -  !</font> &lt;br/&gt;    }&lt;br/&gt; &lt;br/&gt; <font color="#696969">//   unix ..  ,    :)</font> &lt;br/&gt; <font color="#0000ff">function</font> getSock( <font color="#cc6633">$socket_name</font> ) {&lt;br/&gt; <font color="#696969">// ,   AF_UNIX</font> &lt;br/&gt; <font color="#cc6633">$socket</font> = @socket_create(AF_UNIX, SOCK_STREAM, <font color="#008000">0</font> ); &lt;br/&gt; <font color="#696969">//  $socket_name    -  /tmp/my_socks/sock_1 - ..   </font> &lt;br/&gt; <font color="#0000ff">if</font> ( @socket_connect( <font color="#cc6633">$socket</font> , <font color="#cc6633">$socket_name</font> ) == <font color="#0000ff">false</font> ) { &lt;br/&gt; &lt;br/&gt; <font color="#cc6633">$err</font> = socket_last_error();&lt;br/&gt; <font color="#0000ff">if</font> ( <font color="#cc6633">$err</font> ) {&lt;br/&gt; <font color="#0000ff">return false</font> ; <font color="#696969">//     :(</font> &lt;br/&gt;            }&lt;br/&gt;        } <font color="#0000ff">else</font> {&lt;br/&gt; <font color="#0000ff">return</font> <font color="#cc6633">$socket</font> ; <font color="#696969">//   -   </font> &lt;br/&gt;        }&lt;br/&gt;    }&lt;br/&gt; &lt;br/&gt;} &lt;br/&gt;</font></code> </blockquote> <br><br>  Here is the interaction ... <br>  Only small parts of the code are published here - performing the basic functionality ... All in all, all this looks quite cumbersome and a specific program is useless to the average man in the street ... The whole sense of management ideas ... <br>  You can go to the web page to get information from several processes (it comes to mind when pinging) and give certain processes to certain processes ... </div><p>Source: <a href="https://habr.com/ru/post/97847/">https://habr.com/ru/post/97847/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../97837/index.html">New firmware - new phone</a></li>
+<li><a href="../97839/index.html">People and meetings</a></li>
+<li><a href="../97841/index.html">Traversing a tree without recursion and without a stack</a></li>
+<li><a href="../97845/index.html">Multitasking in iOS4. Not so smooth</a></li>
+<li><a href="../97846/index.html">The TV is turning ...</a></li>
+<li><a href="../97850/index.html">Toshiba invites to a meeting</a></li>
+<li><a href="../97851/index.html">Fashion firmware for everyone!</a></li>
+<li><a href="../97852/index.html">Habrapoker this sunday</a></li>
+<li><a href="../97853/index.html">The experience of organizing the rotation of Destination URLs for PPC-objects</a></li>
+<li><a href="../97854/index.html">What is a good software manual?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

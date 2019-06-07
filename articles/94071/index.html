@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>MySQL real-time scaling</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="To write this post I pushed the topic glix . So in short: 
+ Amazon now provides a fault tolerant, scalable database service, i.e. our mysql is now in ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>MySQL real-time scaling</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/getpro/geektimes/post_images/b5b/1b5/843/b5b1b58437b53e4394b3c99bf235fe69.jpg" alt="image" align="left">  To write this post I pushed the <a href="http://habrahabr.ru/blogs/hosting/93898/">topic</a> <a href="http://geektimes.ru/users/glix/" class="user_link">glix</a> .  So in short: <br>  Amazon now provides a fault tolerant, scalable database service, i.e.  our mysql is now in the cloud.  You can read more <a href="http://habrahabr.ru/blogs/hosting/93898/">in the article itself</a> , so I will not retell it. <br><br>  The only disadvantage of this decision is the price.  I can’t say that Amazon’s services are cloudy :) are expensive, but when the server is running 24 hours a day, it can cost a lot.  Sitting on DevConf I had an idea how to avoid it. <br><a name="habracut"></a><br><br><h5>  Decision </h5><br>  There are two DB servers, the first one - let's call it “default” - this is our server that frontend calls to, and the second “cloud” is the same cloud MySQL server.  Task: when increasing the load on the main database server, turn on the cloud one, synchronize it with the main one and then redirect SQL queries to it. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The system will work in 4 modes. <br><br><h6>  Default </h6><br>  The mode of use of the main database server.  When a load is exceeded by a threshold value (max), a certain time interval (max-timeout) set in the parameters, the system switches to the SyncCloud state <br><br><h6>  Synccloud </h6><br>  The mode of synchronization with the cloud-server. <br><ol><li>  We turn on the cloud database server through a request to the Amazon RDS API. </li><li>  We are waiting for the server to load </li><li>  We connect it as a slave to the main server. </li><li>  We spend reclamation on the slave. </li><li>  We block requests for record to the master. </li><li>  We are replicating again.  This must be done in order not to block the wizard immediately, so that there is no large time to lock the base. </li><li>  Disable cloud servar from the wizard.  Turn off mysqld on the main server. </li><li>  We enable mysl-proxy on the default-server, which will forward all requests to the cloud-server. </li></ol><br><h6>  Cloud </h6><br>  Mode of operation with a cloud-server. <br>  In this mode, the default server proxies requests to the cloud server.  On the main server, the load is reduced at this time, and after it reaches a value below the threshold (min) for a certain period of time (min-timeout), the system switches to the SyncDefault state <br><br><h6>  Syncdefault </h6><br>  Synchronization mode with default-server. <br><ol><li>  We start mysqld on a free port (not 3306, because we have mysql-proxy sitting there now). </li><li>  We connect the default-server as a slave to the cloud-server. </li><li>  We carry out replication on the default-server </li><li>  Block write to cloud server </li><li>  We re-replicate </li><li>  Turn off mysql-proxy </li><li>  We move the mysqld server to default to the standard port (3306), which freed mysql-proxy. </li><li>  Send a request to shut down the cloud-server through the Amazon RDS API </li></ol><br><h5>  Results </h5><br>  As a result, we obtain scalability at the expense of the cloud server and savings, due to its use only at the right moments. <br>  Very interested in the opinion of habrovchan about the viability of such a scheme.  In general, there are huge prospects in this area, especially if you manage to start MySQL on a cluster based on Ubuntu Enterprise Cloud (Eucalyptus) <br><br><h5>  Links </h5><ul><li>  <a href="http://www.datacenterknowledge.com/archives/2009/10/27/roundup-amazon-offers-mysql-in-the-cloud/">Amazon Offers MySQL in the Cloud</a> </li><li>  <a href="http://www.interface.ru/home.asp%3FartId%3D23526">Oracle will continue to develop MySQL and create a Cloud Office</a> </li><li>  <a href="http://www.mysql.com/products/enterprise/ec2.html">MySQL Enterprise for Amazon EC2</a> </li><li>  <a href="http://rev1.www.joyent.com/products/publiccloud/virtual-appliances/mysql-accelerator/">Joyent Accelerator for MySQL</a> <br>  They say that they have “Speed ​​- 3X more Transactions per Second than MySQL on Amazon EC2.” I have not checked it myself yet. </li><li>  <a href="http://www.gigaspaces.com/wiki/display/CCF/CCF4XAP%2BQuick%2BTour%3FshowComments%3Dtrue%26showCommentArea%3Dtrue">Cloud Computing Framework for XAP</a> <br></li></ul></div><p>Source: <a href="https://habr.com/ru/post/94071/">https://habr.com/ru/post/94071/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../94063/index.html">How to honestly earn big discounts</a></li>
+<li><a href="../94064/index.html">Simply Linux Release 2. The project is gaining momentum</a></li>
+<li><a href="../94068/index.html">We make 200 icons - what problems we encountered</a></li>
+<li><a href="../94069/index.html">Yandex. Direct. Tutorial novice advertiser. Increasing CTR ads</a></li>
+<li><a href="../94070/index.html">Classes and Metaclasses in Javascript</a></li>
+<li><a href="../94072/index.html">Another freebie! Skype went out for half an hour of talking ...</a></li>
+<li><a href="../94074/index.html">Odessa Poster for iPhone</a></li>
+<li><a href="../94075/index.html">Nokia Qt SDK, write the first application and run it in the emulator and on the device</a></li>
+<li><a href="../94078/index.html">Work with Google Wave</a></li>
+<li><a href="../94079/index.html">3D television broadcast of the UEFA Champions League final</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
