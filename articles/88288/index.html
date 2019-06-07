@@ -1,0 +1,170 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Scheduling server tasks with boost.task</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, on a profile resource, one programmer asked the question: “What should MMO use for working with streams?” . The programmer was inclined to I...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Scheduling server tasks with boost.task</h1><div class="post__text post__text-html js-mediator-article">  Recently, on a profile resource, one programmer asked the question: <i>“What should MMO use for working with streams?”</i> .  The programmer was inclined to <a href="http://ru.wikipedia.org/wiki/Intel_Threading_Building_Blocks">Intel TBB</a> , but not even to the basic primitives, but to custom task scheduling.  Well, like TBB - well, okay.  A little later, I saw the source code of the MMO server of another programmer, who recently began to correspond with him from scratch to improve the architecture.  And there were a lot of bikes that were written by the programmer himself instead of using third-party components such as boost (for example, wrapper classes over pthread, and this is in 2010, when <a href="http://www.boost.org/doc/libs/1_42_0/doc/html/thread.html">boost.thread</a> is almost standard).  There was implemented a thread pool support with a task scheduler.  This topic is very interesting to me and I began to dig information about ready-made solutions for planning tasks (as in TBB) and found <a href="http://lists.boost.org/Archives/boost/2009/06/152125.php">boost.task</a> , which I decided to write about. <br><a name="habracut"></a><br><br><h3>  Definition </h3><br>  The task (task) is a logically united set of actions.  The task scheduler asynchronously performs tasks based on certain strategies for choosing who should be running at the moment in what thread. <br>  Tasks allow you to abstract from ordinary threads and operate at a higher level. <br><br><h3>  Why do I need a task scheduler? </h3><br>  How does a spherical server work in a vacuum?  Very simple: <br><ol><li>  A request comes from a client </li><li>  It is processed! </li><li>  The answer is sent </li></ol><br>  Well, in addition to the server, some processes may occur that are executed without a client request.  For example, sending notifications to the entire user database, clearing the database of obsolete data (little key), processing daily statistics, and so on. <br>  Now the snag is exactly how the request is processed.  We need to figure out how to handle it. <br>  Take for example a memcached-like server: we have a hash_map with data, there are read requests, there are write requests that make a simple hash map and return data, or write them into a hash map.  So far everything is happening in one thread, but what if we need to use all the processors of the system? <br>  We create as many threads as there are cores.  We process users in each stream, which we scatter as a <a href="http://ru.wikipedia.org/wiki/Round-robin_(%25D0%25B0%25D0%25BB%25D0%25B3%25D0%25BE%25D1%2580%25D0%25B8%25D1%2582%25D0%25BC)">round-robin</a> when creating a connection.  When accessing the container, we use rwlock-i (boost :: shared_mutex).  Fine.  And how do we deal with the removal of elements from the container?  Create a thread that wakes up once every N seconds and cleans the container. <br>  It was a simple example, and now a more complex example: a service that, depending on the user's request, can make a request to the database, make an http request to some site.  What will happen if the server is made according to the previous model (all requests to other components will be executed synchronously)?  Well, the database is located on the same site as the server, the answer will be within a couple of milliseconds.  Sending email is also not a problem - we put sendmail on the same machine, give him the data, and he himself will figure out how to send a letter. <br>  Fine.  Although not quite.  And what to do with the http-request?  It can take a very long time - it all depends on the site which is somewhere far away and it’s not known how long the request will process.  In this case, the thread will be inactive, although there are many requests in the queue that can be executed, but they wait until this thread is released. <br>  Such a request must be performed asynchronously.  You can implement it like this: <br><blockquote><code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">class</font> LongRequestHandler <br> { <br> <font color="#0000ff">public</font> : <br> <font color="#0000ff">void</font> Handle() <br> { <br> <font color="#008000">// read client request parameters</font> <br> <font color="#008000">// mysql request 1</font> <br> <font color="#008000">// mysql request 2</font> <br> HttpRequestExecutor::GetInstance()-&gt;Execute( <br> <font color="#A31515">"example.com?x=1"</font> , <br> boost::bind( <font color="#0000ff">this</font> , &amp;LongRequestHandler::HandleStage2) <br> ); <br> } <br> <font color="#0000ff">void</font> HandleStage2( <font color="#0000ff">const</font> std:: <font color="#0000ff">string</font> &amp; http_request_result) <br> { <br> <font color="#008000">// mysql request 3</font> <br> <font color="#008000">// write response to client</font> <br> } <br> };</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  HttpRequestExecutor accepts the url of the request and the callback, which must be called upon completion of the request (callback type - boost :: function). <br>  And this approach works, though not too beautiful. <br>  The <a href="http://blog.think-async.com/">Thinking Asynchronously in C ++</a> blog shows an interesting implementation of asynchronous tasks.  The result looks like this: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">template &lt;typename Handler&gt; <font color="#0000ff">void</font> async_echo( <br> tcp::socket&amp; socket, <br> mutable_buffer working_buffer, <br> Handler handler, <br> <font color="#008000">// coroutine state:</font> <br> coroutine coro = coroutine(), <br> error_code ec = error_code(), <br> size_t length = 0) <br> { <br> reenter (coro) <br> { <br> entry: <br> <font color="#0000ff">while</font> (!ec) <br> { <br> <font color="#0000ff">yield</font> socket.async_read_some( <br> buffer(working_buffer), <br> bind(&amp;async_echo&lt;handler&gt;, <br> <font color="#0000ff">ref</font> (socket), working_buffer, <br> box(handler), coro, _1, _2)); <br> <font color="#0000ff">if</font> (ec) <font color="#0000ff">break</font> ; <br> <font color="#0000ff">yield</font> async_write(socket, <br> buffer(working_buffer, length), <br> bind(&amp;async_echo&lt;handler&gt;, <br> <font color="#0000ff">ref</font> (socket), working_buffer, <br> box(handler), coro, _1, _2)); <br> } <br> handler(ec); <br> } <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote>  Coroutine and yield in C ++ look unusually;) This is implemented on the <a href="http://blog.think-async.com/2009/08/secret-sauce-revealed.html">define</a> , you can read the blog how the author did it. <br>  Gradually, the logic becomes more complicated, new elements are added, which need to be processed asynchronously, the implementation is also complicated.  Further task <br><pre>  mysql request 1
+ mysql request 2
+ http request 1
+ mysql request 3
+ http request 2
+ mysql request 4
+ mysql request 5
+</pre><br>  And executing it sequentially with stops in http requests, we see that requests <br><pre>  mysql request 2
+ http request 1
+</pre><br>  and <br><pre>  mysql request 3
+ http request 2
+ mysql request 4
+</pre><br>  we can do it in parallel, and if we want to do this, then we will have to complicate the logic even more.  And I would like to write a simple code, for example: <br><pre>  mysql request 1
+ x = run (func1)
+ y = run (func2)
+ wait (x, y)
+ mysql request 5<font></font>
+<font></font>
+ func1:
+   mysql request 2
+   http request 1<font></font>
+<font></font>
+ func2:
+   mysql request 3
+   http request 2
+   mysql request 4
+</pre><br>  This is where the task scheduler comes in handy. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h3>  Implementations </h3><br>  You can read about support for the task scheduler in the new standard 0x <a href="http://www.justsoftwaresolutions.co.uk/threading/multithreading-in-c%2B%2B0x-part-8-futures-and-promises.html">here</a> . <br><ul><li>  <a href="http://www.stdthread.co.uk/">just :: thread</a> - implementation of the C ++ 0x standard <a href="http://www.stdthread.co.uk/">thread</a> library from the father of boost :: thread </li><li>  <a href="http://msdn.microsoft.com/en-us/library/dd492418(VS.100).aspx">Parallel Patterns Library (PPL)</a> - Microsoft Realization </li><li>  <a href="http://msdn.microsoft.com/en-us/library/dd492627(VS.100).aspx">Asynchronous Agents Library</a> - and another from Microsoft </li><li>  <a href="http://www.threadingbuildingblocks.org/">Intel Threading Building Blocks</a> is a very powerful parallel programming library from Intel.  Includes a task scheduler. </li><li>  <a href="http://www.boostpro.com/vault/index.php%3Fdirectory%3DConcurrent%2520Programming">boost :: task</a> - - implementation from Oliver Kowalke, not adopted yet in boost </li></ul><br>  I liked the boost.task the most.  Further its detailed consideration. <br><br><h3>  Description boost.task </h3><br>  boost.task - the implementation of the proposal in the standard <a href="http://ru.wikipedia.org/wiki/C%252B%252B0x">C ++ 0x</a> .  It supports setting task execution strategies, creating sub-tasks, interrupting tasks. <br>  The library depends on: <br><ul><li>  <a href="http://www.boost.org/">boost</a> &gt; = 1.41 </li><li>  <a href="http://www.chaoticmind.net/~hcb/projects/boost.atomic/">boost.atomic</a> - implementation of atomic objects C ++ 0x for boost </li><li>  <a href="http://svn.boost.org/svn/boost/sandbox/move/">boost.move</a> - implementation of the Move semantics for C ++ 03 standard which still does not have <a href="http://www.artima.com/cppsource/rvalue.html">rvalue references</a> </li><li>  <a href="http://www.boostpro.com/vault/">boost.fiber</a> - analog boost.thread for <a href="http://en.wikipedia.org/wiki/Fiber_(computer_science)">lightweight</a> <a href="http://en.wikipedia.org/wiki/Light-weight_process">threads</a> </li></ul><br>  boost.task and boost.fiber compiled libraries (boost.atomic and boost.move - header-only) - so you have to build them.  To make it easier to experiment, I collected all the dependencies in one place, spiced it up with cmake and poured the project on <a href="http://github.com/ghisguth/tasks">github</a> .  It works on linux, for building under windows, you will need to add 2-3 lines to cmake files. <br><br><h3>  Usage example </h3><br>  The library API is fairly simple; implementing the request handler that was described above is not difficult.  I will cite it again: <br><pre>  mysql request 1<font></font>
+<font></font>
+   mysql request 2
+   http request 1<font></font>
+<font></font>
+   mysql request 3
+   http request 2
+   mysql request 4<font></font>
+<font></font>
+ mysql request 5
+</pre><br>  As an emulation of the request to mysql, the usual sleep for random time will be used: <br><pre> <code class="hljs css"><span class="hljs-selector-tag"><span class="hljs-selector-tag">boost</span></span><span class="hljs-selector-pseudo"><span class="hljs-selector-pseudo">::this_thread</span></span><span class="hljs-selector-pseudo"><span class="hljs-selector-pseudo">::sleep(boost</span></span><span class="hljs-selector-pseudo"><span class="hljs-selector-pseudo">::posix_time</span></span><span class="hljs-selector-pseudo"><span class="hljs-selector-pseudo">::milliseconds(rand()</span></span>%100 + 10)); <br></code> </pre> <code>boost::this_thread::sleep(boost::posix_time::milliseconds(rand()%100 + 10)); <br></code> <br>  The asynchronous timer from boost :: asio will be used as the external http request. <br>  So: <br>  Request - request class. <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">class</font> Request <br> { <br> <font color="#0000ff">public</font> : <br> Request( <font color="#0000ff">const</font> std:: <font color="#0000ff">string</font> &amp; data); <br> <font color="#0000ff">const</font> std:: <font color="#0000ff">string</font> &amp; Read() <font color="#0000ff">const</font> ; <br> <font color="#0000ff">void</font> Write( <font color="#0000ff">const</font> std:: <font color="#0000ff">string</font> &amp; answer); <br> };</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  And RequestHandler is the request handler class. <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">class</font> RequestHandler <br> { <br> <font color="#0000ff">public</font> : <br> RequestHandler(boost::asio::io_service &amp; io_service, <font color="#0000ff">const</font> RequestPtr &amp; request); <br> <font color="#0000ff">void</font> Process() <font color="#0000ff">const</font> ; <br> };</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  io_service is passed in order to make an external call (use the timer boost :: asio :: deadline_timer). So let's begin.  We define a pool of threads to handle our tasks: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">boost::tasks::static_pool&lt; boost::tasks::unbounded_fifo &gt; pool( boost::tasks::poolsize( 5) );</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  boost.task supports two basic types of task scheduling strategies: <br><ul><li>  <b>limited</b> (bounded) - have a threshold for the number of tasks to be performed, when reached, the addition of a new task blocks the stream that performs this action.  The main task is to avoid resource exhaustion when the speed of adding tasks exceeds their speed </li><li>  <b>unbounded</b> — allow you to add an infinite number of tasks to the queue </li></ul><br>  It is also possible to set a strategy for processing tasks within the queue: <br><ul><li>  <b>fifo</b> - the first added task is executed first. </li><li>  <b>priority</b> - the task has priority, tasks with the highest priority are selected for execution </li><li>  <b>smart</b> - this type of queue may be strongly customized by passing parameters to the template.  by default it is possible to index tasks for any key and replace the old task with a new one, if it exists </li></ul><br>  Accordingly, the described line of code creates a pool of 5 threads with an unlimited fifo type queue. <br>  Now we need to create io_service and a pool of 3 threads to handle external requests. <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">boost::asio::io_service io_service;</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  If you call io_service :: run at the moment when there are no tasks in it, the method will end immediately, and for normal operation we need running threads.  This is usually achieved by adding an accept port to the io_service to which the clients are connected, and in this case io_service can be taken waiting for the timer to execute: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">boost::asio::deadline_timer dummy_timer(io_service); <br> dummy_timer.expires_from_now(boost::posix_time::seconds(10)); <br> <font color="#008000">// void dummy_handler(const boost::system::error_code&amp;) {}</font> <br> dummy_timer.async_wait(&amp;dummy_handler);</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  After that you can create a thread pool: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">boost::thread_group io_service_thread_pool; <br> <font color="#0000ff">for</font> ( <font color="#0000ff">int</font> i = 0; i &lt; 3; ++i) <br> io_service_thread_pool.create_thread( <br> boost::bind(&amp;boost::asio::io_service::run, &amp;io_service) <br> );</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote>  Next, create a query: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">RequestPtr request( <font color="#0000ff">new</font> Request( <font color="#A31515">"some data"</font> )); <br> RequestHandlerPtr handler( <font color="#0000ff">new</font> RequestHandler(io_service, request)); <br></font> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  Everything is ready, you can perform the task: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">boost::tasks::handle&lt; <font color="#0000ff">void</font> &gt; request_processing( <br> boost::tasks::async( <br> boost::tasks::make_task( &amp;RequestHandler::Process, handler ), <br> pool));</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote>  boost :: tasks :: make_task (&amp; RequestHandler :: Process, handler) - creates a task to invoke a Process on the handler object that can be executed.  boost :: tasks :: async initiates an asynchronous execution of the task.  boost :: tasks :: handle an object by which you can track the status of the completion of the task, get the result if it is. <br>  boost :: tasks :: async supports 4 task execution algorithms: <br><ul><li>  <b>own_thread</b> - synchronous execution in the same thread </li><li>  <b>new_thread</b> - a thread is created for the task in which it will be executed, after which the thread will be completed </li><li>  <b>as_sub_task</b> - if the current task is executed in the pool - adds a new task to it, otherwise it creates a new thread, like new_thread.  This is the default behavior. </li><li>  <b>static_pool</b> - execute a task in the thread pool </li></ul><br>  Next, wait until the task is completed: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">request_processing.wait();</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  And stop io_service: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">io_service.stop(); <br> io_service_thread_pool.join_all();</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  The Process function is surprisingly very simple. <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">void</font> Subtask1() <font color="#0000ff">const</font> <br> { <br> Request( <font color="#A31515">"query2"</font> ); <br> ExternalRequest( <font color="#A31515">"extquery1"</font> ); <br> } <br> <br> <font color="#0000ff">void</font> Subtask2() <font color="#0000ff">const</font> <br> { <br> Request( <font color="#A31515">"query3"</font> ); <br> ExternalRequest( <font color="#A31515">"extquery2"</font> ); <br> Request( <font color="#A31515">"query4"</font> ); <br> } <br> <br> <font color="#0000ff">void</font> Process() <font color="#0000ff">const</font> <br> { <br> std:: <font color="#0000ff">string</font> data = request_-&gt;Read(); <br> <br> Request( <font color="#A31515">"query1"</font> ); <br> <br> boost::tasks::handle&lt; <font color="#0000ff">void</font> &gt; subtask1( <br> boost::tasks::async( <br> boost::tasks::make_task( &amp;RequestHandler::Subtask1, <font color="#0000ff">this</font> ))); <br> boost::tasks::handle&lt; <font color="#0000ff">void</font> &gt; subtask2( <br> boost::tasks::async( <br> boost::tasks::make_task( &amp;RequestHandler::Subtask2, <font color="#0000ff">this</font> ))); <br> <br> boost::tasks::waitfor_all( subtask1, subtask2); <br> <br> Request( <font color="#A31515">"query5"</font> ); <br> <br> request_-&gt;Write( <font color="#A31515">"some answer"</font> ); <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  Subtasks are performed using boost :: tasks :: async without specifying the policy to start and the as_sub_task algorithm is automatically selected, which performs tasks in the same thread pool as the parent task.  The implementation of the subtask functions is also trivial. <br>  RequestHandler :: Request - calls boost :: this_thread :: sleep, and with ExternalRequest everything is a bit more complicated: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">void</font> ExternalRequest( <font color="#0000ff">const</font> std:: <font color="#0000ff">string</font> &amp; what) <font color="#0000ff">const</font> <br> { <br> ExternalRequestHandler external_handler(io_service_); <br> boost::tasks::spin::auto_reset_event ev; <br> external_handler.PerformExternalReqeust(what, &amp;ev); <br> ev.wait(); <br> } <br></font> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote>  A handler is created, as well as an event with automatic reset - boost :: tasks :: spin :: auto_reset_event.  This event is passed to the external request handler and upon its completion ev.set () will be called, and until then ev.wait () blocks the task. <br>  In contrast to normal flows and synchronization primitives (boost :: condition), ev.wait () does not block the flow, but blocks the task (calls it in the this_task :: yield () loop).  This means that processor resources will be used by other tasks. <br>  The entire file can be found <a href="">here</a> . <br><br><h3>  findings </h3><br>  <b>boost.task</b> is quite a convenient library for scheduling tasks.  It allows you to see how support for asynchronous code execution in the new C ++ 0x standard will look, and you can use it right now without waiting for the standard to be released. <br>  Code using boost.task becomes smaller and much clearer than with normal use of threads. <br>  There are certainly some flaws: the code is not yet optimized, which can cause problems in rare cases;  The library is not yet accepted in boost (along with its dependencies). <br><br><h3>  What to read on the topic? </h3><br><ul><li>  <a href="http://blogs.msdn.com/nativeconcurrency/">Native concurency</a> </li><li>  <a href="http://www.parallelroads.com/blog/">Parallel Roads</a> </li><li>  <a href="http://blog.think-async.com/">Thinking Asynchronously in C ++</a> </li><li>  <a href="http://www.gotw.ca/publications/concurrency-ddj.htm">The free lunch is over</a> </li><li>  <a href="http://www.gamasutra.com/features/20060906/monkkonen_01.shtml">Multi-threaded game engine architecture</a> </li></ul></div><p>Source: <a href="https://habr.com/ru/post/88288/">https://habr.com/ru/post/88288/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../88277/index.html">Qiwi for online stores</a></li>
+<li><a href="../88278/index.html">Algorithm Descriptions Collection</a></li>
+<li><a href="../88281/index.html">Setting up Wifi on Linux with Adhoc using Ubuntu as an example</a></li>
+<li><a href="../88282/index.html">Solution of the cross-platform problem (Development of the 1C Enterprise platform)</a></li>
+<li><a href="../88286/index.html">Again about the importance of complex passwords</a></li>
+<li><a href="../88289/index.html">YouTube has a function to stop downloading videos.</a></li>
+<li><a href="../88291/index.html">GDB 7.1 released</a></li>
+<li><a href="../88293/index.html">Own monitoring server with nagios and cacti</a></li>
+<li><a href="../88294/index.html">Bluff - a library for drawing charts in canvas</a></li>
+<li><a href="../88296/index.html">Coworking Center in Tula</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

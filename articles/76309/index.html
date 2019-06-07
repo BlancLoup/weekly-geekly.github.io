@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Parallelization of long operations</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I often have to deal with tasks that require a very large database performance when processing large amounts of data. Today I will talk about a very s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Parallelization of long operations</h1><div class="post__text post__text-html js-mediator-article">  I often have to deal with tasks that require a very large database performance when processing large amounts of data.  Today I will talk about a very simple but effective method that can help you out if the database is no longer keeping up with the amount of data that is accumulated and must be processed.  The method does not depend on the database, but out of habit I publish it on the PostgreSQL blog, and the example will be on it.  Let's go straight to the example. <br><a name="habracut"></a><br><h4>  Spherical horse </h4><br>  Suppose we are talking about the simplest billing (it is clear that the method is applicable not only for billing, but with it it will look quite clearly).  The table in which data on calls of subscribers is accumulated will in our case be in the following format: <br><blockquote><code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">CREATE</font> <font color="#0000ff">TABLE</font> billing.calls <br> ( <br> call_id BIGINT, <br> call_time <font color="#0000ff">TIMESTAMP</font> , <br> subscriber_id <font color="#0000ff">INTEGER</font> , <br> duration <font color="#0000ff">INTERVAL</font> <br> );</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  This is how everything is simple.  Call details are stored at this rate with insane speed, and must be charged in a reasonable time. <br><br>  For billing, we have a database function with the following signature: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">FUNCTION</font> calculate( <font color="#0000ff">IN</font> subscriber_id <font color="#0000ff">INTEGER</font> , <font color="#0000ff">IN</font> duration <font color="#0000ff">INTERVAL</font> , <font color="#0000ff">OUT</font> status_code text) <font color="#0000ff">RETURNS</font> void</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  We carry out tariffing by running once every 5 minutes the following request: <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">SELECT</font> calculate(subscriber_id, duration) <font color="#0000ff">FROM</font> billing.calls;</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  And at one point, we understand that this request simply does not have time to be completed in 5 minutes.  During this time, more data is accumulated, then again, and here we sit and wait for the night, when the stream will weaken a little, and the queue will finally be raked.  Such is the perspective.  I must say that we sat and waited, not alone.  Together with us we sat 3 (for example) the remaining cores of our server, while one pored over the request.  PostgreSQL, unfortunately, does not know how to parallelize queries itself, but in our case this is not necessary.  Much better results will be given by a very simple and obvious trick.  Create an index on the function "the remainder of the subscriber_id division by 4": <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">CREATE</font> <font color="#0000ff">INDEX</font> billing.calls_subscriber_id_mod_idx <font color="#0000ff">ON</font> billing.calls <font color="#0000ff">USING</font> btree ((subscriber_id % 4));</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  And now we run in four threads (for example, four different jobs): <br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">SELECT</font> calculate(subscriber_id, duration) <font color="#0000ff">FROM</font> billing.calls <font color="#0000ff">WHERE</font> subscriber_id % 4 = @mod;</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  where <a href="https://habrahabr.ru/users/mod/" class="user_link">mod</a> is 0,1,2 or 3 (for each stream its own). <br><br><h4>  As a result </h4><br>  This technique solves problems with blocking that can occur if two different threads get a call from one subscriber.  Also, in parallel, these jobs will work faster than if we had hoped for the parallelization of the database itself (if we do not postgame, but oracle, for example). 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The method is applicable to any database supporting an index by function (Oracle, Postgresql).  In the case of MSSQL, you can create a calculated column and an index on it.  MySQL does not support functional indexes, but, as a workaround, you can create a new column with an index on it, and update it with a trigger. </div><p>Source: <a href="https://habr.com/ru/post/76309/">https://habr.com/ru/post/76309/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../76301/index.html">About information search, finding the best ways to view search results and much more</a></li>
+<li><a href="../76302/index.html">Search plugin for htmlbook.ru</a></li>
+<li><a href="../76303/index.html">Mobile Technology Conference November 27 in Minsk. Program</a></li>
+<li><a href="../76304/index.html">The problem of the removal of customers by employees of the company</a></li>
+<li><a href="../76305/index.html">Find good people</a></li>
+<li><a href="../76311/index.html">Search on a site based on Yandex.XML</a></li>
+<li><a href="../76313/index.html">PR fail</a></li>
+<li><a href="../76314/index.html">Half a year with iPhone</a></li>
+<li><a href="../76315/index.html">nginx, once again about caching</a></li>
+<li><a href="../76316/index.html">KOffice 2.1 - Release</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

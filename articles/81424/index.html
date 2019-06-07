@@ -1,0 +1,207 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>A bit about ip sla / rtr in Cisco ...</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I read two articles " Dual ISP on cisco routers without BGP " and " Simultaneous use of two providers on cisco routers ." The idea came to mind to try...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>A bit about ip sla / rtr in Cisco ...</h1><div class="post__text post__text-html js-mediator-article">  I read two articles " <a href="http://habrahabr.ru/blogs/cisconetworks/80555/">Dual ISP on cisco routers without BGP</a> " and " <a href="http://habrahabr.ru/blogs/cisconetworks/80717/">Simultaneous use of two providers on cisco routers</a> ."  The idea came to mind to try to draw and describe the solution to another, slightly non-standard problem. <br>  So, consider a simple example.  There is a client and there are two providers (uplink).  We do not have an autonomous system for building BGP-peers, but we need to work when one channel drops.  At the same time, we have an internal client of our network that does not work like everyone else, but exactly the opposite.  In normal (both channels are working) this client still goes through the backup channel (Dialer1), while everyone works on the main (Dialer0) and switches to the main channel only if the backup (!) Drops (sometimes such). <br><a name="habracut"></a><br>  One of the possible solutions (so to speak, "in the forehead") may look like this: <br><pre>  interface vlan1
+  ip address 192.168.0.1 255.255.255.0
+  ip policy route-map tracking
+ !
+ route-map tracking permit 10
+  match ip address 1
+  set default interface Dialer1 Dialer0
+ !
+ route-map tracking permit 20
+  match ip address 2
+  set default interface Dialer0 Dialer1
+ !
+ access-list 1 permit 192.168.0.101
+ access-list 2 deny 192.168.0.101
+ access-list 2 permit 192.168.0.0 0.0.0.255 </pre><br>  Yes, this design works, but there is one drawback, and not enough obvious. <br>  There may be such a situation that both the status and the protocol may be in the Up state, and the channel may not work.  Then this design will not help. <br>  What to do?  It's very simple: use the features of sla. <br>  What do we need for this?  You just need to rewrite the route-map tracking and write the rules for sla. <br><pre>  interface vlan1
+  ip address 192.168.0.1 255.255.255.0
+  ip policy route-map tracking
+ !
+ track 123 rtr 1 reachability
+ !
+ track 124 rtr 2 reachability
+ !
+ ip sla 1
+  icmp-echo 195.5.5.208 source-interface Dialer1
+  timeout 2000
+  threshold 2
+  frequency 3
+ ip sla schedule 1 life forever start-time now
+ ip sla 2
+  icmp-echo 193.34.140.1 source-interface Dialer0
+  timeout 2000
+  threshold 2
+  frequency 3
+ ip sla schedule 2 life forever start-time now
+ !
+ route-map tracking permit 100
+  match ip address 1
+  set ip next-hop verify-availability 195.5.5.208 10 track 123
+  set ip next-hop verify-availability 193.34.140.1 20 track 124
+ !
+ route-map tracking permit 120
+  match ip address 2
+  set ip next-hop verify-availability 193.34.140.1 10 track 124
+  set ip next-hop verify-availability 195.5.5.208 20 track 123
+ !
+ route-map tracking permit 200
+  set ip next-hop verify-availability 195.5.5.208 10 track 123
+  set ip next-hop verify-availability 193.34.140.1 20 track 124
+ !
+ access-list 1 permit 192.168.0.101
+ access-list 2 deny 192.168.0.101
+ access-list 2 permit 192.168.0.0 0.0.0.255 </pre><br>  Actually everything is trivially simple.  ;) <br>  The route-map stops processing its rules for the packet after it finds the first match.  Therefore, in fact, the procedure for determining sequences is important! <br>  Now, if we look at the state of the interfaces, we will see: <br><pre>  #sh ip int br |  i ^ Dialer
+ Dialer0 193.34.141.151 YES IPCP up up
+ Dialer1 unassigned YES IPCP up up </pre><br>  At the same time, we see that both the status and the Dialer1 protocol are in the up state, i.e.  the first route-map tracking option would not work and the client 192.168.0.101 simply would not work.  But if we look at the statistics on route-map tracking from the second option, we will see: <br><pre>  #sh route-map tracking
+ route-map tracking, permit, sequence 100
+   Match clauses:
+     ip address (access-lists): 1 
+   Set clauses:
+     ip next-hop verify-availability 195.5.5.208 10 track 123 [down]
+     ip next-hop verify-availability 193.34.140.1 20 track 124 [up]
+   Policy routing matches: 711 packets, 95929 bytes
+ route-map tracking, permit, sequence 120
+   Match clauses:
+     ip address (access-lists): 2 
+   Set clauses:
+     ip next-hop verify-availability 193.34.140.1 10 track 124 [up]
+     ip next-hop verify-availability 195.5.5.208 20 track 123 [down]
+   Policy routing matches: 216 packets, 14100 bytes
+ route-map tracking, permit, sequence 200
+   Match clauses:
+   Set clauses:
+     ip next-hop verify-availability 195.5.5.208 10 track 123 [down]
+     ip next-hop verify-availability 193.34.140.1 20 track 124 [up]
+   Policy routing matches: 0 packets, 0 bytes </pre><br>  The state in ip next-hop verify-availability 195.5.5.208 10 is designated as down, and accordingly these routes will not be installed. <br><br>  <font color="gray">ps: Many comments that could be inserted are omitted, since it is implied that the two articles mentioned above have been read, and therefore the reader knows what is being said.</font> </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/81424/">https://habr.com/ru/post/81424/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../81414/index.html">Who want to be a millionaire?</a></li>
+<li><a href="../81415/index.html">idomen.ru or "Where is the money, Zine?"</a></li>
+<li><a href="../81419/index.html">Requirements for state sites from the Ministry of Economic Development and Development through the prism of availability of information</a></li>
+<li><a href="../81421/index.html">IGF Winner - Ulitsa Dimitrova game about a homeless St. Petersburg boy</a></li>
+<li><a href="../81423/index.html">In the meantime, in the perpendicular universe, the Trade Guild strikes back</a></li>
+<li><a href="../81425/index.html">Youtube added HTML5 support</a></li>
+<li><a href="../81426/index.html">Ping and traceroute from all continents at the same time</a></li>
+<li><a href="../81427/index.html">An interesting marketing ploy Sega</a></li>
+<li><a href="../81429/index.html">Templates for displaying and editing data in ASP.NET MVC 2</a></li>
+<li><a href="../81432/index.html">Learn to speak</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

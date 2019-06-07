@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Authorization of users in ProFTPD by forum accounts</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently there was a need to ban someone from entering the FTP server, that is, to block access to anonymous. But to maintain a separate database with...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Authorization of users in ProFTPD by forum accounts</h1><div class="post__text post__text-html js-mediator-article"> Recently there was a need to ban someone from entering the FTP server, that is, to block access to anonymous.  But to maintain a separate database with FTP users is inconvenient, and moreover inefficient.  I thought and thought, and decided to authorize users on the forum account, in my case SMF.  Users are stored in the MySQL table smf_members, the username in memberName, and the password in passwd.  ProFTPD has a well-documented ability to get credentials with PostgreSQL / MySQL.  But the trouble is, the forum passwords are stored in the SHA1 hash, and the user name is added to the beginning of the password in lower case.  And ProFTPD expects that a password in MySQL PASSWORD (), Crypt, or Plaintext formats will be returned to it from a SQL query to the database.  Of course, there is no SHA1, let alone the fact that the username is added to the password.  Google day, the other, everyone complains about this, and no one offers a ready-made solution. <br><a name="habracut"></a><br>  Well, our business is not tricky.  So what do we have?  There is a SQLAuthTypes parameter that indicates which method encrypts the password.  I do not have the option, then open source.  The last RC build was downloaded from the ProFTPD home site, at this point proftpd-1.3.3rc3.  A quick inspection of contrib / mod_sql.c and contrib / mod_sql.h showed that there is a mechanism for adding your own authorization methods to the function: <br><br> <code>int sql_register_authtype(const char *name, modret_t *(*callback)(cmd_rec *, const char *, const char *)); <br></code> <br>  Interesting.  Having run a little on the source code, having found enough examples of calling this function (which is strange, nothing of this is undoubtedly undocumented, and on the Internet by the query “proftpd sql_register_authtype” 0 results), it became clear that everything comes down to creating a callback function that takes as parameters The password is pure and the hash obtained from mysql, checks if the password matches the hash, and returns the result of the check with return.  Well, it sounds easy.  Created the contrib / mod_sql_auth_smf.c artwork module as follows: <br><br> <code>#include "conf.h" <br> #include "mod_sql.h" <br> <br> #define MOD_SQL_AUTH_SMF_VERSION "mod_sql_smf/0.1" <br> <br> #if defined(HAVE_OPENSSL) || defined(PR_USE_OPENSSL) <br> <br> #include &lt;openssl/evp.h&gt; <br> <br> static modret_t *auth_smf(cmd_rec *cmd, const char *c_clear, const char *c_hash) { <br> const EVP_MD *md; <br> EVP_MD_CTX md_ctxt; <br> unsigned char mdval[EVP_MAX_MD_SIZE]; <br> char hash[EVP_MAX_MD_SIZE * 2]; <br> int mdlen, i; <br> <br> OpenSSL_add_all_digests(); <br> md = EVP_get_digestbyname("sha1"); <br> <br> if (!md) <br> return ERROR_INT(cmd, PR_AUTH_BADPWD); <br> <br> EVP_DigestInit(&amp;md_ctxt, md); <br> EVP_DigestUpdate(&amp;md_ctxt, c_clear, strlen(c_clear)); <br> EVP_DigestFinal(&amp;md_ctxt, mdval, &amp;mdlen); <br> <br> for (i=0; i&lt;mdlen; i++) { <br> sprintf(hash+(i*2), "%02x", mdval[i]); <br> } <br> <br> return strcmp(hash, c_hash) ? ERROR_INT(cmd, PR_AUTH_BADPWD) : HANDLED(cmd); <br> } <br> <br> static int sql_auth_smf_init(void) { <br> (void) sql_register_authtype("SMF", auth_smf); <br> return 0; <br> } <br> <br> #endif <br> <br> module sql_auth_smf_module = { <br> <br> /* Always NULL */ <br> NULL, NULL, <br> <br> /* Module API version */ <br> 0x20, <br> <br> /* Module name */ <br> "sql_auth_smf", <br> <br> /* Module configuration directive table */ <br> NULL, <br> <br> /* Module command handler table */ <br> NULL, <br> <br> /* Module auth handler table */ <br> NULL, <br> <br> /* Module initialization */ <br> sql_auth_smf_init, <br> <br> /* Session initialization */ <br> NULL, <br> <br> /* Module Version */ <br> MOD_SQL_AUTH_SMF_VERSION <br> <br> }; <br></code> <br>  In this module, I used OpenSSL to implement SHA1 hashing a clean password, checking against the received hash, and returning the test result to mod_sql.c.  Compiled, not forgetting to add an option to configure --with-shared = mod_sql_auth_smf, changed the parameter in proftpd.conf SQLAuthTypes to SMF and added the line LoadModule mod_sql_mysql.c.  Gathered, checked, works!  But only if the user User1 with the password PassWd22, will specify the user1PassWd22 as the password.  Well, it's easier.  Having found the callback function in mod_sql.c, changed it from this view: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+     <code>mr = sah-&gt;cb(cmd, plaintext, ciphertext);</code> <br> <br>  On this: <br><br> <code>if(strcmp(sah-&gt;name, "SMF")==0) { <br> int i; <br> char namepasswd[106]; <br> strncpy(namepasswd, cmd-&gt;argv[1], 25); <br> for(i=0;namepasswd[i];i++) namepasswd[i]=tolower(namepasswd[i]); <br> strncat(namepasswd, cmd-&gt;argv[2], 80); <br> mr = sah-&gt;cb(cmd, namepasswd, ciphertext); <br> } else <br> mr = sah-&gt;cb(cmd, plaintext, ciphertext); <br></code> <br>  That's all, the goal is achieved.  If someone is interested in the details of setting up ProFTPD for working with MySQL, compilation subtleties, I will answer in the comments.  The purpose of this article is not to give a complete step-by-step guide from scratch, but to briefly show how you can, with a little C knowledge, force ProFTPD to authorize users with the credentials of any forum, blog, and so on. </div><p>Source: <a href="https://habr.com/ru/post/78854/">https://habr.com/ru/post/78854/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../78848/index.html">Expression Web 3 licenses for web designers</a></li>
+<li><a href="../78850/index.html">Browser text web browsing</a></li>
+<li><a href="../78851/index.html">E-commerce cartoons</a></li>
+<li><a href="../78852/index.html">A tale about how I repaired my Macbook Unibody Late 2008</a></li>
+<li><a href="../78853/index.html">Instant marketing: corporate cups</a></li>
+<li><a href="../78856/index.html">7 reasons why you need to pursue your brand</a></li>
+<li><a href="../78857/index.html">Social school robot from NIT</a></li>
+<li><a href="../78860/index.html">Mathematical logic of terrorist attacks</a></li>
+<li><a href="../78861/index.html">On some aspects of road construction</a></li>
+<li><a href="../78863/index.html">Auto Debug Tool</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

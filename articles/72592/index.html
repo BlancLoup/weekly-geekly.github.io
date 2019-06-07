@@ -1,0 +1,143 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Using V8 Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Using V8 
+
+ Part 2. Object templates, notifications on destruction, etc. 
+
+ Part 1 here: krovosos.habrahabr.ru/blog/72474 
+
+
+
+ - V8 object templates 
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Using V8 Part 2</h1><div class="post__text post__text-html js-mediator-article">  Using V8 <br><br>  Part 2. Object templates, notifications on destruction, etc. <br><br>  Part 1 here: <a href="http://krovosos.habrahabr.ru/blog/72474/">krovosos.habrahabr.ru/blog/72474</a> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <a name="habracut"></a><br><br>  <b>- V8 object templates</b> <br><br>  Sometimes we don’t want to create a javascript object from scratch.  Sometimes we want a V8 object to immediately give us some functionality.  For example, we want the object to have methods and immediately be associated with some of our set of C ++ functions or “wrap” some C ++ class. <br>  It is also possible that we want to associate some of our own pointers with this V8 object (external to V8).  For example, a pointer to an associated instance of the C ++ class. <br><br>  To do this, use the templates of objects (class ObjectTemplate).  Creating a V8 object on the basis of the template, we immediately fill it with some functionality.  For each of the object types that we want to create later in the runtime period, we need to create a template (and save it to a permanent V8 handle).  Later, when creating objects, we will specify this template. <br><br>  Suppose we have a C ++ class that wraps the database (for example, SQLITE) as follows: <br><br><blockquote><code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">class</font> dblite <br> { <br> <font color="#0000ff">bool</font> open( <font color="#0000ff">const</font> <font color="#0000ff">char</font> * name); <br> <font color="#0000ff">void</font> close(); <br> <font color="#0000ff">bool</font> execute( <font color="#0000ff">const</font> <font color="#0000ff">char</font> * sql); <br> <font color="#0000ff">int</font> error_code(); <br> };</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  Suppose we want a V8 object that wraps a dblite object.  Suppose we want the V8 object to provide the open (), close (), execute () methods and the errorCode property. <br><br>  To do this, you first have to write some auxiliary code. <br><br>  First of all, you will need to take away from the V8 object the associated links with C ++ objects.  When creating a template, we specify how many links we want to store (this will be shown later) and the V8 object creates an ordinary array of void * elements inside it.  Then we can refer to its elements, pick up void * and convert it to the C ++ class we need.  For example, if we know that a pointer to a C ++ dblite class is stored in the zero cell of the array of external links of a V8 object, we can get it like this: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">dblite* unwrap_dblite(Handle&lt;Object&gt; obj) <br> { <br> Handle&lt;External&gt; field = Handle&lt;External&gt;::Cast(obj-&gt;GetInternalField(0)); <br> <font color="#0000ff">void</font> * ptr = field-&gt;Value(); <br> <font color="#0000ff">return</font> static_cast&lt;dblite*&gt;(ptr); <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  Next, you need to declare a callback function in your C ++ code.  I mean, the C ++ functions that will be called from V8.  For now, consider two types of such a call. <br><br>  Callback from V8 to C ++ to get the value of a property (property) of an object: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;Value&gt; SomeProperty(Local&lt; <font color="#2B91AF">String</font> &gt; name, <font color="#0000ff">const</font> AccessorInfo&amp; info) <br> { <br> <font color="#008000">// info.Holder()    V8 ( Handle&lt;Object&gt;)</font> <br> <font color="#008000">// name   ,   </font> <br> ... <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  Callback from V8 to C ++, which occurs when you call a method on a V8 object: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;Value&gt; SomeMethod( <font color="#0000ff">const</font> Arguments&amp; args) <br> { <br> <font color="#008000">// args.This()    V8 ( Handle&lt;Object&gt;)</font> <br> <font color="#008000">// args ( )    </font> <br> ... <br> } <br></font> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br>  For example, for the errorCode property, the callback function would look like this: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;Value&gt; ErrorCode(Local&lt; <font color="#2B91AF">String</font> &gt; name, <font color="#0000ff">const</font> AccessorInfo&amp; info) <br> { <br> <font color="#008000">//  Handle&lt;Object&gt;,       dblite,  error_code(),</font> <br> <font color="#008000">//     V8 ( ),  </font> <br> <font color="#0000ff">return</font> Integer::New(unwrap_dblite(info.Holder())-&gt;error_code()); <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  And for the open () method, the callback function would look like this: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;Value&gt; Open( <font color="#0000ff">const</font> Arguments&amp; args) <br> { <br> <font color="#0000ff">if</font> (args.Length() &lt; 1) <font color="#0000ff">return</font> Undefined(); <font color="#008000">//  ? !</font> <br> dblite* db = unwrap_dblite(args.This()); <font color="#008000">//    dblite</font> <br> <font color="#0000ff">string</font> sql = to_string(args[0]); <font color="#008000">//    C++,  to_string      </font> <br> <font color="#0000ff">return</font> Boolean::New(db-&gt;open(sql.data())); <font color="#008000">//  open()   </font> <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  I hope you can already write similar functions Close () and Execute () to communicate with the dblite :: open () and dblite :: execute () methods? <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;Value&gt; Close( <font color="#0000ff">const</font> Arguments&amp; args) <br> { <br> <font color="#008000">//      !</font> <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;Value&gt; Execute( <font color="#0000ff">const</font> Arguments&amp; args) <br> { <br> <font color="#008000">//      !</font> <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  In general, we are ready to create a template for a V8 object that wraps dblite: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Handle&lt;ObjectTemplate&gt; CreateDbLiteTemplate() <br> { <br> HandleScope handle_scope; <br> Local&lt;ObjectTemplate&gt; result = ObjectTemplate::New(); <font color="#008000">//   </font> <br> result-&gt;SetInternalFieldCount(1); <font color="#008000">//         ( V8)  (void*)</font> <br> <font color="#008000">//         dblite*</font> <br> <br> <font color="#008000">//    ( ) -    ?</font> <br> result-&gt;SetAccessor( <font color="#2B91AF">String</font> ::NewSymbol( <font color="#A31515">"errorCode"</font> ), ErrorCode); <font color="#008000">//   </font> <br> <br> <font color="#008000">//   -  </font> <br> result-&gt;Set( <font color="#2B91AF">String</font> ::NewSymbol( <font color="#A31515">"open"</font> ), FunctionTemplate::New(Open)); <br> result-&gt;Set( <font color="#2B91AF">String</font> ::NewSymbol( <font color="#A31515">"close"</font> ), FunctionTemplate::New(Close)); <br> result-&gt;Set( <font color="#2B91AF">String</font> ::NewSymbol( <font color="#A31515">"execute"</font> ), FunctionTemplate::New(Execute)); <br> <br> <font color="#008000">//     ,       HandleScope    </font> <br> <font color="#008000">//    "" HandleScope - handle_scope</font> <br> <font color="#0000ff">return</font> handle_scope.Close(result); <br> }</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  Small explanations.  String :: NewSymbol () uses a hash of names and works faster than String :: New () if known names are used in advance. <br>  A function in an object's template is written through a function template (FunctionTemplate). <br><br>  Now we are ready to write a function that creates a dblite V8 object?  Not quite.  But what about the lifetime of such an object?  If we make it permanent, it will never be destroyed.  Temporary - it is destroyed by the garbage collector and memory will “leak” with it, since the associated instance of the dblite object will not be destroyed. <br><br>  So, smoothly proceed to the next part. <br><br>  <b>- Receive notification when destroying V8 objects</b> <br><br>  As mentioned in the first part, the lifetime of a V8 object is controlled by the V8 itself based on usage counters. <br>  It turns out that a permanent handle will never free an object for a V8.  A temporary will be destroyed by the V8 itself, but we will not know about it. <br><br>  To get out of this situation, V8 uses the concept of "weakly connected" links.  The V8 object can be marked as “loosely coupled” and passed to the notification function for the callback.  At some point in time, the garbage collector will notice that only “weakly-connected” objects refer to the V8 object and will call the passed function. <br><br>  The object is made “weakly bound” by the MakeWeak function: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">void</font> Persistent&lt;T&gt;::MakeWeak( <font color="#0000ff">void</font> * parameters, WeakReferenceCallback callback);</font> <br> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  The callback function of the notification about the “complete weakly connectedness” of an object for our case may look like this: <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black"><font color="#0000ff">void</font> DbLiteWeakCallback(Persistent&lt;Value&gt; <font color="#0000ff">object</font> , <font color="#0000ff">void</font> * parameter) <br> { <br> dblite* db = (dblite*) parameter; <font color="#008000">//   parameters  MakeWeak,        dblite*</font> <br> delete db; <font color="#008000">//   C++ </font> <br> <font color="#0000ff">object</font> .ClearWeak(); <font color="#008000">//   "-",      </font> <br> <font color="#0000ff">object</font> .Dispose(); <font color="#008000">//    ,      </font> <br> } <br></font> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  Now we are ready to write code to create a V8 object wrapping a dblite. <br><br><blockquote> <code><a href="http://virtser.net/blog/post/source-code-highlighter.aspx"></a> <font color="black">Persistent&lt;ObjectTemplate&gt; DbLite_template; <font color="#008000">//   </font> <br> <br> Persistent&lt;Object&gt; CreateDbLite( <font color="#0000ff">const</font> <font color="#0000ff">char</font> * db_name) <br> { <br> Persistent&lt;Object&gt; obj; <br> <font color="#008000">//      -   </font> <br> <font color="#0000ff">if</font> (DbLite_template.IsEmpty()) DbLite_template = Persistent&lt;ObjectTemplate&gt;::New(CreateDbLiteTemplate()); <br> <font color="#008000">//   c++ </font> <br> dblite* db = <font color="#0000ff">new</font> dblite; <font color="#0000ff">if</font> (db_name) db-&gt;open(db_name); <br> <font color="#008000">//   js    </font> <br> obj = Persistent&lt;Object&gt;::New(DbLite_template-&gt;NewInstance()); <br> <font color="#008000">//   "-",  parameter      dblite*</font> <br> obj.MakeWeak(db, DbLiteWeakCallback); <br> <font color="#008000">//   js    c++ </font> <br> obj-&gt;SetInternalField(0, External::New(db)); <br> <font color="#0000ff">return</font> obj; <br> } <br></font> <br> <font color="gray">* This source code was highlighted with <font color="gray">Source Code Highlighter</font> .</font></code> </blockquote> <br><br>  Everything is great, but how to get from the javascript code to the CreateDblite function?  It is necessary when creating a context in its template (yes, yes, contexts can also have templates) add the appropriate method. <br><br></div><p>Source: <a href="https://habr.com/ru/post/72592/">https://habr.com/ru/post/72592/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../72581/index.html">Social network, website, portal and startup for artists and illustrators illustrators.ru</a></li>
+<li><a href="../72584/index.html">How to confirm a phone on Amazon</a></li>
+<li><a href="../72585/index.html">In the electric cars add speakers to make noise on the pedestrians</a></li>
+<li><a href="../72588/index.html">Flowplayer and Internet Explorer (IE)</a></li>
+<li><a href="../72590/index.html">Getting the id of the added entry in PostgeSQL</a></li>
+<li><a href="../72594/index.html">remove auxpage_ and tags on the product page (webasyst shop-script)</a></li>
+<li><a href="../72595/index.html">Gallery of cases at the exhibition WEB-Studio 2009</a></li>
+<li><a href="../72596/index.html">CXT8000 - when not saving on matches</a></li>
+<li><a href="../72599/index.html">Business Internet. The first day</a></li>
+<li><a href="../72603/index.html">HTPC from old trash</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

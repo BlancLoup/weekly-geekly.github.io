@@ -1,0 +1,191 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Pitfalls when using caching in nginx</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nginx’s web server and reverse-proxy have very powerful HTTP response caching capabilities. However, in some cases there is not enough documentation a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Pitfalls when using caching in nginx</h1><div class="post__text post__text-html js-mediator-article">  Nginx’s web server and reverse-proxy have very powerful HTTP response caching capabilities.  However, in some cases there is not enough documentation and examples, as a result, not everything works as easily and simply as we would like.  For example, my nginx configs are written in places in blood.  This article I will try to improve the situation a little. <br><br>  <b>In this article: a) reefs with full-page caching;</b>  <b>b) rotational caching;</b>  <b>c) the creation of a dynamic "window" in the cached page.</b> <br><br>  <i>I will assume that you are using the nginx + fastcgi_php bundle.</i>  <i>If you use nginx + apache + mod_php, simply replace the directive names with fastcgi_cache * with proxy_cache *</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      If I choose whether to cache the page on the PHP side or on the nginx side, I choose nginx.  First, it allows you to give 5-10 thousand requests per second without any difficulties and without clever talk about "high load".  Secondly, nginx independently monitors the size of the cache and cleans it both when it becomes obsolete and when it overwrites infrequently used data. <br><br><h4>  Cache the entire page </h4><br>  If the main page on your site is dynamically generated, but rarely changes, you can greatly reduce the server load by caching it in nginx.  With high attendance, even caching for a short time (5 minutes or less) already gives a huge performance boost, because the cache works very quickly.  Even after caching the page for just 30 seconds, you will still achieve significant server unloading, while maintaining the dynamism of updating the data (in many cases, updating every 30 seconds is enough). <a name="habracut"></a><br><br>  For example, you can cache the main page like this: <br><br><pre> fastcgi_cache_path / var / cache / nginx levels = keys_zone = wholepage: 50m;
+ ...
+ server {
+   ...
+   location / {
+     ...
+     fastcgi_pass 127.0.0.1:9000;
+     ...
+     # Turn on caching and carefully select the cache key.
+     fastcgi_cache wholepage;
+     fastcgi_cache_valid 200 301 302 304 5m;
+     fastcgi_cache_key "$ request_method | $ http_if_modified_since | $ http_if_none_match | $ host | $ request_uri";
+     #We guarantee that different users will not receive the same session cookie.
+     fastcgi_hide_header "Set-Cookie";
+     # Make nginx cache the page anyway, regardless of
+     # caching headers exposed in PHP.
+     fastcgi_ignore_headers "Cache-Control" "Expires";
+   }
+ }
+</pre><br>  I will not greatly exaggerate if I say that every line in this config is written in blood.  There are a lot of pitfalls here, let's consider them all. <br><br><h6>  fastcgi_cache_path: easy debugging is important too </h6><br>  fastcgi_cache_path / var / cache / nginx levels = keys_zone = wholepage: 50m; <br><br>  In the fastcgi_cache_path directive, I set an “empty” value for levels.  Although this slightly reduces performance (files will be directly created in / var / cache / nginx, without splitting into directories), but it makes it much easier to debug and diagnose problems with the cache.  Believe me, you will have to climb into / var / cache / nginx many times and watch what is stored there. <br><br><h6>  fastcgi_cache_valid: we cache the response code 304 too </h6><br>  fastcgi_cache_valid 200 301 302 304 5m; <br><br>  In the fastcgi_cache_valid directive, we force to cache not only the standard codes 200 OK, 301 Moved Permanently and 302 Found, but also 304 Not Modified.  Why?  Let's remember what 304 means. It is issued with an empty response body in two cases: <ul><li>  If the browser sent an “If-Modified-Since: date” header in which the date is greater than or equal to the value of the “Last-Modified: date” response header.  Those.  the client asks: “Is there a new version since date?  If not, give me back 304 and save traffic.  If you have, give me the body of the page. ” </li><li>  If the browser sent an “If-None-Match: hash” header, where hash matches the header value of the “ETag: hash” response.  Those.  the client asks: “Is the current version of the page different from the one I requested last time?  If not, give me back 304 and save traffic.  If so, give the body of the page. ” </li></ul>  In both cases, Last-Modified or ETag will most likely be taken from the nginx cache, and the check will pass very quickly.  There is no need for us to “jerk” PHP only so that the script will issue these headers, especially in light of the fact that the clients who will receive the answer 200 will be given away from the cache. <br><br><h6>  fastcgi_cache_key: working carefully with dependencies </h6><br>  fastcgi_cache_key "$ request_method | $ http_if_modified_since | $ http_if_none_match | $ host | $ request_uri"; <br><br>  Of particular note is the value in the fastcgi_cache_key directive.  I gave the minimum working value of this directive.  Step to the right, step to the left, and in some cases you will begin to receive "incorrect" data from the cache.  So: <ul><li>  We need the dependency on $ request_method, because  HEAD requests on the Internet are quite frequent.  The response to the HEAD request never contains the body.  If you remove the dependency on $ request_method, it may so coincide that someone before you requested the main page using the HEAD method, and then you will be given empty content via GET. </li><li>  The dependency on $ http_if_modified_since is needed so that the cache with the 304 Not Modified response is not accidentally given to the client making a regular GET request.  Otherwise, the client may receive an empty response from the cache. </li><li>  Same with $ http_if_none_match.  We must be insured against giving out blank pages to customers! </li><li>  Finally, the dependency on $ host and $ request_uri does not require comments. </li></ul><h6>  fastcgi_hide_header: solve security issues </h6><br>  fastcgi_hide_header "Set-Cookie"; <br><br>  The fastcgi_hide_header directive is very important.  Without it, you seriously risk security: users can get other people's sessions through a session cookie in the cache.  (True, in the latest versions of nginx something was done towards the automatic accounting of this factor.) Do you understand how this happens?  Vasya Pupkin visited the site, he had a session and a session cookie.  Let the cache at that time was empty, and Vasina Cookie signed into it.  Then another user came, got the answer from the cache, and in it - Vasya's cookie.  And that means his session too. <br><br>  <i>You can, of course, say: let's not call session_start () on the main page, then there will be no problems with cookies.</i>  <i>In theory, this is true, but in practice this method is very unstable.</i>  <i>Sessions often start “deferred”, and it is enough for any part of the code to “accidentally” call a function that requires access to the session, as we get a security hole.</i>  <i>And safety is such a thing, that if in one or another method a hole may appear due to carelessness, then this method is considered “full of holes” by definition.</i>  <i>In addition, there are other cookies besides the session;</i>  <i>they also do not need to write to the cache.</i> <br><br><h6>  fastcgi_ignore_headers: we don’t allow the site to “lie down” from the load when there is a typo </h6><br>  fastcgi_ignore_headers "Cache-Control" "Expires"; <br><br>  The nginx server pays attention to the Cache-Control, Expires, and Pragma headers that PHP issues.  If they say that the page does not need to be cached (or that it is already out of date), then nginx does not write it to the cache file.  This behavior, although it seems logical, in practice creates a lot of difficulties.  Therefore, we block it: thanks to fastcgi_ignore_headers, the cache files will contain the contents of any page, regardless of its headers. <br><br>  What is this complexity?  They are again associated with sessions and the session_start () function, which in PHP defaults to the “Cache-Control: no-cache” and “Pragma: no-cache” headers.  Here there are three solutions to the problem: <ul><li>  Do not use session_start () on the page where caching is expected.  One of the drawbacks of this method, we have already considered above: just one careless movement is enough, and your website, which receives thousands of requests per second to the cached home page, will immediately “crash” when the cache is turned off.  The second minus is that we will have to manage caching logic in two places: in the nginx config and in the PHP code.  Those.  this logic will be “spread out” in completely different parts of the system. </li><li>  Set ini_set ('session.cache_limiter', '').  This will force PHP to prevent the output of any headers that limit caching when working with sessions.  The problem here is the same: the “blurring” of caching logic, because ideally we would like all caching to be managed from a single place. </li><li>  Ignore prohibit caching headers when writing to cache files using fastcgi_ignore_headers.  It seems to be a win-win solution, so I advise him. </li></ul><br><h4>  Rotational caching </h4><br>  The static home page is not so interesting.  What to do if there are a lot of materials on the site, and the Home acts as a kind of "shop window" for them?  It is convenient to display “random” materials on such a “showcase” so that different users see different things (and even one user received new content by reloading the page in the browser). <br><br>  Solution of the problem - caching with rotation: <ol><li>  We force the script to honestly output elements of the main page in random order, performing the necessary queries to the database (even if it is slow). </li><li>  Then we save not one, but, say, 10 variants of the page in the cache. </li><li>  When a user visits the site, we show him one of these options.  In this case, if the cache is empty, then the script is launched, and if not, the result is returned from the cache. </li><li>  We set the cache expiration time to small (for example, 1 minute), so that during the day different users could “watch” all the site materials. </li></ol>  As a result, the first 10 requests to the script generator will be executed “honestly” and “load” the server.  But then they will "settle" in the cache and within a minute will be issued quickly.  The performance increase is greater, the more visitors on the site. <br><br>  Here is a piece of the nginx config that implements caching with rotation: <br><br><pre> fastcgi_cache_path / var / cache / nginx levels = keys_zone = wholepage: 50m;
+ perl_set $ rand 'sub {return int rand 10}';
+ ...
+ server {
+   ...
+   location / {
+     ...
+     fastcgi_pass 127.0.0.1:9000;
+     ...
+     # Turn on caching and carefully select the cache key.
+     fastcgi_cache wholepage;
+     fastcgi_cache_valid 200 301 302 304 1m;
+     fastcgi_cache_key "$ rand | $ request_method | $ http_if_modified_since | $ http_if_none_match | $ host | $ request_uri";
+     #We guarantee that different users will not receive the same session cookie.
+     fastcgi_hide_header "Set-Cookie";
+     # Make nginx cache the page anyway, regardless of
+     # caching headers exposed in PHP.
+     fastcgi_ignore_headers "Cache-Control" "Expires";<font></font>
+<font></font>
+     # We force the browser to reload the page each time (for rotation).
+     fastcgi_hide_header "Cache-Control";
+     add_header Cache-Control "no-store, no-cache, must-revalidate, post-check = 0, pre-check = 0";
+     fastcgi_hide_header "Pragma";
+     add_header Pragma "no-cache";<font></font>
+<font></font>
+     # We always give a fresh Last-Modified.
+     expires -1;  # Attention!!!  This expires string is required!
+     add_header Last-Modified $ sent_http_Expires;
+   }
+ }
+</pre><br>  You may notice that, compared to the previous example, I had to add 6 more directives to the location.  They are all very important!  But let's not get ahead of ourselves, consider everything in order. <br><br><h6>  perl_set: dependency-randomizer </h6><br>  perl_set $ rand 'sub {return int rand 10}'; <br><br>  The perl_set directive is simple.  We create a variable, using which nginx will call the function of the Perl interpreter embedded in it.  According to the author of nginx, this is a fairly quick operation, so we will not “save on matches”.  The variable takes a random value from 0 to 9 in each of the HTTP requests. <br><br><h6>  fastcgi_cache_key: dependency on randomizer </h6><br>  fastcgi_cache_key "$ rand | $ request_method | ..."; <br><br>  Now we mix the randomizer variable into the cache key.  The result is 10 different caches on the same URL, which we needed.  Due to the fact that the script called during a cache miss, gives the main page elements in random order, we get 10 varieties of the main page, each of which “lives” for 1 minute (see fastcgi_cache_valid). <br><br><h6>  add_header: forcibly turn off the browser cache </h6><br><pre> fastcgi_hide_header "Cache-Control";
+ add_header Cache-Control "no-store, no-cache, must-revalidate, post-check = 0, pre-check = 0";
+ fastcgi_hide_header "Pragma";
+ add_header Pragma "no-cache";
+</pre><br>  Above, we said that nginx is sensitive to cache headers issued by a PHP script.  If the PHP script returns the “Pragma: no-cache” or “Cache-Control: no-store” headers (and also some, for example, “Cache-Control: not-save, not-issue, me-here-not it was, I-this-not-said, whose-it-is-hat ”), then nginx will not save the result in the cache files.  Specifically, to suppress this behavior, we use fastcgi_ignore_headers (see above). <br><br>  <i>What is the difference between "Pragma: no-cache" and "Cache-Control: no-cache"?</i>  <i>Only the fact that Pragma is a legacy of HTTP / 1.0 and is now supported for compatibility with older browsers.</i>  <i>HTTP / 1.1 uses Cache-Control.</i> <br><br>  However, there is still a cache in the browser.  And in some cases, the browser may not even try to make a request to the server to display the page;  instead, it will get it from its own cache.  Because  we have a rotation, this behavior is inconvenient for us: after all, every time when entering the page, the user must see new data.  (In fact, if you still want to cache one option, you can experiment with the Cache-Control header.) <br><br>  The add_header directive transmits to the browser a ban on caching.  Well, so that this header does not accidentally multiply, we first remove from the HTTP response what the PHP script wrote there (and what was written in the nginx cache): the fastcgi_hide_header directive.  After all, when you write the nginx config, you do not know what it will decide to output PHP (and if session_start () is used, then it will definitely decide).  Suddenly he will put his own Cache-Control header?  Then there will be two of them: PHP-shny and added by us via add_header. <br><br><h6>  expires and Last-Modified: guarantee page reload </h6><br><pre> expires -1;  # Attention!!!  This expires string is required!
+ add_header Last-Modified $ sent_http_Expires;
+</pre><br>  One more trick: we have to set Last-Modified equal to the current time.  Unfortunately, in nginx there is no variable storing the current time, but it magically appears if you specify the directive expires -1. <br><br>  <i>Although this is now (October 2009) not documented, nginx creates variables of the form $ sent_http_XXX for each XXX response header sent to the client.</i>  <i>One of them we use.</i> <br><br>  Why is it so important to set this title as the current time?  It's pretty simple. <ol><li>  Let's imagine that PHP has issued the header “Last-Modified: some_date”. </li><li>  This header will be written to the nginx cache file (you can check: in our example, the files are stored in / var / cache / nginx), and then sent to the browser by the client. </li><li>  The browser will remember the page and the date of its modification ... </li><li>  ... therefore, the next time the user logs on to the site, the HTTP request will have the header question “If-Modified-Since: some_date”. </li><li>  What will nginx do?  It will take a page from its cache, sort its headers and compare Last-Modified with If-Modified-Since.  If the values ​​match (or the first is less than the second), then nginx will return a “304 Not Modified” response with an empty body.  And the user will not see any rotation: he will receive what he has seen before. </li></ol>  <i>In fact, the big question is how the browser behaves if both Last-Modified and Cache-Control no-cache are present.</i>  <i>Will he make an If-Modified-Since request?</i>  <i>It seems that different browsers behave differently here.</i>  <i>Experiment.</i> <br><br>  There is one more reason to set Last-Modified manually.  The fact is that the PHP function session_start () forcibly issues the Last-Modified header, but indicates in it ... the time when the PHP file that first got control was modified.  Therefore, if all requests on your site go to the same script (Front Controller), then your Last-Modified will almost always be equal to the change time of this single script, which is absolutely not true. <br><br><h4>  Dynamic "window" in the cached page </h4><br>  And finally, I will mention one technique that can be useful in the light of caching.  If you want to cache the main (or any other) page of the site, but one small block, which must be dynamic, interferes, use the module for working with SSI. <br><br>  In the part of the page that should be dynamic, insert this “HTML comment”: <br><br><pre> &lt;! - # include virtual = "/ get_user_info /" -&gt;
+</pre><br>  From the point of view of the nginx cache, this comment is plain text.  It will be saved in the cache file as a comment.  However, later, when reading the cache, the nginx SSI module will work, which will turn to a dynamic URL.  Of course, at the address / get_user_info / there must be a PHP handler that returns the contents of this block.  <a href="http://habrahabr.ru/blogs/nginx/65809/">This method is described in more detail in this article from Habr.</a> <br><br>  And, of course, do not forget to enable SSI for this page or even for the entire server: <br><br><pre> ssi on;
+</pre><br>  <i>The SSI include directive has another very important feature.</i>  <i>When there are several such directives on a page, they all begin to be processed simultaneously, in parallel mode.</i>  <i>So, if you have 4 blocks on page, each of which loads 200 ms, the page will be received by the user in 200 ms, and not in 800.</i> <br><br>  The original text of this article can be read here: <a href="http://dklab.ru/chicken/nablas/56.html">http://dklab.ru/chicken/nablas/56.html</a> </div><p>Source: <a href="https://habr.com/ru/post/72539/">https://habr.com/ru/post/72539/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../72532/index.html">How are you doing there, fish?</a></li>
+<li><a href="../72534/index.html">DDoS protection. Is free</a></li>
+<li><a href="../72536/index.html">NeoTokyo - New Source Mod</a></li>
+<li><a href="../72537/index.html">Atlassian: any program for 10 bucks</a></li>
+<li><a href="../72538/index.html">“OOC for C is like Scala for Java”</a></li>
+<li><a href="../72541/index.html">Gmail - preview google.documents</a></li>
+<li><a href="../72542/index.html">3 ways to improve communication with customers</a></li>
+<li><a href="../72549/index.html">Fix Python Imaging (PIL) in Snow Leopard</a></li>
+<li><a href="../72550/index.html">Where do mediocre sites come from?</a></li>
+<li><a href="../72553/index.html">Google will open an online store</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
