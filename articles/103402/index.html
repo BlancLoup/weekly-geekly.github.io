@@ -1,0 +1,247 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Compilation. 9: executable code</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I remind you that we are writing a compiler for the J-Squeak language . We started with a compilation of the p-code , spent a lot of effort on its opt...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Compilation. 9: executable code</h1><div class="post__text post__text-html js-mediator-article">  I remind you that we are writing a compiler for the <a href="http://habrahabr.ru/blogs/programming/99397/">J-Squeak</a> language <a href="http://habrahabr.ru/blogs/programming/99397/">.</a>  We started with a compilation of <a href="http://habrahabr.ru/blogs/programming/99592/">the p-code</a> , spent a lot of effort on its <a href="http://habrahabr.ru/blogs/programming/101946/">optimization</a> , and got ready for the final stage of compilation - to the conclusion of machine-dependent executable code. <br>  There are no intricate algorithms here: by and large, only the replacement of one instruction set with another. <br><br><h3>  Further in the post: </h3><ol><li>  Code selection </li><li>  Loader </li><li>  P-code changes </li><li>  Generation </li><li>  What happened? </li></ol><a name="habracut"></a><h3>  Code selection </h3><br>  I would venture to suggest that you are reading this post on a computer with a x86 or x64 processor inside.  I apologize to users of mobile devices: it would be interesting to generate code for a fashionable gadget, but it is too difficult for me to get such an instance for experiments. <br><br>  We will try to generate a “cross-platform” code that is equally workable on both x86 and x64.  We will focus on machine code, and not on the ELF format internals and the interaction with the loader;  Therefore, we will create the code in a “continuous piece”, similar to the COM DOS format.  Read it from the disk and run will be our own bootloader. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      We will use only 32-bit registers, so that the same program, even if overflows occur in it during calculations, will produce the same results on both x64 and x86. <br><br>  To communicate with the outside world ( <code>ECHO</code> and <code>INPUT</code> commands), the generated code must somehow call the functions of the operating system.  How does he know their addresses? <br>  Our loader will create a “communication area” for the loaded program - an array of pointers to “standard functions”, and pass the address of this array as a parameter to the program.  We have three standard functions: input of a number, output of a number, output of a string;  therefore, the communication area will consist of three pointers.  For convenience of addressing, immediately at the entrance to the program we will save the transmitted address in <code>EBP</code> / <code>RBP</code> . <br><br>  Another interesting point - access to memory (to poured variables).  Instead of the absolute addressing typical for x86, x64 introduced “floating absolute” relative to <code>RIP</code> .  In order for the code to really turn out to be cross-platform, it is necessary to use explicit relative addressing. <br>  Without further ado, we will address the cells of the poured variables relative to the same <code>EBP</code> / <code>RBP</code> - i.e.  Immediately after the communication region, at offset <code>0x18</code> , the variable region begins. <br><br>  The generated p-code uses four “abstract physical registers” <code>R01..R04</code> , which it is natural for these <code>EAX,ECX,EDX,EBX</code> registers to associate: i.e.  the number of this register is obtained from the number of "abstract" by subtracting one.  If we wanted to use the rest of the processor registers, the correspondence between the numbers would be more difficult. <br><br>  The way parameters are passed to a function on x86 and x64 is very different.  On x86, the default parameters are passed through the stack ( <i>cdecl</i> ), but you can ask <code>gcc</code> transfer up to three parameters in the <code>ECX,EDX,EAX</code> registers ( <i>fastcall</i> ).  On x64, six parameters are transmitted in the registers <code>RDI,RSI,RDX,RCX,R8,R9</code> , and <code>gcc</code> does not allow changing the method of the call.  Because of this incompatibility, you will have to implement both transfer mechanisms in the code generator, and choose the one you need.  Fortunately, passing parameters will be the only platform-specific place in our code. <br>  On both processors, the called function has the right to spoil the contents of <code>EAX,ECX,EDX</code> , so they will need to be saved before the call (if they are alive), and restored after.  Thus, information about the liveliness of physical registers, which we used during their assignment, is also needed when generating code. <br><br>  What code we will generate, figured out;  business for small - to realize our plans. <br><br><h3>  Loader </h3><br>  We take as a basis the long-standing interpreter of the p-code, leaving all the husks (checking input, displaying the file in memory), and replacing the inside (execution cycle and command implementations) with a call to the read code, as if it were a normal sish function. <br> <code><font color="#ff40ff">#include</font> <font color="#ff6060">&lt;fcntl.h&gt;</font> <br> <font color="#ff40ff">#include</font> <font color="#ff6060">&lt;stdio.h&gt;</font> <br> <font color="#ff40ff">#include</font> <font color="#ff6060">&lt;stdlib.h&gt;</font> <br> <font color="#ff40ff">#include</font> <font color="#ff6060">&lt;sys/mman.h&gt;</font> <br> <font color="#ff40ff">#include</font> <font color="#ff6060">&lt;sys/stat.h&gt;</font> <br> <br> <font color="#008000">const</font> <font color="#008000">char</font> * fdata = <font color="#ff6060">NULL</font> ; <font color="#8080ff">//   </font> <br> <br> <font color="#008000">int</font> input() { <font color="#008000">int</font> d; scanf( <font color="#ff6060">"</font> <font color="#ff40ff">%d</font> <font color="#ff6060">"</font> , &amp;d); <font color="#808000">return</font> d; } <br> <font color="#008000">void</font> echoi( <font color="#008000">int</font> i) { printf( <font color="#ff6060">"</font> <font color="#ff40ff">%d</font> <font color="#ff6060">"</font> , i); } <br> <font color="#008000">void</font> echos( <font color="#008000">int</font> offset) { printf( <font color="#ff6060">"</font> <font color="#ff40ff">%s</font> <font color="#ff6060">"</font> , fdata+offset); } <br> <br> <font color="#008000">void</font> * linkarea[ <font color="#ff6060">1000</font> ] = {( <font color="#008000">void</font> *)input, ( <font color="#008000">void</font> *)echoi, ( <font color="#008000">void</font> *) echos}; <br> <br> <font color="#008000">int</font> main( <font color="#008000">int</font> argc, <font color="#008000">char</font> ** argv) { <br> <br> <font color="#808000">if</font> (argc!= <font color="#ff6060">2</font> ) { <br> printf( <font color="#ff6060">"Missing code file name.</font> <font color="#ff40ff">\n</font> <font color="#ff6060">"</font> ); <br> exit( <font color="#ff6060">1</font> ); <br> } <br> <br> <font color="#008000">int</font> fd = open(argv[ <font color="#ff6060">1</font> ], O_RDONLY); <br> <font color="#808000">if</font> (fd&lt; <font color="#ff6060">0</font> ) { <br> printf( <font color="#ff6060">"Cannot open code file.</font> <font color="#ff40ff">\n</font> <font color="#ff6060">"</font> ); <br> exit( <font color="#ff6060">1</font> ); <br> } <br> <font color="#008000">struct</font> stat finfo; <br> fstat(fd, &amp;finfo); <br> fdata = ( <font color="#008000">const</font> <font color="#008000">char</font> *)mmap( <font color="#ff6060">0</font> , finfo.st_size, PROT_READ|PROT_EXEC, MAP_PRIVATE, fd, <font color="#ff6060">0</font> ); <br> <font color="#808000">if</font> (!fdata) { <br> printf( <font color="#ff6060">"Cannot read code file.</font> <font color="#ff40ff">\n</font> <font color="#ff6060">"</font> ); <br> exit( <font color="#ff6060">1</font> ); <br> } <br> <br> (( <font color="#008000">void</font> (*)( <font color="#008000">void</font> **)) fdata)(linkarea); <font color="#8080ff">// </font> <br> <br> munmap(( <font color="#008000">void</font> *)fdata, finfo.st_size); <br> close(fd); <br> <font color="#808000">return</font> <font color="#ff6060">0</font> ; <br> } <br></code> <br>  Notice that the <code>#include "jsk.h"</code> that set the definition of commands disappeared: the new loader knows nothing about the jay script or about our p-code. <br><br><h3>  P-code changes </h3><br>  Now that the p-code has become an internal representation, invisible outside the compiler, it makes no sense to compress each command into 4 bytes;  This means that neither tricky <code>union</code> nor field size restrictions are needed.  Replace <code>jsk.h</code> with a regular structure declaration with <code>int</code> fields: <br> <code><font color="#008000">struct</font> command { <br> <font color="#008000">enum</font> opcodes { <br> hlt, store, jz, echo, mov, load, input, add, sub, mul, div, <br> eq, ne, ge, le, gt, lt <br> }; <br> opcodes opcode; <br> regnum dest, src1, src2; <br> <font color="#008000">int</font> imm; <br> command(opcodes opcode, regnum dest, regnum src1, regnum src2) : <br> opcode(opcode), dest(dest), src1(src1), src2(src2) {} <br> command(opcodes opcode, regnum dest, <font color="#008000">int</font> imm) : <br> opcode(opcode), dest(dest), imm(imm) {} <br> }; <br></code> <br><br>  The feature of the x86 / x64 instruction set is its variety and non-orthogonality.  Almost any operation can be encoded in three or four different ways.  We will try for each p-team to choose the most compact of the possible implementations.  (This is an extreme case of "optimization through the eye" - <i>peephole optimization</i> , which deals not with the program as a whole, but with short blocks of adjacent teams. In general, each team is processed independently of those around.) <br><br>  For example, the <code>add</code> n-command can be compiled into <code>MOV</code> , <code>INC</code> , <code>DEC</code> , into one of three <code>ADD</code> forms or into one of three <code>LEA</code> forms, depending on the combination of arguments. <br><br>  Some local optimizations, like replacing <code>mul r, r, 2</code> by <code>add r, r, r</code> , are conveniently done at the level of the p-code, before being translated into executable code.  At the same stage - after choosing the physical registers, but before the final broadcast - we will get rid of the registers whose value is known in all the places where they are used: during the broadcast we will use the known value. <br> <code><font color="#8080ff">//   :</font> <br> <font color="#8080ff">//      ...</font> <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::mul) { <font color="#8080ff">//  </font> <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src1)) std::swap(i-&gt;cmd.src1, i-&gt;cmd.src2); <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src2)) <font color="#808000">switch</font> (i-&gt;known[i-&gt;cmd.src2]) { <br> <font color="#808000">case</font> - <font color="#ff6060">1</font> : i-&gt;cmd = command(command::sub, i-&gt;cmd.dest, <font color="#ff6060">0</font> , i-&gt;cmd.src1); <font color="#808000">break</font> ; <br> <font color="#808000">case</font> <font color="#ff6060">0</font> :  i-&gt;cmd = command(command::mov, i-&gt;cmd.dest, <font color="#ff6060">0</font> ); <font color="#808000">break</font> ; <br> <font color="#808000">case</font> <font color="#ff6060">1</font> :  nopOut(i); <font color="#808000">break</font> ; <br> <font color="#808000">case</font> <font color="#ff6060">2</font> :  i-&gt;cmd = command(command::add, i-&gt;cmd.dest, i-&gt;cmd.src1, i-&gt;cmd.src1); <font color="#808000">break</font> ; <br> } <br> } <br> <br> <font color="#8080ff">//  ,    ,  </font> <br> <font color="#008000">void</font> postalloc() { <br> std::vector&lt; <font color="#008000">bool</font> &gt; needed(lastreg+ <font color="#ff6060">1</font> ); <br> foreach(i, pcode) { <br> <font color="#808000">if</font> (i-&gt;has2src()) { <br> <font color="#808000">if</font> (!i-&gt;known.count(i-&gt;cmd.src1)) needed[i-&gt;cmd.src1]= <font color="#ff6060">true</font> ; <br> <font color="#808000">if</font> (!i-&gt;known.count(i-&gt;cmd.src2)) needed[i-&gt;cmd.src2]= <font color="#ff6060">true</font> ; <br> <font color="#808000">else</font> <font color="#8080ff">// src2 :    </font> <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::div &amp;&amp; i-&gt;known[i-&gt;cmd.src2]!= <font color="#ff6060">2</font> ) <br> needed[i-&gt;cmd.src2]= <font color="#ff6060">true</font> ; <font color="#8080ff">//    </font> <br> } <br> <font color="#808000">if</font> (i-&gt;readsdest() &amp;&amp; !i-&gt;known.count(i-&gt;cmd.dest)) <br> needed[i-&gt;cmd.dest]= <font color="#ff6060">true</font> ; <br> } <br> foreach(i, pcode) <br> <font color="#808000">if</font> (i-&gt;writesdest() &amp;&amp; !needed[i-&gt;cmd.dest]) <br> nopOut(i); <br> } <br> <br> <font color="#8080ff">//      :</font> <br> <font color="#8080ff">// ...</font> <br> postalloc(); <br> <font color="#8080ff">//  NOP-</font> <br> simpleopt(); <br> <font color="#8080ff">//   :   ,   known</font> <br> foreach(i, pcode) { <br> std::map&lt;regnum, <font color="#008000">int</font> &gt; known; <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.dest)) <br> known[physmap[i-&gt;cmd.dest]] = i-&gt;known[i-&gt;cmd.dest]; <br> i-&gt;cmd.dest = physmap[i-&gt;cmd.dest]; <br> <font color="#808000">if</font> (i-&gt;has2src()) { <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src1)) <br> known[physmap[i-&gt;cmd.src1]] = i-&gt;known[i-&gt;cmd.src1]; <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src2)) <br> known[physmap[i-&gt;cmd.src2]] = i-&gt;known[i-&gt;cmd.src2]; <br> i-&gt;cmd.src1 = physmap[i-&gt;cmd.src1]; <br> i-&gt;cmd.src2 = physmap[i-&gt;cmd.src2]; <br> } <br> i-&gt;known = known; <br> } <br> <font color="#808000">break</font> ; <br></code> <br><br><h3>  Generation </h3><br>  All generated code will be stored in one large vector <code>std::vector&lt;char&gt; code;</code> <br>  In the <code>struct commandn</code> we need some new fields. <code>int offset, length;</code>  will determine the position of the command in the <code>code</code> vector.  In addition, for <code>JZ</code> and <code>ECHO</code> commands, the offset value in which is unknown until the end of the code generation, in the <code>int needfixat;</code> field <code>int needfixat;</code>  we will keep the index of the blank offset. <br><br>  So, on the first pass through the p-code, we generate the entire executable code in the vector <code>code</code> ;  then go through the code a second time, and fill in the missing offsets.  After that, we output all code and all lines to the result. <br><br>  I tried to remove the most uninteresting pieces from the listing in order to cut it a little.  The full compiler code is posted on <a href="http://tyomitch.net.ru/jsk.y.natv.html">tyomitch.net.ru/jsk.y.natv.html</a> <br><br> <code><font color="#8080ff">//  :    x86/x64</font> <br> <font color="#008000">const</font> <font color="#008000">char</font> regsize = <font color="#808000">sizeof</font> ( <font color="#008000">void</font> *); <font color="#8080ff">// 4  8</font> <br> <font color="#8080ff">// </font> <br> <font color="#808000">if</font> (regsize== <font color="#ff6060">4</font> ) { <font color="#8080ff">// PUSH EBP / MOV EBP, [ESP+8] / PUSH EDI / PUSH ESI / PUSH EBX</font> <br> code.push_back( <font color="#ff6060">0x55</font> ); code.push_back( <font color="#ff6060">0x8b</font> ); code.push_back( <font color="#ff6060">0x6c</font> ); code.push_back( <font color="#ff6060">0x24</font> ); <br> code.push_back( <font color="#ff6060">0x08</font> ); code.push_back( <font color="#ff6060">0x57</font> ); code.push_back( <font color="#ff6060">0x56</font> ); code.push_back( <font color="#ff6060">0x53</font> ); <br> } <font color="#808000">else</font> { <font color="#8080ff">// PUSH EBP / MOV RBP, RDI / PUSH EBX</font> <br> code.push_back( <font color="#ff6060">0x55</font> ); code.push_back( <font color="#ff6060">0x48</font> ); code.push_back( <font color="#ff6060">0x8b</font> ); code.push_back( <font color="#ff6060">0xef</font> ); <br> code.push_back( <font color="#ff6060">0x53</font> ); <br> } <br> foreach(i, pcode) { <br> <font color="#008000">int</font> imm, doffset, joffset; <br> <font color="#008000">bool</font> jshort, saveAX, saveDX; <br> i-&gt;offset = code.size(); <br> <font color="#808000">switch</font> (i-&gt;cmd.opcode) { <br> <font color="#808000">case</font> command::hlt: <br> <font color="#808000">if</font> (regsize== <font color="#ff6060">4</font> ) { <br> i-&gt;emit( <font color="#ff6060">0x5b</font> , <font color="#ff6060">0x5e</font> , <font color="#ff6060">0x5f</font> , <font color="#ff6060">0x5d</font> ); <font color="#8080ff">// POP EBX / POP ESI / POP EDI / POP EBP</font> <br> i-&gt;emit( <font color="#ff6060">0xc2</font> , <font color="#ff6060">2</font> , <font color="#ff6060">0</font> ); <font color="#8080ff">// RET 2</font> <br> } <font color="#808000">else</font> <br> i-&gt;emit( <font color="#ff6060">0x5b</font> , <font color="#ff6060">0x5d</font> , <font color="#ff6060">0xc3</font> ); <font color="#8080ff">// POP EBX / POP EBP / RET</font> <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::store: <font color="#8080ff">// MOV [EBP+18+(imm-1)*4], dst</font> <br> doffset = <font color="#ff6060">0x18</font> +(i-&gt;cmd.imm- <font color="#ff6060">1</font> )* <font color="#ff6060">4</font> ; <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.dest)) { <br> i-&gt;emit( <font color="#ff6060">0xc7</font> ); <br> <font color="#808000">if</font> (doffset&lt; <font color="#ff6060">128</font> ) <br> i-&gt;emit( <font color="#ff6060">0x45</font> , ( <font color="#008000">char</font> )doffset); <br> <font color="#808000">else</font> { <br> i-&gt;emit14( <font color="#ff6060">0x85</font> , doffset); <br> } <br> i-&gt;emit4(i-&gt;known[i-&gt;cmd.dest]); <br> } <font color="#808000">else</font> { <br> i-&gt;emit( <font color="#ff6060">0x89</font> ); <br> <font color="#808000">if</font> (doffset&lt; <font color="#ff6060">128</font> ) <br> i-&gt;emit( <font color="#ff6060">0x45</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> , ( <font color="#008000">char</font> )doffset); <br> <font color="#808000">else</font> <br> i-&gt;emit14( <font color="#ff6060">0x85</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> , doffset); <br> } <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::jz: <br> joffset = i-&gt;tgt-&gt;offset - (i-&gt;offset+ <font color="#ff6060">2</font> ); <font color="#8080ff">//  JMP SHORT</font> <br> jshort = i-&gt;tgt-&gt;offset &amp;&amp; (joffset&gt;=- <font color="#ff6060">128</font> ); <font color="#8080ff">//    </font> <br> <font color="#808000">if</font> (!i-&gt;cmd.dest) { <font color="#8080ff">// JMP off</font> <br> <font color="#808000">if</font> (jshort) <br> i-&gt;emit( <font color="#ff6060">0xeb</font> , ( <font color="#008000">char</font> )joffset); <br> <font color="#808000">else</font> { <br> i-&gt;emit( <font color="#ff6060">0xe9</font> ); <br> <font color="#808000">if</font> (i-&gt;tgt-&gt;offset) <font color="#8080ff">//  </font> <br> i-&gt;emit4(joffset- <font color="#ff6060">3</font> ); <br> <font color="#808000">else</font> { <br> i-&gt;needfixat = code.size(); <br> i-&gt;emit4( <font color="#ff6060">0</font> ); <br> } <br> } <br> <font color="#808000">break</font> ; <br> } <br> <font color="#808000">if</font> (jshort &amp;&amp; (i-&gt;cmd.dest== <font color="#ff6060">2</font> )) { <font color="#8080ff">// JECXZ</font> <br> i-&gt;emit( <font color="#ff6060">0xe3</font> , ( <font color="#008000">char</font> )joffset); <br> <font color="#808000">break</font> ; <br> } <br> <font color="#8080ff">// OR dst, dst / JZ off</font> <br> i-&gt;emit( <font color="#ff6060">0x0b</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">if</font> (jshort &amp;&amp; (joffset&gt;=- <font color="#ff6060">126</font> )) <br> i-&gt;emit( <font color="#ff6060">0x74</font> , ( <font color="#008000">char</font> )(joffset- <font color="#ff6060">2</font> )); <br> <font color="#808000">else</font> { <br> i-&gt;emit( <font color="#ff6060">0x0f</font> , <font color="#ff6060">0x84</font> ); <br> <font color="#808000">if</font> (i-&gt;tgt-&gt;offset) <font color="#8080ff">//  </font> <br> i-&gt;emit4(joffset- <font color="#ff6060">6</font> ); <br> <font color="#808000">else</font> { <br> i-&gt;needfixat = code.size(); <br> i-&gt;emit4( <font color="#ff6060">0</font> ); <br> } <br> } <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::echo: <font color="#8080ff">// PUSH live / PUSH dst / CALL [EBP+?] / ADD ESP, 4 / POP live</font> <br> foreach(rp, i-&gt;onexitp) <font color="#808000">if</font> (*rp!= <font color="#ff6060">4</font> ) i-&gt;emit( <font color="#ff6060">0x50</font> |(*rp- <font color="#ff6060">1</font> )); <br> <font color="#808000">if</font> (!i-&gt;cmd.dest) { <font color="#8080ff">// imm, [EBP+8]</font> <br> <font color="#808000">if</font> (regsize== <font color="#ff6060">4</font> ) i-&gt;emit( <font color="#ff6060">0x68</font> ); <font color="#808000">else</font> i-&gt;emit( <font color="#ff6060">0xbf</font> ); <br> i-&gt;needfixat = code.size(); <br> i-&gt;emit4( <font color="#ff6060">0</font> ); <br> i-&gt;emit( <font color="#ff6060">0xff</font> , <font color="#ff6060">0x55</font> , <font color="#ff6060">2</font> *regsize); <br> } <font color="#808000">else</font> { <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.dest)) { <font color="#8080ff">// imm, [EBP+4]</font> <br> imm = i-&gt;known[i-&gt;cmd.dest]; <br> <font color="#808000">if</font> (regsize== <font color="#ff6060">8</font> ) <br> i-&gt;emit14( <font color="#ff6060">0xbf</font> , imm); <br> <font color="#808000">else</font> <font color="#808000">if</font> ((imm&gt;=- <font color="#ff6060">128</font> )&amp;&amp;(imm&lt; <font color="#ff6060">128</font> )) <br> i-&gt;emit( <font color="#ff6060">0x6a</font> , ( <font color="#008000">char</font> )imm); <br> <font color="#808000">else</font> <br> i-&gt;emit14( <font color="#ff6060">0x68</font> , imm); <br> } <font color="#808000">else</font> <font color="#808000">if</font> (regsize== <font color="#ff6060">4</font> ) <font color="#8080ff">// dst, [EBP+4]</font> <br> i-&gt;emit( <font color="#ff6060">0x50</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">else</font> <br> i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xf8</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> i-&gt;emit( <font color="#ff6060">0xff</font> , <font color="#ff6060">0x55</font> , regsize); <br> } <br> <font color="#808000">if</font> (regsize== <font color="#ff6060">4</font> ) i-&gt;emit( <font color="#ff6060">0x83</font> , <font color="#ff6060">0xc4</font> , <font color="#ff6060">4</font> ); <br> foreachr(rp, i-&gt;onexitp) <font color="#808000">if</font> (*rp!= <font color="#ff6060">4</font> ) i-&gt;emit( <font color="#ff6060">0x58</font> |(*rp- <font color="#ff6060">1</font> )); <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::mov: <font color="#8080ff">// MOV dst, imm</font> <br> <font color="#808000">if</font> (i-&gt;cmd.imm) <br> i-&gt;emit14( <font color="#ff6060">0xb8</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> ), i-&gt;cmd.imm); <br> <font color="#808000">else</font> <font color="#8080ff">// XOR dst, dst</font> <br> i-&gt;emit( <font color="#ff6060">0x33</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::load: <font color="#8080ff">// MOV dst, [EBP+(3+i)*4]</font> <br> doffset = <font color="#ff6060">0x18</font> +(i-&gt;cmd.imm- <font color="#ff6060">1</font> )* <font color="#ff6060">4</font> ; <br> i-&gt;emit( <font color="#ff6060">0x8b</font> ); <br> <font color="#808000">if</font> (doffset&lt; <font color="#ff6060">128</font> ) <br> i-&gt;emit( <font color="#ff6060">0x45</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> , ( <font color="#008000">char</font> )doffset); <br> <font color="#808000">else</font> <br> i-&gt;emit14( <font color="#ff6060">0x85</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> , doffset); <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::input: <font color="#8080ff">// PUSH live / CALL [EBP+0] / XCHG EAX, dst / POP live</font> <br> foreach(rp, i-&gt;onenterp) <font color="#808000">if</font> (*rp!= <font color="#ff6060">4</font> ) i-&gt;emit( <font color="#ff6060">0x50</font> |(*rp- <font color="#ff6060">1</font> )); <br> i-&gt;emit( <font color="#ff6060">0xff</font> , <font color="#ff6060">0x55</font> , <font color="#ff6060">0</font> ); <br> <font color="#808000">if</font> (i-&gt;cmd.dest!= <font color="#ff6060">1</font> ) i-&gt;emit( <font color="#ff6060">0x90</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> foreachr(rp, i-&gt;onenterp) <font color="#808000">if</font> (*rp!= <font color="#ff6060">4</font> ) i-&gt;emit( <font color="#ff6060">0x58</font> |(*rp- <font color="#ff6060">1</font> )); <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::add: <br> <font color="#8080ff">//  1  ;    src2</font> <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src1) || (i-&gt;cmd.src2==i-&gt;cmd.dest)) <br> std::swap(i-&gt;cmd.src1, i-&gt;cmd.src2); <br> <font color="#808000">if</font> (!i-&gt;cmd.src2) <font color="#8080ff">// MOV dst, src1</font> <br> i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> )); <br> <font color="#808000">else</font> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src2)) { <br> imm = i-&gt;known[i-&gt;cmd.src2]; <br> <font color="#808000">addimm</font> : <br> <font color="#808000">if</font> (i-&gt;cmd.dest==i-&gt;cmd.src1) <font color="#8080ff">// ADD dst, imm</font> <br> <font color="#808000">if</font> (imm== <font color="#ff6060">1</font> ) <font color="#8080ff">// INC dst</font> <br> i-&gt;emit( <font color="#ff6060">0xff</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">else</font> <font color="#808000">if</font> (imm==- <font color="#ff6060">1</font> ) <font color="#8080ff">// DEC dst</font> <br> i-&gt;emit( <font color="#ff6060">0xff</font> , <font color="#ff6060">0xc8</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">else</font> <font color="#808000">if</font> ((imm&gt;=- <font color="#ff6060">128</font> )&amp;&amp;(imm&lt; <font color="#ff6060">128</font> )) <br> i-&gt;emit( <font color="#ff6060">0x83</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> ), ( <font color="#008000">char</font> )imm); <br> <font color="#808000">else</font> <font color="#8080ff">// for imm=128 we might use SUB Edst, -128</font> <br> i-&gt;emit114( <font color="#ff6060">0x81</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> ), imm); <br> <font color="#808000">else</font> <font color="#8080ff">// LEA dst, [src1+imm]</font> <br> <font color="#808000">if</font> ((imm&gt;=- <font color="#ff6060">128</font> )&amp;&amp;(imm&lt; <font color="#ff6060">128</font> )) <br> i-&gt;emit( <font color="#ff6060">0x8d</font> , <font color="#ff6060">0x40</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> ), ( <font color="#008000">char</font> )imm); <br> <font color="#808000">else</font> <br> i-&gt;emit114( <font color="#ff6060">0x8d</font> , <font color="#ff6060">0x80</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> ), imm); <br> } <font color="#808000">else</font> <font color="#808000">if</font> (i-&gt;cmd.dest==i-&gt;cmd.src1) <font color="#8080ff">// ADD dst, src2</font> <br> i-&gt;emit( <font color="#ff6060">0x03</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src2- <font color="#ff6060">1</font> )); <br> <font color="#808000">else</font> <font color="#8080ff">// LEA dst, [src1+src2]</font> <br> i-&gt;emit( <font color="#ff6060">0x8d</font> , (i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> | <font color="#ff6060">4</font> , (i-&gt;cmd.src1- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src2- <font color="#ff6060">1</font> )); <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::sub: <font color="#8080ff">// ...</font> <br> <font color="#808000">case</font> command::mul: <font color="#8080ff">// ...</font> <br> <font color="#808000">case</font> command::div: <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src2) &amp;&amp; i-&gt;known[i-&gt;cmd.src2]== <font color="#ff6060">2</font> ) { <br> <font color="#808000">if</font> (i-&gt;cmd.dest!=i-&gt;cmd.src1) <font color="#8080ff">// MOV dst, src1 / SAR dst, 1</font> <br> i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> )); <br> i-&gt;emit( <font color="#ff6060">0xd1</font> , <font color="#ff6060">0xf8</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">break</font> ; <br> } <br> <font color="#8080ff">//     EAX,EDX;</font> <br> <font color="#8080ff">//      EDI,ESI,    </font> <br> <font color="#8080ff">// MOV EDI, EAX / MOV EAX, src1 / MOV ESI, EDX / XOR EDX, EDX</font> <br> <font color="#8080ff">// IDIV src2 / XCHG dst, EAX / MOV EDX, ESI / MOV EAX, EDI</font> <br> saveAX = i-&gt;onexitp.count((physreg) <font color="#ff6060">1</font> ) &amp;&amp; (i-&gt;cmd.dest!= <font color="#ff6060">1</font> ); <br> saveDX = i-&gt;onexitp.count((physreg) <font color="#ff6060">3</font> ) &amp;&amp; (i-&gt;cmd.dest!= <font color="#ff6060">3</font> ); <br> <font color="#808000">if</font> (saveAX || (i-&gt;cmd.src2== <font color="#ff6060">1</font> )) i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xf8</font> ); <br> <font color="#808000">if</font> (i-&gt;cmd.src1!= <font color="#ff6060">1</font> ) <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src1)) <br> i-&gt;emit14( <font color="#ff6060">0xb8</font> , i-&gt;known[i-&gt;cmd.src1]); <br> <font color="#808000">else</font> <br> i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> )); <br> <font color="#808000">if</font> (saveDX || (i-&gt;cmd.src2== <font color="#ff6060">3</font> )) i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xf2</font> ); <br> i-&gt;emit( <font color="#ff6060">0x33</font> , <font color="#ff6060">0xd2</font> ); <br> <font color="#808000">if</font> (i-&gt;cmd.src2== <font color="#ff6060">1</font> ) <font color="#8080ff">//   EDI</font> <br> i-&gt;emit( <font color="#ff6060">0xf7</font> , <font color="#ff6060">0xff</font> ); <br> <font color="#808000">else</font> <font color="#808000">if</font> (i-&gt;cmd.src2== <font color="#ff6060">3</font> ) <font color="#8080ff">//  ESI</font> <br> i-&gt;emit( <font color="#ff6060">0xf7</font> , <font color="#ff6060">0xfe</font> ); <br> <font color="#808000">else</font> <br> i-&gt;emit( <font color="#ff6060">0xf7</font> , <font color="#ff6060">0xf8</font> |(i-&gt;cmd.src2- <font color="#ff6060">1</font> )); <br> <font color="#808000">if</font> (i-&gt;cmd.dest!= <font color="#ff6060">1</font> ) <br> i-&gt;emit( <font color="#ff6060">0x90</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">if</font> (saveDX) i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xd6</font> ); <br> <font color="#808000">if</font> (saveAX) i-&gt;emit( <font color="#ff6060">0x8b</font> , <font color="#ff6060">0xc7</font> ); <br> <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::eq: <font color="#808000">case</font> command::ne: <font color="#808000">case</font> command::ge: <br> <font color="#808000">case</font> command::le: <font color="#808000">case</font> command::gt: <font color="#808000">case</font> command::lt: <br> <font color="#8080ff">//  1  ;    src2</font> <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src1)) { <br> std::swap(i-&gt;cmd.src1, i-&gt;cmd.src2); <br> <font color="#808000">switch</font> (i-&gt;cmd.opcode) { <br> <font color="#808000">case</font> command::ge: i-&gt;cmd.opcode = command::le; <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::le: i-&gt;cmd.opcode = command::ge; <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::gt: i-&gt;cmd.opcode = command::lt; <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::lt: i-&gt;cmd.opcode = command::gt; <font color="#808000">break</font> ; <br> } <br> } <br> <font color="#8080ff">// CMP src1, src2 / SETcc dstL / MOVZX dst, dstL</font> <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src2)) { <br> imm = i-&gt;known[i-&gt;cmd.src2]; <br> <font color="#808000">if</font> ((imm&gt;=- <font color="#ff6060">128</font> )&amp;&amp;(imm&lt; <font color="#ff6060">128</font> )) <br> i-&gt;emit( <font color="#ff6060">0x83</font> , <font color="#ff6060">0xf8</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> ), ( <font color="#008000">char</font> )imm); <br> <font color="#808000">else</font> <font color="#808000">if</font> (i-&gt;cmd.src1== <font color="#ff6060">1</font> ) <br> i-&gt;emit14( <font color="#ff6060">0x3d</font> , imm); <br> <font color="#808000">else</font> <br> i-&gt;emit114( <font color="#ff6060">0x81</font> , <font color="#ff6060">0xf8</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> ), imm); <br> } <font color="#808000">else</font> <br> i-&gt;emit( <font color="#ff6060">0x3b</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.src1- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.src2- <font color="#ff6060">1</font> )); <br> i-&gt;emit( <font color="#ff6060">0x0f</font> ); <br> <font color="#808000">switch</font> (i-&gt;cmd.opcode) { <br> <font color="#808000">case</font> command::eq: i-&gt;emit( <font color="#ff6060">0x94</font> ); <font color="#808000">break</font> ; <br> <font color="#808000">case</font> command::ne: i-&gt;emit( <font color="#ff6060">0x95</font> ); <font color="#808000">break</font> ; <br> <font color="#8080ff">// ...</font> <br> } <br> i-&gt;emit( <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> i-&gt;emit( <font color="#ff6060">0x0f</font> , <font color="#ff6060">0xb6</font> , <font color="#ff6060">0xc0</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )&lt;&lt; <font color="#ff6060">3</font> |(i-&gt;cmd.dest- <font color="#ff6060">1</font> )); <br> <font color="#808000">break</font> ; <br> <font color="#808000">default</font> : <br> yyerror( <font color="#ff6060">"unknown opcode"</font> ); <br> } <br> } <br> <font color="#8080ff">//    -- </font> <br> <font color="#008000">int</font> offset = code.size(); <br> std::vector&lt; <font color="#008000">int</font> &gt; offsets(strings.size()+ <font color="#ff6060">1</font> ); <br> foreach(i, strings) { <br> offsets[i-&gt;second] = offset; <br> offset += i-&gt;first.length(); <br> offset++; <br> } <br> <font color="#8080ff">//  :  </font> <br> foreach(i, pcode) <font color="#808000">if</font> (i-&gt;needfixat) <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::jz) <br> i-&gt;fix4(i-&gt;tgt-&gt;offset-(i-&gt;offset+i-&gt;length)); <br> <font color="#808000">else</font> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::echo) <br> i-&gt;fix4(offsets[i-&gt;cmd.imm]); <br> <br> write( <font color="#ff6060">1</font> , &amp;*code.begin(), code.size()); <font color="#8080ff">//  </font> <br> foreach(i, strings) <font color="#8080ff">//  </font> <br> write( <font color="#ff6060">1</font> , i-&gt;first.c_str(), i-&gt;first.length()+ <font color="#ff6060">1</font> ); <br></code> <br><br><h3>  What happened? </h3><br>  Compile the compiler, compile a test program for them, compile the loader, and run: <br><br> <code>[tyomitch@home ~]$ <b>bison jsk.y</b> <br> [tyomitch@home ~]$ <b>c++ jsk.tab.c lex.yy.c -o jskc</b> <br> [tyomitch@home ~]$ <b>./jskc &lt; test.jsk &gt; code</b> <br> [tyomitch@home ~]$ <b>cc jskld.c -o jskld</b> <br> [tyomitch@home ~]$ <b>./jskld code</b> <br>    0  1000,     <br>  500? (1=, 2=, 3=) <b>1</b> <br>  249? (1=, 2=, 3=) <b>3</b> <br> !  ! <br></code> <br>  I wonder what our program was compiled into? <br><pre> 00: 55 push rbp
+ 01: 48 8b ef mov rbp, rdi
+ 04: 53 push rbx
+ 05: 33 c0 xor eax, eax
+ 07: b9 e8 03 00 00 mov ecx, 0x3e8
+ 0c: 50 push rax
+ 0d: 51 push rcx
+ 0e: bf 80 01 00 00 mov edi, 0x180
+ 13: ff 55 10 call qword ptr [rbp + 0x10]
+ 16: 59 pop rcx
+ 17: 58 pop rax
+ 18:50 push rax
+ 19: 51 push rcx
+ 1a: bf 00 00 00 00 mov edi, 0x0
+ 1f: ff 55 08 call qword ptr [rbp + 0x8]
+ 22: 59 pop rcx
+ 23: 58 pop rax
+ 24:50 push rax
+ 25: 51 push rcx
+ 26: bf fa 00 00 00 mov edi, 0xfa
+ 2b: ff 55 10 call qword ptr [rbp + 0x10]
+ 2e: 59 pop rcx
+ 2f: 58 pop rax
+ 30:50 push rax
+ 31: 51 push rcx
+ 32: bf e8 03 00 00 mov edi, 0x3e8
+ 37: ff 55 08 call qword ptr [rbp + 0x8]
+ 3a: 59 pop rcx
+ 3b: 58 pop rax
+ 3c: 50 push rax
+ 3d: 51 push rcx
+ 3e: bf 01 01 00 00 mov edi, 0x101
+ 43: ff 55 10 call qword ptr [rbp + 0x10]
+ 46: 59 pop rcx
+ 47: 58 pop rax
+ 48: 3b c1 cmp eax, ecx
+ 4a: 0f 9e c2 setle dl
+ 4d: 0f b6 d2 movzx edx, dl
+ 50: 0b d2 or edx, edx
+ 52: 0f 84 97 00 00 00 je 0xef
+ 58: 8d 14 01 lea edx, [rcx + rax * 1]
+ 5b: d1 fa sar edx, 1
+ 5d: 50 push rax
+ 5e: 51 push rcx
+ 5f: 52 push rdx
+ 60: bf bc 01 00 00 mov edi, 0x1bc
+ 65: ff 55 10 call qword ptr [rbp + 0x10]
+ 68: 5a pop rdx
+ 69: 59 pop rcx
+ 6a: 58 pop rax
+ 6b: 50 push rax
+ 6c: 51 push rcx
+ 6d: 52 push rdx
+ 6e: 8b fa mov edi, edx
+ 70: ff 55 08 call qword ptr [rbp + 0x8]
+ 73: 5a pop rdx
+ 74: 59 pop rcx
+ 75: 58 pop rax
+ 76: 50 push rax
+ 77: 51 push rcx
+ 78: 52 push rdx
+ 79: bf 26 01 00 00 mov edi, 0x126
+ 7e: ff 55 10 call qword ptr [rbp + 0x10]
+ 81: 5a pop rdx
+ 82: 59 pop rcx
+ 83: 58 pop rax
+ 84: 50 push rax
+ 85: 51 push rcx
+ 86: 52 push rdx
+ 87: ff 55 00 call qword ptr [rbp + 0x0]
+ 8a: 93 xchg ebx, eax
+ 8b: 5a pop rdx
+ 8c: 59 pop rcx
+ 8d: 58 pop rax
+ 8e: 89 45 18 mov dword ptr [rbp + 0x18], eax
+ 91: 83 fb 01 cmp ebx, 0x1
+ 94: 0f 94 c0 sete al
+ 97: 0f b6 c0 movzx eax, al
+ 9a: 0b c0 or eax, eax
+ 9c: 0f 84 08 00 00 00 je 0xaa
+ a2: 8b 45 18 mov eax, dword ptr [rbp + 0x18]
+ a5: 8d 4a ff lea ecx, [rdx-0x1]
+ a8: eb 9e jmp 0x48
+ aa: 83 fb 02 cmp ebx, 0x2
+ ad: 0f 94 c0 sete al
+ b0: 0f b6 c0 movzx eax, al
+ b3: 0b c0 or eax, eax
+ b5: 0f 84 04 00 00 00 je 0xbf
+ bb: 03 c2 add eax, edx
+ bd: eb 89 jmp 0x48
+ bf: 8b 45 18 mov eax, dword ptr [rbp + 0x18]
+ c2: 83 fb 03 cmp ebx, 0x3
+ c5: 0f 94 c2 sete dl
+ c8: 0f b6 d2 movzx edx, dl
+ cb: 0b d2 or edx, edx
+ cd: 0f 84 0b 00 00 00 je 0xde
+ d3: bf a0 01 00 00 mov edi, 0x1a0
+ d8: ff 55 10 call qword ptr [rbp + 0x10]
+ db: 5b pop rbx
+ dc: 5d pop rbp
+ dd: c3 ret
+ de: 50 push rax
+ df: 51 push rcx
+ e0: bf c4 01 00 00 mov edi, 0x1c4
+ e5: ff 55 10 call qword ptr [rbp + 0x10]
+ e8: 59 pop rcx
+ e9: 58 pop rax
+ ea: e9 59 ff ff ff jmp 0x48
+ ef: bf 59 01 00 00 mov edi, 0x159
+ f4: ff 55 10 call qword ptr [rbp + 0x10]
+ f7: 5b pop rbx
+ f8: 5d pop rbp
+ f9: c3 ret
+</pre><br>  The naked eye can see at least two actual optimizations that need the “eye” of more than one command: <ul><li>  when the command ends in <code>POP reg</code> , and the next begins in <code>PUSH reg</code> , both of these instructions can be deleted; </li><li>  the <code>SETcc regl / MOVZX reg, regl / OR reg, reg / JZ offset</code> combination can be replaced with one <code>JNcc offset</code> instruction if <code>reg</code> not alive at the <code>JZ</code> output. </li></ul>  This "optimization in the big eye" and we will do next time.  The more important remaining task is to <a href="http://habrahabr.ru/blogs/programming/104104/">generate a real ELF</a> so that a homemade loader is not needed. </div><p>Source: <a href="https://habr.com/ru/post/103402/">https://habr.com/ru/post/103402/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../103391/index.html">Google Chrome celebrates the second anniversary, or we meet Chrome 6!</a></li>
+<li><a href="../103392/index.html">Life in the clouds</a></li>
+<li><a href="../103394/index.html">Life + Vkontakte + Facebook = free lightweight mobile versions of sites</a></li>
+<li><a href="../103395/index.html">Multimedia Internet Devices (MID). Part one. Five inch</a></li>
+<li><a href="../103397/index.html">Twenty years in prison and a million rubles a fine for an unlicensed file! ...</a></li>
+<li><a href="../103404/index.html">OilRush - real-time strategy for Linux, PS3, Windows from domestic developers from Tomsk</a></li>
+<li><a href="../103405/index.html">Hello ... - the new NOD</a></li>
+<li><a href="../103406/index.html">We inform about the repair work on the server</a></li>
+<li><a href="../103408/index.html">Ubuntu 10.10 Beta</a></li>
+<li><a href="../103409/index.html">Bicycle, or Django-like Javascript Templates</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

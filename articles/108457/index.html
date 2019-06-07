@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Highload on cheap hosting: a hash table in MySQL</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="High-load project (website) is not necessarily a popular social network, video hosting or MMORPG. The simplest way to dramatically increase the requir...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Highload on cheap hosting: a hash table in MySQL</h1><div class="post__text post__text-html js-mediator-article">  High-load project (website) is not necessarily a popular social network, video hosting or MMORPG.  The simplest way to dramatically increase the requirements of the site to the gland is to transfer the storage of sessions to the database.  In this article, we will look at how to store data in a database, and without sacrificing performance.  By sacrificing a small amount of RAM, you can significantly save CPU time.  We talk about styution when memcached and other special caching tools are not available. <br><a name="habracut"></a><br><h2>  Magic MEMORY tables </h2><br>  MySQL DBMS implements the type of tables that are permanently stored in RAM, and therefore are always available in the shortest amount of time.  This is MEMORY, there is still a synonym for HEAP.  The second name is older, so it is preferable to use the first. <br>  Compared to MyISAM or InnoDB, this format is very limited, but it does an excellent job of storing real-time data, but traditionally I will bring its pros and cons, I will start with the pros: <br><ol><li>  Any queries are executed as quickly as possible - the data is already in memory </li><li>  Tables are quickly created and quickly destroyed. </li><li>  Ability to limit the size of each table </li><li>  Locks are supported </li></ol><br>  The third and fourth points distinguish MEMORY-tables from, for example, Memcache - where one server represents one hash table, and the possibility of arbitrary locking is also a distinctive feature of full-fledged DBMS.  Naturally, this advantage ends. <br>  There are a couple of quite serious drawbacks: <br><ol><li>  TEXT and BLOB field types are not available. </li></ol><br><h4>  Data storage </h4><br>  In our situation, the optimal field type is VARCHAR.  Since MySQL 5.0.3, the length of the field of this type can be 65,535 bytes - this is more than enough to store the same sessions.  The usual operations for this type of storage are Set, Get, Check, Delete operations.  We implement the Set method using the REPLACE query, Check using SELECT COUNT (*), everything is clear with the rest. <br>  So, create a table: <br><br> <code>CREATE TABLE `hashtable` ( <br> `key` VARCHAR(32), <br> `value` VARCHAR(65536), <br> PRIMARY KEY (`key`) <br> ) ENGINE=MEMORY DEFAULT CHARSET=utf8 COLLATE utf8_bin;</code> <br> <br>  Ok, now for PHP. <br><br><h4>  Object interface hash table </h4><br>  Thanks to its simple structure, the interface is extremely primitive.  The only nuance is the <i>serialization of</i> all incoming values ​​(value) - after all, we need to store both arrays and objects.  Therefore, an approximate version of the ideal turned out to be: <br><pre> <code class="php hljs"><span class="hljs-meta"><span class="hljs-meta">&lt;?php</span></span> <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">HashTable</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-comment"><span class="hljs-comment">//     MySQL protected $connect; //   protected $table; /** * * @param resource MySQL $connect * @param string $table */ public function __construct($connect, $table) { $this-&gt;connect = $connect; $this-&gt;table = $table; } /** * * @param string $key * @param string $val * @return boolean */ public function set($key, $val) { $key = md5($key); $val = serialize($val); $val = mysql_real_escape_string($val, $this-&gt;connect); $query = 'REPLACE INTO `'.$this-&gt;table.'` (`key`, `value`) '; $query .= 'VALUES ("'.$key.'", "'.$val.'")'; return mysql_query($query, $this-&gt;connect) ? true : false; } /** * * @param string $key * @return void */ public function get($key) { $key = md5($key); $query = 'SELECT `value` FROM `'.$this-&gt;table.'` WHERE `key`="'.$key.'"'; $result = mysql_query($query, $this-&gt;connect); if ($result) { $row = mysql_fetch_row($result); return unserialize($row[0]); } else { return false; } } /** * * @param string $key * @return boolean */ public function check($key) { $key = md5($key); $query = 'SELECT COUNT(*) FROM `'.$this-&gt;table.'` WHERE `key`="'.$key.'"'; $result = mysql_query($query, $this-&gt;connect); $row = mysql_fecth_row($result); return (bool)$row[0]; } /** * * @param string $key * @return boolean */ public function delete($key) { $key = md5($key); $query = 'DELETE FROM `'.$this-&gt;table.'` WHERE `key`="'.$key.'"'; return mysql_query($query, $this-&gt;connect) ? true : false; } }</span></span></code> </pre><br>  Example of use: <br><pre> <code class="php hljs"><span class="hljs-meta"><span class="hljs-meta">&lt;?php</span></span> <span class="hljs-comment"><span class="hljs-comment">//  $link = mysql_connect('localhost'); mysql_select_db('test', $link); mysql_set_charset('utf8', $link); $storage = new HashTable($link, 'hashtable'); //  $storage-&gt;set('name', 'Vasya'); //  var_dump($storage-&gt;check('name')); //  var_dump($storage-&gt;get('name')); //  $storage-&gt;delete('name'); //  var_dump($storage-&gt;check('name'));</span></span></code> </pre><br><h5>  Finally </h5><br>  It should be noted that this solution is only for storing small amounts of information.  If you load a lot of data into the MEMORY table, they can fall into a swap, and even worse, deprive the server of resources for querying the tables stored on disk.  As a result, the operational data of the request can also pass through a swap, which will greatly affect the performance of the DBMS as a whole.  In addition, if the table volume limit is reached, old records are not automatically deleted and the server simply returns an error.  On the other hand, a few megabytes easily fit, detailed statistics of visits for the last hour or the position of users on the site. </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/108457/">https://habr.com/ru/post/108457/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../108449/index.html">Mobile Developer Day: developers present startups</a></li>
+<li><a href="../108452/index.html">Report on the excursion to the largest commercial data center in Russia. Built by Megaphone (this data center will soon also become a hosting site)</a></li>
+<li><a href="../108453/index.html">IPoE, as well as Client-VLAN and DHCP Option 82</a></li>
+<li><a href="../108454/index.html">Prelink and Preload to speed up the launch of programs in Linux</a></li>
+<li><a href="../108456/index.html">Peripeteia detection and unpacking</a></li>
+<li><a href="../108458/index.html">Penguins Without Borders: How the Character was Created for an Internet Provider</a></li>
+<li><a href="../108459/index.html">PDF from the point of view of the programmer</a></li>
+<li><a href="../108461/index.html">Safy - Google Chrome Extension for Safe Surfing</a></li>
+<li><a href="../108464/index.html">IB at the Novosibirsk Chemical Concentrates Plant (production of nuclear fuel)</a></li>
+<li><a href="../108465/index.html">Report on the meeting of the Apple Developers Community in St. Petersburg</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

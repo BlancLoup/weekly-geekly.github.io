@@ -1,0 +1,200 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Compilation. 8: optimization</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="After a pleasant stay, we continue to write a compiler for our J-squeak. 
+ In the previous post, we implemented a heuristic taken from the ceiling for...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Compilation. 8: optimization</h1><div class="post__text post__text-html js-mediator-article">  After a pleasant stay, we continue to write a compiler for our J-squeak. <br>  In the previous post, we implemented a <a href="http://habrahabr.ru/blogs/programming/99595/">heuristic</a> taken from the ceiling <a href="http://habrahabr.ru/blogs/programming/99595/">for register assignment</a> , and at the same time we started optimizing the code.  And before that, readers <a href="http://habrahabr.ru/blogs/programming/99592/">found a bug</a> in the implementation of the assignment. <br><br><h3>  Further in the post: </h3><ol><li>  Bug fix </li><li>  Cleaning up </li><li>  What happened? </li><li>  Folding constants </li><li>  Implementation </li></ol><a name="habracut"></a><h3>  Bug fix </h3><br>  The fact is that we decided to cheat, and when first assigning a value to a variable, do not perform the actual copying, but simply declare the register with the intermediate value as the storage location of the variable: <br> <code>ID <font color="#ff6060">'='</font> EXPR <font color="#ff40ff">{</font> <font color="#808000">$$</font> = <font color="#808000">$3</font> ; <br> <font color="#808000">if</font> (vars[ <font color="#808000">$1</font> ]) <br> emit(command::add, vars[ <font color="#808000">$1</font> ], <font color="#808000">$3</font> , <font color="#ff6060">0</font> ); <br> <font color="#808000">else</font> <br> vars[ <font color="#808000">$1</font> ] = <font color="#808000">$3</font> ; <font color="#8080ff">// new var</font> <br> <font color="#ff40ff">}</font> <br></code> <br>  Then when compiling an operation of type <code>a=2;</code>  we will get one <code>MOV R1, 2</code> <code>vars["a"]=R1</code> command (from convolution 2) and we will remember <code>vars["a"]=R1</code> (from convolution of assignment). <br>  That's right, simple and natural. <br><br>  The problem arose when in the right part of the assignment was used not an intermediate value, but something long-lived: for example, another variable. <pre> a = 2;
+ b = a;
+</pre><br>  In the second assignment convolution, no new code is generated - just remember <code>vars["b"]=R1</code> <br>  Both variables were in one register, and when one of them changes, the second one will change. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The solution lies on the surface: for each new variable we start a new register. <br> <code>ID <font color="#ff6060">'='</font> EXPR <font color="#ff40ff">{</font> <font color="#808000">$$</font> = <font color="#808000">$3</font> ; <br> <font color="#808000">if</font> (!vars[ <font color="#808000">$1</font> ]) vars[ <font color="#808000">$1</font> ] = newreg(); <br> emit(command::add, vars[ <font color="#808000">$1</font> ], <font color="#808000">$3</font> , <font color="#ff6060">0</font> ); <br> <font color="#ff40ff">}</font> <br></code> <br>  Then from <code>a=2;</code>  we'll get a couple of commands <pre> MOV R1,2
+ ADD R2, R1, 0
+</pre>  and remember <code>vars["a"]=R2</code> <br>  If it is followed by <code>b = a;</code>  - then <code>MOV R3, R2, 0</code> and <code>vars["b"]=R3</code> will be added to the code <br><br>  In other words, now in the generated code there will be a lot of unnecessary copies from the register to the register, and the assignment of registers will work even slower due to the growing number of registers used. <br>  We will try to find those cases where copying is unnecessary (for example, if the variable from the right side of the assignment does not change later), and correct the commands that use the copy, so that the original is used. <br><br><h3>  Cleaning up </h3><br>  <i>Copy elimination</i> is one of the simple optimizations that I <a href="http://habrahabr.ru/blogs/programming/99162/">promised</a> from the very first post of the series.  As with optimizations performed during register assignment, data-flow analysis is convenient for cleaning.  An important difference from the two previous DFA applications (backward pass for detecting live registers, forward pass for detecting saved registers) will be that at each point we store not one set of registers, but the <i>partitioning of</i> all registers into sets of identical ones.  You can look at this as a more general case of DFA than the two previously discussed.  (Before, registers were always divided into two sets - “included” and “excluded”.) <br><br>  How we will break registers? <ul><li>  <code>ADD RA, RB, 0</code> takes <code>RA</code> to <code>RB</code> ; </li><li>  any other command that changes the register makes it into a singleton set; </li><li>  <code>RA</code> and <code>RB</code> will be together in team C, if they are together <i>in all</i> teams from which you can go to C (directly or by jumping). </li></ul>  After receiving the final split, you will see where you can use the original instead of a copy: instead of <code>RA</code> you can use <code>RB</code> if they are together <i>in all the</i> commands where <code>RA</code> used. <br><br>  And one more subtlety: since during transitions from team to team we do not increase sets, but truncate (intersect all incoming sets), then before launching the DFA, you need to initialize the sets not to empty, but to comprehensive ones - and as the algorithm works, the sets will be truncated, need to.  In order not to spend money and do not really hold in each team the set of all existing registers, we will agree to consider the “missing iterator” indicating exactly such a comprehensive set. <br><br>  For convenience, we make the three partition operations we need into a class.  In the partition we store a list of sets into which registers are divided (except for the “global” set, in which the registers are all together initially), and for each register (except those in the “global” set) it is an iterator of the set in which it is located . <br><br>  With woody <code>std::set</code> I had some incomprehensible problems, so I wrote myself a <code>bit::set</code> container with a similar interface, but with <code>std::bitset</code> inside.  Template parameter, it takes the maximum value of the key in the set. <br>  At the same time, standard operations on sets ( <code>&amp;=</code> , <code>|=</code> ) are made in <code>bit::set</code> . <br><br> <code><font color="#008000">typedef</font> bit::set&lt;regnum, <font color="#ff6060">255</font> &gt; regset; <br> <br> <font color="#008000">class</font> regPartition { <br> <font color="#008000">typedef</font> std::list&lt;regset&gt; regsets; <br> regsets sets; <br> std::map&lt;regnum, regsets::iterator&gt; byreg; <br> <font color="#8080ff">// :    "" </font> <br> <br> <font color="#808000">public</font> : <br> <font color="#8080ff">// :   </font> <br> <font color="#008000">bool</font> add(regnum copy, regnum orig) { <br> <font color="#808000">if</font> (byreg.count(copy)) { <br> <font color="#808000">if</font> (byreg[copy]==byreg[orig]) <font color="#8080ff">//  </font> <br> <font color="#808000">return</font> <font color="#ff6060">false</font> ; <br> byreg[copy]-&gt;erase(copy); <br> <font color="#8080ff">//  ?</font> <br> <font color="#808000">if</font> (!byreg[copy]-&gt;size()) <br> sets.erase(byreg[copy]); <br> } <br> assert(byreg.count(orig)); <br> byreg[copy] = byreg[orig]; <br> byreg[copy]-&gt;insert(copy); <br> <font color="#808000">return</font> <font color="#ff6060">true</font> ; <br> } <br> <br> <font color="#008000">void</font> remove(regnum r) { <br> <font color="#808000">if</font> (byreg.count(‌r)) { <br> <font color="#808000">if</font> (byreg[r]-&gt;size()== <font color="#ff6060">1</font> ) <font color="#808000">return</font> ; <font color="#8080ff">//  </font> <br> byreg[r]-&gt;erase(‌r); <br> } <br> byreg[r] = sets.insert(sets.end(), regset()); <br> byreg[r]-&gt;insert(‌r); <br> } <br> <br> <font color="#8080ff">// :   </font> <br> <font color="#008000">bool</font> isect( <font color="#8080ff">/*</font> <font color="#8080ff">const</font> <font color="#8080ff">*/</font> regPartition&amp; p, <font color="#008000">const</font> command&amp; self) { <br> <font color="#008000">bool</font> changed = <font color="#ff6060">false</font> ; <br> <font color="#8080ff">//    ,     p</font> <br> foreach(i, byreg) { <br> regnum r = i-&gt;first; <br> <font color="#8080ff">// split by p.byreg[r]</font> <br> regsets::iterator withR = i-&gt;second, <br> withoutR = sets.insert(sets.end(), regset()); <br> foreach2(j, (*withR), next) <br> <font color="#8080ff">//  ,    -- mov    :</font> <br> <font color="#8080ff">//        </font> <br> <font color="#808000">if</font> (!(self.opcode==command::add &amp;&amp; !self.src2 &amp;&amp; <br> ((self.src1==r &amp;&amp; self.dest==*j)||(self.dest==r &amp;&amp; self.src1==*j))) <br> &amp;&amp;((!p.byreg.count(‌r) &amp;&amp; p.byreg.count(*j)) || <font color="#8080ff">// R in global, J isn't</font> <br> (p.byreg.count(‌r) &amp;&amp; !p.byreg[r]-&gt;count(*j)))) { <font color="#8080ff">// R not in global</font> <br> withR-&gt;erase(*j); <br> withoutR-&gt;insert(*j); <br> byreg[*j] = withoutR; <br> } <br> <font color="#808000">if</font> (!withoutR-&gt;size()) <font color="#8080ff">//   </font> <br> sets.erase(withoutR); <br> <font color="#808000">else</font> <font color="#8080ff">// </font> <br> changed = <font color="#ff6060">true</font> ; <br> } <br> <font color="#8080ff">//  ,     this,    p</font> <br> foreach(i, p.sets) { <br> regset inP; <br> foreach(j, (*i)) <br> <font color="#808000">if</font> (!byreg.count(*j)) inP.insert(*j); <br> <font color="#808000">if</font> (inP.size()) { <br> regsets::iterator newSet = sets.insert(sets.end(), inP); <br> foreach(j, inP) byreg[*j] = newSet; <br> changed = <font color="#ff6060">true</font> ; <br> } <br> } <br> <font color="#808000">return</font> changed; <br> } <br> <br> <font color="#8080ff">//  :   r    (  )</font> <br> <font color="#008000">void</font> apply(regnum r, regset&amp; global) { <br> <font color="#808000">if</font> (!r) <font color="#808000">return</font> ; <font color="#8080ff">// may not be replaced</font> <br> assert(byreg.count(‌r)); <br> <font color="#808000">if</font> (!global.size()) <font color="#8080ff">// uninitialized set</font> <br> global = *byreg[r]; <br> <font color="#808000">else</font> <font color="#8080ff">// initialized; intersect</font> <br> global &amp;= *byreg[r]; <br> } <br> } <br></code> <br>  Add a new <code>regPartition copies;</code> field to the <code>struct commandn</code> <code>regPartition copies;</code> <br>  Now we implement DFA in the usual way, using ready-made operations: <br> <code><font color="#008000">void</font> copies() { <br> <font color="#8080ff">// )     </font> <br> <font color="#008000">bool</font> changed = <font color="#ff6060">false</font> ; <br> foreach(i, pcode) { <br> i-&gt;copies = regPartition(); <br> <font color="#8080ff">// rule 2</font> <br> <font color="#808000">if</font> (writesdest(i)) { <br> i-&gt;copies.remove(i-&gt;cmd.dest); <br> changed = <font color="#ff6060">true</font> ; <br> } <br> } <br> <font color="#808000">while</font> (changed) { <br> changed = <font color="#ff6060">false</font> ; <br> foreach2(i, pcode, next) { <br> <font color="#8080ff">// rule 1</font> <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::add &amp;&amp; !i-&gt;cmd.src2) <br> changed |= i-&gt;copies.add(i-&gt;cmd.dest, i-&gt;cmd.src1); <br> <font color="#8080ff">// rule 3 (next command)</font> <br> <font color="#808000">if</font> (hasnext(i)) <br> changed |= next-&gt;copies.isect(i-&gt;copies, next-&gt;cmd); <br> <font color="#8080ff">// rule 3 (jmp target)</font> <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::jz) <br> changed |= i-&gt;tgt-&gt;copies.isect(i-&gt;copies, i-&gt;tgt-&gt;cmd); <br> } <br> } <br> <font color="#8080ff">// )      </font> <br> std::vector&lt;regset&gt; copies(lastreg+ <font color="#ff6060">1</font> ); <br> foreach(i, pcode) { <br> <font color="#808000">if</font> (readsdest(i)) <br> i-&gt;copies.apply(i-&gt;cmd.dest, copies[i-&gt;cmd.dest]); <br> <font color="#808000">if</font> (has2src(i)) { <br> i-&gt;copies.apply(i-&gt;cmd.src1, copies[i-&gt;cmd.src1]); <br> i-&gt;copies.apply(i-&gt;cmd.src2, copies[i-&gt;cmd.src2]); <br> } <br> } <br> <font color="#8080ff">// )  </font> <br> <font color="#808000">for</font> (regnum r= <font color="#ff6060">1</font> ; r&lt;=lastreg; r++) { <br> copies[r].erase(‌r); <br> <font color="#808000">if</font> (copies[r].size()) { <font color="#8080ff">//   ?</font> <br> regnum s = *(copies[r].begin()); <font color="#8080ff">//  r  s</font> <br> foreach(i, pcode) { <font color="#8080ff">//   </font> <br> <font color="#808000">if</font> (i-&gt;cmd.dest==r) <br> i-&gt;cmd.dest = s; <br> <font color="#808000">if</font> (has2src(i)) { <br> <font color="#808000">if</font> (i-&gt;cmd.src1==r) i-&gt;cmd.src1 = s; <br> <font color="#808000">if</font> (i-&gt;cmd.src2==r) i-&gt;cmd.src2 = s; <br> } <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::add &amp;&amp; i-&gt;cmd.src1==i-&gt;cmd.dest &amp;&amp; !i-&gt;cmd.src2) <font color="#8080ff">// self-mov</font> <br> nopOut(i); <br> } <br> foreach(c, copies) <font color="#8080ff">//    </font> <br> <font color="#808000">if</font> (c-&gt;count(‌r)) { <br> c-&gt;erase(‌r); <br> c-&gt;insert(s); <br> } <br> } <br> } <br> } <br></code>  Call <code>copies();</code>  insert it at the very beginning of the optimization loop, before checking the liveliness. <br><br><h3>  What happened? </h3><br>  Compared with the last time, the code has been reduced by a couple of commands: <br><pre> 00 mov r01, 0
+ 01 mov r02, 0x3e8
+ 02 echo 0x126
+ 03 echo r01
+ 04 echo 0xa0
+ 05 echo r02
+ 06 echo 0xa7
+ 07 le r03, r01, r02
+ 08 jz r03, + 0x1d (= 0x26)
+ 09 add r03, r01, r02
+ 0a mov r04,2
+ 0b div r03, r03, r04
+ 0c echo 0x162
+ 0d echo r03
+ 0e echo 0xcc
+ 0f input r04
+ 10 store r01, 1
+ 11 mov r01, 1
+ 12 eq r01, r04, r01
+ 13 jz r01, +4 (= 0x18)
+ 14 load r01, 1
+ 15 mov r02, 1
+ 16 sub r02, r03, r02
+ 17 jz 0, -0x11 (= 0x7)
+ 18 mov r01,2
+ 19 eq r01, r04, r01
+ 1a jz r01, +3 (= 0x1e)
+ 1b mov r01, 1
+ 1c add r01, r03, r01
+ 1d jz 0, -0x17 (= 0x7)
+ 1e load r01, 1
+ 1f mov r03, 3
+ 20 eq r03, r04, r03
+ 21 jz r03, +2 (= 0x24)
+ 22 echo 0x146
+ 23 hlt
+ 24 echo 0x16a
+ 25 jz 0, -0x1f (= 7)
+ 26 echo 0xff
+ 27 hlt
+</pre><br>  It may seem that about the disappeared commands ( <code>add r01, r01, 0</code> and <code>add r02, r02, 0</code> ) it was immediately obvious that they are meaningless.  In fact, these commands took a meaningless form only after the assignment of physical registers, i.e.  at the very last stage before the output of the finished p-code.  Until then, the n-register numbers of the operands differed;  only the analysis we just performed allowed us to combine them, and deleting the duplicated copying — all this long before the appointment of physical registers. <br><br><h3>  Folding constants </h3><br>  Another standard optimization, which, like the previous ones, is implemented using DFA, is <i>constant folding</i> .  The principle is utterly simple: if the values ​​of the operands are known, then the operation can be performed immediately upon compilation.  For example, instead of the code <pre> MOV R1,2
+ MOV R2, 3
+ ADD R3, R1, R2
+</pre>  we can generate right away <pre>  MOV R3,5 </pre><br>  Operations on constants do not necessarily indicate the negligence of a programmer who was too lazy to calculate a result known in advance: for example, <code>pixels=1024*768;</code>  easier to read and maintain than <code>pixels=786432;</code> <br><br>  This time, in each command we store sets of registers for which values ​​are known, together with values: in the form of <code>std::map&lt;regnum,int&gt;</code> <br>  As usual, we formulate three rules for computing sets: <ul><li>  in the <code>MOV R, X</code> command <code>MOV R, X</code> value of R is known, and this is <i>X</i> ; </li><li>  in any other command specifying the value of R, this value is unknown; </li><li>  in team C, the value of R is known if it is known and the same <i>in all the</i> commands from which you can go to C (directly or by jumping). </li></ul>  Again we see: the direction of the passage is forward (its value in the subsequent command depends on the register value in the previous command);  operation in nodes - the union of unknown registers. <br><br>  When the sets stabilize, we can replace each operation, both operands of which are known, with <code>MOV</code> . <br><br>  The same data will allow us to perform another optimization - <i>constant propagation</i> (the substitution of a known value instead of a reference to a register).  This optimization is not possible with the n-code format that we have chosen, because there are no operations on the register and the constant;  such operations, however, are present in many real-world processors, so a full-fledged “constant substitution” can be performed when generating executable code.  Now we confine ourselves to replacing the zero value with R0. <br><br>  For example, <code>if (1&gt;2) { echo("unreachable"); }</code>  <code>if (1&gt;2) { echo("unreachable"); }</code> , which compiles to <pre> MOV R1, 1
+ MOV R2, 2
+ GT R3, R1, R2
+ JZ R3, label
+ ECHO "unreachable"
+ label:
+</pre>  will turn at the stage of folding constants in <pre> MOV R1, 1
+ MOV R2, 2
+ MOV R3, 0
+ JZ R3, label
+ ECHO "unreachable"
+ label:
+</pre>  and the optimization of the “destruction of nonliving code”, already implemented by us last time, will remove the first two <code>MOV</code> commands. <br>  If at the same time we replace the zero value by R0: <pre> MOV R3, 0
+ JZ R0, label
+ ECHO "unreachable"
+ label:
+</pre>  then the last <code>MOV</code> will be removed along with the inanimate code, and “destroying the unreachable code” will also delete <code>ECHO</code> , turning <code>JZ</code> into <code>NOP</code> . <br><br>  Similarly, you can delete from the <code>JZ</code> code with a known non-zero value.  The second implemented “special case” is the replacement of <code>ADD RX, (0), RY</code> <code>ADD RX, RY, R0</code> with <code>ADD RX, RY, R0</code> , so that the copy cleaning algorithm recognizes the copy from register to register in this command. <br><br>  Another benefit of folding constants is that negative values ​​can now be used in our teams.  Due to the fact that <a href="http://habrahabr.ru/blogs/programming/99397/">in the lexer</a> we set the <code>NUM</code> token to regexp <code>[0-9]+</code> , the strings like "-123" were interpreted as a unary minus and then the literal 123;  so they compiled into a p-code like <pre> MOV R1,123
+ SUB R2, R0, R1
+</pre>  Now in the p-code will be an honest team <code>MOV R1, -123</code> . <br><br><h3>  Implementation </h3><br>  <code>struct commandn</code> is supplemented by another pair of fields: <br> <code>std::map&lt;regnum, <font color="#008000">int</font> &gt; known; regset unknown;</code> <br> <br>  The basis of optimization, as in the previous cases, is DFA: <br> <code><font color="#008000">void</font> constp() { <br> <font color="#008000">bool</font> changed = <font color="#ff6060">false</font> ; <br> foreach(i, pcode) { <br> i-&gt;known.clear(); i-&gt;unknown.clear(); <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::mov) { <font color="#8080ff">// rule 1</font> <br> i-&gt;known[i-&gt;cmd.dest] = i-&gt;cmd.imm; <br> changed = <font color="#ff6060">true</font> ; <br> } <font color="#808000">else</font> <font color="#808000">if</font> (writesdest(i)) { <font color="#8080ff">// rule 2</font> <br> i-&gt;unknown.insert(i-&gt;cmd.dest); <br> changed = <font color="#ff6060">true</font> ; <br> } <br> } <br> <font color="#808000">while</font> (changed) { <br> changed = <font color="#ff6060">false</font> ; <br> foreach2(i, pcode, next) { <br> <font color="#8080ff">// rule 3 (next command)</font> <br> <font color="#808000">if</font> (hasnext(i)) <br> changed |= propagate(i, next); <br> <font color="#8080ff">// rule 3 (jmp target)</font> <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::jz) <br> changed |= propagate(i, i-&gt;tgt); <br> } <br> } <br> <font color="#8080ff">//   </font> <br> foreach(i, pcode) { <br> i-&gt;known[ <font color="#ff6060">0</font> ] = <font color="#ff6060">0</font> ; <font color="#8080ff">// R0  </font> <br> <font color="#808000">if</font> (has2src(i) &amp;&amp; i-&gt;known.count(i-&gt;cmd.src1) &amp;&amp; i-&gt;known.count(i-&gt;cmd.src2)) <br> i-&gt;cmd = command(command::mov, i-&gt;cmd.dest, ops[i-&gt;cmd.opcode](i-&gt;known[i-&gt;cmd.src1],i-&gt;known[i-&gt;cmd.src2])); <br> <font color="#8080ff">//  0</font> <br> <font color="#808000">if</font> (has2src(i)) { <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src1) &amp;&amp; !i-&gt;known[i-&gt;cmd.src1]) <br> i-&gt;cmd.src1 = <font color="#ff6060">0</font> ; <br> <font color="#808000">if</font> (i-&gt;known.count(i-&gt;cmd.src2) &amp;&amp; !i-&gt;known[i-&gt;cmd.src2]) <br> i-&gt;cmd.src2 = <font color="#ff6060">0</font> ; <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::add &amp;&amp; !i-&gt;cmd.src1) { <font color="#8080ff">//    </font> <br> i-&gt;cmd.src1 = i-&gt;cmd.src2; <br> i-&gt;cmd.src2 = <font color="#ff6060">0</font> ; <br> } <br> } <br> <font color="#808000">if</font> (readsdest(i) &amp;&amp; i-&gt;known.count(i-&gt;cmd.dest)) <br> <font color="#808000">if</font> (!i-&gt;known[i-&gt;cmd.dest]) <br> i-&gt;cmd.dest = <font color="#ff6060">0</font> ; <br> <font color="#808000">else</font> <font color="#8080ff">//  ,    0</font> <br> <font color="#808000">if</font> (i-&gt;cmd.opcode==command::jz) nopOut(i); <br> } <br> } <br></code> <br>  The <code>propagate()</code> procedure implements the union of sets of unknown registers: a register with several known values ​​is declared unknown. <br> <code><font color="#008000">bool</font> propagate(pcommandn from, pcommandn to) { <br> <font color="#008000">bool</font> changed = <font color="#ff6060">false</font> ; <font color="#8080ff">// :   </font> <br> <font color="#8080ff">//   </font> <br> foreach(i, from-&gt;known) { <br> regnum r = i-&gt;first; <br> <font color="#808000">if</font> (to-&gt;known.count(‌r)) <br> <font color="#808000">if</font> ((to-&gt;known[r]!=i-&gt;second) <font color="#8080ff">// ,     1</font> <br> &amp;&amp;!((to-&gt;cmd.opcode==command::mov) &amp;&amp; (to-&gt;cmd.dest==r))) { <br> to-&gt;known.erase(‌r); <br> to-&gt;unknown.insert(‌r); <br> changed = <font color="#ff6060">true</font> ; <br> } <font color="#808000">else</font> ; <font color="#8080ff">//    </font> <br> <font color="#808000">else</font> <font color="#808000">if</font> (!to-&gt;unknown.count(‌r)) { <font color="#8080ff">//  , </font> <br> to-&gt;known[r]=i-&gt;second; <br> changed = <font color="#ff6060">true</font> ; <br> } <br> } <br> <font color="#8080ff">//  </font> <br> foreach(r, from-&gt;unknown) <br> <font color="#808000">if</font> (!to-&gt;unknown.count(*r)) { <br> to-&gt;unknown.insert(*r); <br> to-&gt;known.erase(*r); <br> changed = <font color="#ff6060">true</font> ; <br> } <br> <font color="#808000">return</font> changed; <br> } <br></code> <br>  The last thing left is the actual calculation of the value, when the operands are known.  In the same way as in the executer of the jay-squeak, we start by the function for each opcode: <br> <code><font color="#008000">int</font> hlt( <font color="#008000">int</font> src1, <font color="#008000">int</font> src2) { assert( <font color="#ff6060">false</font> ); <font color="#808000">return</font> <font color="#ff6060">0</font> ; } <br> <font color="#008000">int</font> add( <font color="#008000">int</font> src1, <font color="#008000">int</font> src2) { <font color="#808000">return</font> src1+src2; } <br> <font color="#008000">int</font> sub( <font color="#008000">int</font> src1, <font color="#008000">int</font> src2) { <font color="#808000">return</font> src1-src2; } <br> ... <br> <font color="#008000">int</font> lt( <font color="#008000">int</font> src1, <font color="#008000">int</font> src2) { <font color="#808000">return</font> src1&lt;src2; } <br> <font color="#008000">int</font> (*ops[])( <font color="#008000">int</font> , <font color="#008000">int</font> ) = {hlt, hlt, hlt, hlt, hlt, hlt, hlt, add, sub, mul, div, eq, ne, ge, le, gt, lt}; <br></code> <br>  Insert a call to <code>constp();</code>  before <code>copies();</code>  - and on it we will finish with optimization. <br><br>  In the next post, we compile a <a href="http://habrahabr.ru/blogs/programming/103402/">real executable code</a> for x86 / x64 from a p-code with physical registers. </div><p>Source: <a href="https://habr.com/ru/post/101946/">https://habr.com/ru/post/101946/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../101936/index.html">60 games at the start of Windows Phone 7</a></li>
+<li><a href="../101938/index.html">Basics of designing web interfaces in Axure RP Pro</a></li>
+<li><a href="../101940/index.html">Announced Age Of Empires Online!</a></li>
+<li><a href="../101942/index.html">El Dorado. Equipment demonstration service</a></li>
+<li><a href="../101944/index.html">Announced Heroes of Might & Magic VI</a></li>
+<li><a href="../101947/index.html">Microsoft WebMatrix - Reloaded</a></li>
+<li><a href="../101948/index.html">Droider Chart. Release 14</a></li>
+<li><a href="../101949/index.html">The first release of the game 0 AD</a></li>
+<li><a href="../101950/index.html">Mobile advertising in numbers</a></li>
+<li><a href="../101951/index.html">General peering in Kazakhstan is close</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

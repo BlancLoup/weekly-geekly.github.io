@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Privilege escalation in desktop Linux: Getting root access from GUI applications</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A couple of months ago, Rafal Wojtczuk came up with a serious exploit that allows you to get superuser rights from an unprivileged process that has ac...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Privilege escalation in desktop Linux: Getting root access from GUI applications</h1><div class="post__text post__text-html js-mediator-article">  A couple of months ago, Rafal Wojtczuk came up with a serious exploit that allows you to get superuser rights from an unprivileged process that has access to an X server (that is, from a GUI application running as a regular user).  In other words, any GUI program (for example, a reader of PDF files), if it is compromised (for example, with a specially prepared PDF file), can break through all the security barriers to full computer ownership.  Even the SElinux sandbox ( <a href="http://danwalsh.livejournal.com/31146.html">SElinux "sandbox -X"</a> ) does not save.  And the problem exists for many years - apparently, from the first versions of the 2.6 kernel. <br><br>  The review of this vulnerability was released on August 17 in <a href="http://www.invisiblethingslab.com/resources/misc-2010/xorg-large-memory-attacks.pdf">[2]</a> , and I want to tell about it in some places in a simplified, sometimes in an expanded form. <br><br><h4>  How it works </h4><br><a name="habracut"></a><br>  The main reason for this outrage is known for quite some time <a href="http://cansecwest.com/core05/memory_vulns_delalleau.pdf">[3]</a> .  The problem - especially the Linux memory allocation algorithms.  As everyone knows, there are two main places where a process can get a piece of dynamic memory — a stack and a heap.  And you can also allocate a piece of address space to which physical memory does not correspond - for this there is a virtual memory map of the process to files in the file system (mmap) or simply to abstract kernel objects (System-V style shared memory).  It is not even necessary that the allocated piece of memory physically existed, at least until the moment when we begin to write in it. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+     <a title="Habraffe.ru" href=""><img src="https://habrastorage.org/storage/habraeffect/a1/e2/a1e26a4472d0a647fd9fd9ae8309a6b1.png"></a> <br>  Memory allocation on x86-32, picture from [3].  On x86-64, everything is very similar, only the scale is bigger :) <br><br>  A stack is the easiest way to allocate memory.  As it grows, it grows from older addresses to younger ones, and if it suddenly turns out that the next page of the stack is over, when trying to write a processor, it throws the page fault, and the kernel allocates several more pages to the stack (or kills the process if it fails to select) .  Initially, a stack of memory is allocated (on x86-32) in the upper part of the address space, by default 128 MB, but in reality this memory is allocated as needed, and if suddenly everything else is busy, malloc () and mmap () begin to use Stack memory <br><br>  As a result of aggressive allocation, it may turn out that one of the selected areas closely adjoins the lower boundary of the stack (this is an exploited property).  Suppose now that we have called some deeply recursive function.  The stack pointer begins to approach the border, eventually crosses it and ... nothing happens, because immediately after the stack, the memory allocated by us begins.  So, we have a part of the stack, which is actually not a stack, but a section allocated in another way. <br><br>  While everything happened within the boundaries of one process, the maximum that we can do is to spoil this process and do something bad with the user account from which it is launched. <br><br><h4>  How to break out of your process and get into the X-server </h4><br>  The X server process (that same / usr / X11 / bin / X) works with root privileges.  And if we find a way to execute our code in the context of this process, we will achieve our intended goal. <br><br>  To get a piece of memory in the address space of the X-server, we will use the <a href="http://en.wikipedia.org/wiki/MIT-SHM">MIT-SHM</a> extension.  In general, the protocol by which the X-server is exchanged with client programs is large and spreading, and contains numerous extensions invented at different times for different purposes.  In particular, MIT-SHM solves a very simple problem.  Suppose we need to display a large raster image on the screen.  To do this, you must somehow send from the client process to the server a lot of bytes that make up this raster (pixmap).  But if the client and server live on the same machine, it is not necessary to spend resources on copying all these bytes into the kernel and back, instead, you can allocate a section of shared memory that will be mapped to the virtual memory of both processes - this is what MIT-SHM does. <br><br>  We can insidiously use this API for our own purposes and map all available X server memory into our address space like this: <br> <code>shm_seg_size=shmmax <br> while shm_seg_size &gt;= PAGE_SIZE <br> shm_seg=shmget(..., shm_seg_size,...) <br>    XShmAttach(..., shm_seg...) <br>   , shm_seg_size/=2 <br></code> <br>  (shmmax is the maximum possible memory size that can be allocated to shmget, see / proc / sys / kernel / shmmax) <br><br>  If everything is good, one of the selected areas will be exactly outside the stack space, but we still do not know which one, since the addresses of the shared memory on the server side are not at all like ours.  To find a tidbit, we can pile up the pyramid from widgets using conventional X-protocol tools, and then send a command that will cause a recursive walk (in article [2] it’s about some function F that works recursively, you can probably find it by X source;)).  As a result, the process will come out of the stack, but no one will notice anything, since the following addresses are already allocated to XShmAttach.  And then for our part, we will look through the memory and find a section in which there are non-zero bytes (shmget clogs the selected areas with zeros). <br><br>  And now let us once again run the notorious recursive function F, and while it works, we will write into the stack what we like, that is, new return addresses.  Here you can use classic technologies of exploits, such as <a href="http://en.wikipedia.org/wiki/Return-to-libc_attack">return-to-libc</a> , the main thing is to change the stack in time while the function is executed (yes, I know about <a href="http://en.wikipedia.org/wiki/Address_space_layout_randomization">ASLR</a> , but in this article we will assume that we somehow won it;) ) <br><br><h4>  And now what i can do? </h4><br>  Well, first, you can wait for updates.  Linus Torvalds (personally!) <a href="http://git.kernel.org/linus/320b2b8de12698082609ebbc1a17165727f4c893">Added a patch</a> that creates a barrier from an unallocated page between the stack and the address space available to the heap and mmap.  As a result, if there is not enough memory for the stack, the program will try to write to a non-existent address and fall into SIGBUS (which, of course, is also not very good, but is clearly better than privilege escalation).  In kernels 2.6.35.2 and 2.6.34.4 this fix has already been added. <br><br>  If for some reason you don’t want to change the kernel, you can turn off MIT-SHM in the xorg.conf file: <br><br> <code>Section "Extensions" <br> Option "MIT-SHM" "disable" <br> EndSection <br></code> <br>  True, it does not save from other likely variations on the same vulnerability. <br><br><h4>  Links </h4><br><ul><li>  [1] The news on <a href="http://theinvisiblethings.blogspot.com/2010/08/skeletons-hidden-in-linux-closet.html">The Invisible Things Lab's blog</a> - in fact, the introduction was written based on </li><li>  [2] Exploiting large-scale memory management options for Linux by Rafal Wojtczuk ( <a href="http://www.invisiblethingslab.com/resources/misc-2010/xorg-large-memory-attacks.pdf">PDF</a> ) <br></li><li>  [3] Gael Delalleu, Large memory management vulnerabilities ( <a href="http://cansecwest.com/core05/memory_vulns_delalleau.pdf">PDF</a> ) provides an excellent overview of known memory vulnerabilities in various operating systems. <br></li></ul></div><p>Source: <a href="https://habr.com/ru/post/102077/">https://habr.com/ru/post/102077/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../102071/index.html">SE X10 mini: true story of creation</a></li>
+<li><a href="../102072/index.html">JSON pipes in the shell</a></li>
+<li><a href="../102073/index.html">FVD Suite - Shakes Everything! Or almost everything ...</a></li>
+<li><a href="../102075/index.html">Chrome OS Tablet since November 26!</a></li>
+<li><a href="../102076/index.html">Gnome forismatic notify applet</a></li>
+<li><a href="../102079/index.html">Why you shouldn't buy Sony Ericsson products in Ukraine, and probably in general</a></li>
+<li><a href="../102080/index.html">Interesting features of old laptops part 1</a></li>
+<li><a href="../102081/index.html">Ruby 1.9.2 released</a></li>
+<li><a href="../102082/index.html">Emacs In Practice</a></li>
+<li><a href="../102085/index.html">How Beeline drains money</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

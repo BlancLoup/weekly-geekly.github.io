@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Graphic subsystem “dead on the core”</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="What is commonly called “graphics in the kernel” usually refers to win32k. Win32k.sys is the core part of the graphics subsystem. It is loaded by the ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Graphic subsystem “dead on the core”</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/storage/2d8d3da0/0f559e54/e0e386e8/c169d629.jpg"><br><br>  What is commonly called “graphics in the kernel” usually refers to win32k.  Win32k.sys is the core part of the graphics subsystem.  It is loaded by the user process smss.exe during the initialization process of all other subsystems.  The path to the executable image for the “kmode” subsystem is registered here: <br><img src="https://habrastorage.org/storage/5fe17c54/b7149382/31090fb2/7cb9db1f.png"><br><br>  How does this happen? <br><a name="habracut"></a><br><img src="https://habrastorage.org/storage/10a1003d/2a350bf1/549c71a5/41d23a86.png">
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Here (on the stack trace at the bottom of the screenshot) you can clearly see that the win32k process initiates the smss user-mode process (which also initializes the paging files, the registry, environment variables, saves a memory dump, if it was a bugcheck before, through wininit it runs service) control manager and local security authority subsystem, creates a session logon, etc.), and one of the first things that win32k itself does is “building connections” with the kernel.  And here's why: win32k is at a higher level than the kernel, so the kernel cannot have a dependency (by “dependency” in this case is understood the classic “reason to change”) from the concrete implementation win32k, but both the kernel and win32k can safe to depend on the interface.  Such an interface is the KWIN32_CALLOUTS_FPNS structure and the function for registering a specific implementation of this interface in the kernel is PsEstablishWin32Callouts. <br><br>  In addition, win32k registers several types of objects (in particular, Desktop and WindowStation) through general-purpose interfaces provided by the Object Manager. <br><br>  Thus, the kernel has NO dependencies on win32k.  Moreover, before NT4, all user / gdi APIs were processed in csrss and, of course, slowed down.  Starting with NT4, the user / gdi primitive part was moved to the kernel to improve performance. <br><br>  In general, win32k can be completely removed, you can replace your own nuclear part, and you can implement everything completely in user mode (using, for example, ioctls to communicate with the kernel), but this will slow down.  The only reason this is not done is because it is not needed.  You can write differently - yes, it’s much better to write - hardly.  Well, rewriting for the sake of rewriting is not the best idea. <br><br><h4>  Practice - the criterion of truth or "MinWin on the knee" </h4><br>  To avoid misunderstandings, I want to immediately say: <font color="red">what I will do is not MinWin</font> .  This is no longer because the real MinWin contains a minimal set of user-mode binaries, but I’m going to demonstrate a fully loaded kernel (another difference is that MinWin contains a minimal set of drivers, but my set of drivers doesn’t change compared to normal booting ) without user mode at all (ok, one process and one dll there is still there, but you have to show the user that something is happening though).  An additional reason for reflection may be the fact that the real MinWin appeared in connection with the work on the “stratification” of the code of Windows 7, the same thing that I will do in principle is possible on XP and even on NT3.51 <br><br>  So, if you thoughtfully read what is written in the previous section, you can guess that we need to replace smss with one that does not initialize the subsystems, but still remains more or less interactive.  smss.exe is a normal native process (approximately, a native application is an application that links only with ntdll.dll and uses only the Native API for work).  Fortunately for me, Alex Ionescu - the former chief developer of ReactOS - has already written a similar application in the framework of the (long closed) tinykrnl project.  This application does not build under amd64, does not build on the last WDK, has several bugs, but generally works.  The following image can be opened by the archiver - it contains the sources and the compiled amd64 binary of a small native.exe application: <br><img src="https://habrastorage.org/storage/9601fb98/61097b86/092ea32c/19f77c65.png"><br><br>  I ask you to forgive me, but I can not lay out the finished image because it is illegal, so I post the code that can compile the vhd image from the installation image. <br>  The following code can be executed ONLY on Win7.  Save it somewhere in the temporary directory under the name, for example minwin.ps1, put install.wim next to it (located in the \ sources directory) from the Windows 7 installation disc (this is important - only the NLS files needed for this localization are copied) save the native.exe file from the image attached above to this directory, go to this very directory in the elevated console and do the following: <br><pre><code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">powershell</span></span> -executionpolicy bypass .\minwin.ps1</code> </pre> <br>  To be short: <br>  1. Next to the same directory should be the following files: minwin.ps1, install.wim and native.exe <br>  2. Run minwin.ps1 only after changing the current directory to the directory containing the above files <br><br>  <b><font color="red">Disclaimer: you do all of the following at your own risk.</font></b>  <b><font color="red">The teams are fairly obvious and should not cause any harm, but this is a “knee-deep” creativity, so it does not have to work in any conditions.</font></b>  <b><font color="red">Do not execute this script if you do not understand the meaning of EVERY command (especially since execution must be done from under the elevated user).</font></b>  If not, below is a picture of how it looks in the end.  In a simplified version, you can simply rename native.exe to smss.exe, copy it over the existing smss.exe in an already loaded virtual machine (any x64 Windows will work - from XP to 7) and reboot. <br>  The script itself: <br><blockquote><pre> <code class="hljs mel">$vhdName = <span class="hljs-string"><span class="hljs-string">"disk.vhd"</span></span> $wimName = <span class="hljs-string"><span class="hljs-string">"install.wim"</span></span> $vhdDisk = <span class="hljs-string"><span class="hljs-string">"V"</span></span> $wimMountName = <span class="hljs-string"><span class="hljs-string">"MountedWim"</span></span> md $wimMountName dism /mount-wim /wimfile:$wimName /index:<span class="hljs-number"><span class="hljs-number">1</span></span> /mountdir:$wimMountName #del $vhdName @" create vdisk <span class="hljs-keyword"><span class="hljs-keyword">file</span></span>=$pwd\$vhdName type=expandable maximum=<span class="hljs-number"><span class="hljs-number">128</span></span> <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> vdisk <span class="hljs-keyword"><span class="hljs-keyword">file</span></span>=$pwd\$vhdName attach vdisk create <span class="hljs-keyword"><span class="hljs-keyword">partition</span></span> primary <span class="hljs-keyword"><span class="hljs-keyword">format</span></span> fs=ntfs quick assign letter=$vhdDisk active <span class="hljs-string"><span class="hljs-string">"@ | diskpart bcdboot "</span></span>$pwd\$wimMountName\Windows<span class="hljs-string"><span class="hljs-string">" /s "</span></span>${vhdDisk}:<span class="hljs-string"><span class="hljs-string">" #cmd /c "</span></span>$wimMountName\Windows\System32\bootsect /nt60 ${vhdDisk}: /mbr /force<span class="hljs-string"><span class="hljs-string">" $disk = gwmi win32_diskdrive -filter "</span></span>Model = <span class="hljs-string"><span class="hljs-string">'Msft Virtual Disk SCSI Disk Device'</span></span><span class="hljs-string"><span class="hljs-string">" $part = $disk.GetRelated("</span></span>win32_diskpartition<span class="hljs-string"><span class="hljs-string">") | select -first 1 $bootmgr = [wmi]"</span></span>root\wmi:BcdObject.Id=<span class="hljs-string"><span class="hljs-string">`"{9dea862c-5cdd-4e70-acc1-f32b344d4795}`</span></span><span class="hljs-string"><span class="hljs-string">",StoreFilePath=`"</span></span>${vhdDisk}:\\boot\\bcd<span class="hljs-string"><span class="hljs-string">`"" $osloader = [wmi]"root\wmi:BcdObject.Id=`</span></span><span class="hljs-string"><span class="hljs-string">"$($bootmgr.GetElement(0x23000003).Element.Id)`"</span></span>,StoreFilePath=<span class="hljs-string"><span class="hljs-string">`"${vhdDisk}:\\boot\\bcd`</span></span><span class="hljs-string"><span class="hljs-string">""</span></span> $bootmgr.SetQualifiedPartitionDeviceElement(<span class="hljs-number"><span class="hljs-number">0x11000001</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, $disk.Signature, $part.StartingOffset) $osloader.SetQualifiedPartitionDeviceElement(<span class="hljs-number"><span class="hljs-number">0x11000001</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, $disk.Signature, $part.StartingOffset) $osloader.SetQualifiedPartitionDeviceElement(<span class="hljs-number"><span class="hljs-number">0x21000001</span></span>, <span class="hljs-number"><span class="hljs-number">0</span></span>, $disk.Signature, $part.StartingOffset) $osloader.SetStringElement(<span class="hljs-number"><span class="hljs-number">0x12000002</span></span>, <span class="hljs-string"><span class="hljs-string">"\Windows\system32\winload.exe"</span></span>) $osloader.SetStringElement(<span class="hljs-number"><span class="hljs-number">0x22000002</span></span>, <span class="hljs-string"><span class="hljs-string">"\Windows"</span></span>) $osloader.SetBooleanElement(<span class="hljs-number"><span class="hljs-number">0x26000022</span></span>, $true) md <span class="hljs-string"><span class="hljs-string">"${vhdDisk}:\Windows\System32\config\", "</span></span>${vhdDisk}:\Windows\Fonts<span class="hljs-string"><span class="hljs-string">", "</span></span>${vhdDisk}:\Windows\inf<span class="hljs-string"><span class="hljs-string">", "</span></span>${vhdDisk}:\Windows\SysWOW64<span class="hljs-string"><span class="hljs-string">" copy -r "</span></span>$wimMountName\Windows\System32\drivers<span class="hljs-string"><span class="hljs-string">" "</span></span>${vhdDisk}:\Windows\System32\drivers<span class="hljs-string"><span class="hljs-string">" del "</span></span>${vhdDisk}:\Windows\System32\drivers\termdd.sys<span class="hljs-string"><span class="hljs-string">" copy "</span></span>$wimMountName\Windows\Fonts\vgaoem.fon<span class="hljs-string"><span class="hljs-string">" "</span></span>${vhdDisk}:\Windows\Fonts<span class="hljs-string"><span class="hljs-string">" copy "</span></span>$wimMountName\Windows\inf\errata.inf<span class="hljs-string"><span class="hljs-string">" "</span></span>${vhdDisk}:\Windows\inf<span class="hljs-string"><span class="hljs-string">" copy "</span></span>$wimMountName\Windows\System32\config\SYSTEM<span class="hljs-string"><span class="hljs-string">" "</span></span>${vhdDisk}:\Windows\System32\config<span class="hljs-string"><span class="hljs-string">" copy "</span></span>$wimMountName\Windows\SysWOW64\ntdll.dll<span class="hljs-string"><span class="hljs-string">" "</span></span>${vhdDisk}:\Windows\SysWOW64<span class="hljs-string"><span class="hljs-string">" copy native.exe "</span></span>${vhdDisk}:\Windows\System32\smss.exe<span class="hljs-string"><span class="hljs-string">" "</span></span>ntoskrnl.exe<span class="hljs-string"><span class="hljs-string">", "</span></span>hal.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>ci.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>pshed.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>clfs.sys<span class="hljs-string"><span class="hljs-string">", "</span></span>kdcom.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>ntdll.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>apisetschema.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>winload.exe<span class="hljs-string"><span class="hljs-string">", "</span></span>bootvid.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>bootres.dll<span class="hljs-string"><span class="hljs-string">", "</span></span>l_intl.nls<span class="hljs-string"><span class="hljs-string">", "</span></span>c_1252.nls<span class="hljs-string"><span class="hljs-string">", "</span></span>c_437.nls<span class="hljs-string"><span class="hljs-string">" |% { copy (Join-Path "</span></span>$wimMountName\Windows\System32<span class="hljs-string"><span class="hljs-string">" $_) "</span></span>${vhdDisk}:\Windows\System32<span class="hljs-string"><span class="hljs-string">" } @"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> vdisk <span class="hljs-keyword"><span class="hljs-keyword">file</span></span>=$pwd\$vhdName detach vdisk <span class="hljs-string"><span class="hljs-string">"@ | diskpart dism /unmount-wim /mountdir:$wimMountName /discard</span></span></code> </pre></blockquote><br>  It looks like this: <br><img src="https://habrastorage.org/storage/d60eb61b/98c5e463/5da96159/426a7782.png"><br><br>  If everything is done correctly (and with some luck :-)), then after some time the file disk.vhd will appear in the same directory - it can be run in a virtual machine (tested in VirtualBox, but I see no reason why it shouldn’t work in Virtual PC, Hyper-V or somewhere else): <br><img src="https://habrastorage.org/storage/e2b0f2ad/d4778a00/ffdefad1/79fd40a4.png"><br><br>  Well, a few comments at the end. <br><br>  1. Almost 300 drivers are copied, about 100 are loaded, about 10-20 are really needed on a particular system. <br>  2. The eight-megabyte SYSTEM hive from install.wim can be quite normally replaced by a two-megabyte from boot.wim, but you can even manually blind something into a hundred kilobytes. <br>  3. bcdboot copies all localizations of bootmgr and several megabytes of fonts (mainly for CJK) - can be cut <br>  4. You may notice that when creating an image, termdd.sys is deleted - this is not done because it does not work.  It just creates another keyboard device (which in normal mode is used for “pressing buttons” on a remote machine in a terminal session), and I found it too lazy to modify native.exe to read clicks from all keyboards. <br>  5. Boot graphics can be suppressed and discarded from bootvid.dll and bootres.dll <br><br>  And most importantly, win32k.sys is not copied into the created image, which does not prevent this image from working relatively tolerably without any graphics at all.  With a great desire, as I said, you can fasten a fully console shell, you can cut out the Windows subsystem and leave only Posix (it would be a very strange desire, as for me, but people often want a strange one).  Or (even more strange desire) to implement native X11 on top of the NT core.  You can replace smss and “fully control” everything that works above the kernel, or you can leave smss and a couple of edits in the registry to change the set of loaded subsystems.  In short, there is simply no “tightly nailed to the core” graphics. <br><br>  Thanks for attention </div><p>Source: <a href="https://habr.com/ru/post/108156/">https://habr.com/ru/post/108156/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../108142/index.html">How to make up beautifully or worse than css-frameworks</a></li>
+<li><a href="../108146/index.html">Web store is even closer</a></li>
+<li><a href="../108151/index.html">What is the difference between different types of Facebook pages?</a></li>
+<li><a href="../108152/index.html">phpinfo.php: incredible, but true</a></li>
+<li><a href="../108154/index.html">MODx Revolution. Results Part 1</a></li>
+<li><a href="../108157/index.html">Digest 6 interesting concepts and ideas of the past week</a></li>
+<li><a href="../108161/index.html">About Yota and "Zhzhzh"</a></li>
+<li><a href="../108163/index.html">Mentors: how does it work?</a></li>
+<li><a href="../108164/index.html">Looking for projects on the 4th Startup Crash Test</a></li>
+<li><a href="../108165/index.html">Quick download images on habraeffekt</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

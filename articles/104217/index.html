@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>MySQL in tmpfs</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I would like to share my experience in using MySQL with data storage in memory, and not on disk. This allowed us to reduce the load average of the ser...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>MySQL in tmpfs</h1><div class="post__text post__text-html js-mediator-article">  I would like to share my experience in using MySQL with data storage in memory, and not on disk.  This allowed us to reduce the load average of the server, which, due to disk operations, began to grow strongly. <br><br><img src="https://habrastorage.org/storage/habraeffect/8e/ca/8eca8060e1103cc087fd9c6d5c38720f.png"><br><br><a name="habracut"></a>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In one project, we use MySQL with the MyISAM engine for Debian Lenny.  General data is loaded into the daemon's operating system in C ++, and user data is loaded once at login and periodically stored while the user is working.  Also saved at logout (or by timeout).  In view of the described scheme, selects are much smaller than update (select: 24%, delete: 4%, update: 61%, insert: 11%). <br><br>  In principle, this problem is not an admin one, but is caused by a not entirely successful choice of tool.  Most likely, we would have been approached by InnoDB, which uses row-level locking (blocking by records), rather than table-level locking (blocking the entire table while writing) like MyISAM.  Although this would hardly reduce the amount of data written to disk.  On the other hand, we don’t really need SQL, and we are inclined to porting the project to NoSQL (we’ve got a close look at some of the representatives (assandra), and some (tokyo tyrant, Berkeley DB) we actively use to log user actions).  But to allocate time to transfer the data warehouse to another engine / database was not, for this decided to use the admin.  resource. <br><br>  With the increase in the number of users and the introduction of new content, we are faced with the problem of growth of load average on the database server (2-3 la on an 8 core server was observed with only 400 requests per second).  And the memory was underloaded, as was the processor.  The problem was the large amount of data written to disk (an increase in iowait).  At some moments, the system began to stutter and some primitive requests took 2 seconds, or even more.  In normal mode, such queries are executed in milliseconds. <br><br>  We slightly optimized MySQL configs (using both automatic scripts like mysqltuner and manual configuration), but this gave only a slight decrease in load (by 10-15 percent).  For the most part, the parameters responsible for caching data are not suitable for us, since our main load is data updating, not reading.  The base is on the SAS disk, but the speed is still not enough.  Binary logs are on another disk (used for backup of the database from the slave). <br><br>  Accelerating the work of the disk system having bought a full-fledged RAID does not suit us because of its high price.  But the server itself is almost idle, if you do not take into account the disks.  There is no possibility of data compression in memory before writing to disk in MyISAM, but there is no possibility to switch to another engine yet (Falcon should have been able to, but Oracle abandoned it after buying MySQL) <br><br>  The base takes about 2-2.5 Gb (in tar.gz 700mb) and we have long tried to use MySQL in tmpfs (using the mylvmbackup method), which made it possible not to load the disk and simplify the creation of backup.  Fortunately, we recently cleaned up the base by adding a crown that removes old users who almost did not use the project and never paid.  In addition, we cleared the old data, which was collected for statistics and set them a lifetime of about two months. <br><br>  As a quick solution to this problem, the idea arose of transferring the main base to tmpfs.  What we did: <br><br>  And so we had 3 servers: <br>  1. server A (the combat base where the demons are knocking (we have 8G of RAM on it)) <br>  2. Server B (any server on the same site with free operational (we have 8G, 5G of them are free)) <br>  3. Server B (on another site it is sharpened for backups of all projects with maximum RAM (we have 16G)) <br><br>  And so on Server A we raise tmpfs for database files <br>  mount -t tmpfs -o size = 5G tmpfs / var / lib / mysql (with a margin of 2 times the base weight) <br>  Just do not forget to write in the database configs so that the bin logs are written to a single free disk (the master does not work without them), and under load the base can write to these logs up to 1M per second.  We store these files for no more than 7 days (more is not necessary because to restore the base if there are slides) <br><br>  We start the base accordingly as a master.  The server under the hard load itself does not go out of 1LA and the memory does not exceed 6G.  The average request execution rate has grown tenfold, if earlier it was 0.1-0.3 seconds, it became 0.1-3 ms <br>  Further, on server B, we also raise the first slave in tmpfs as well. Don't forget about the settings of the relay-log, because  if there is an error in the slide, and the master will be available in these logs, he will write requests that were on the master ... As a result, this can be measured in dozens of gigabytes per night, before you fix the slide, we have about 8-10 gigabytes per hour.  We backup this base with snapshots at night 1-2 times a day when the load on the demons is minimal.  Such a slave eats a maximum of 0.2-0.3 LA and a little more than the base weighs. <br><br>  Also on server B, we have several slides on tmpfs for our projects at once, but they live together without much load, and the server is snapshot once every 10 minutes (if that time is decomposed, then snapshot is done for about 3 seconds (the base weight is 2.5 gigabytes ) well, zhzhati in the archive about 6-7 minutes) and even at the same time on the server LA does not exceed 2, even when backups peresikat time.  Apparently the number of backup slaves on one server is determined by the size of the bases and the number of RAM.  We store backups for 10 minutes - the last 24 hours, every 6 hours - we keep 30 days, every 30 days - forever. <br><br>  Then, if Slide B or C suddenly drops, raising it with any of the backups from the other without touching the master without any problems, even if both of them fall to lift without touching the master for 10 minutes - the speed of rewriting backups. <br>  If the master falls, that is, there are two slaves with a lag of 1-2 updates from the master (I have never seen Slave Delay (lag from the master) exceed 0 sec.), While an urgent solution to the problem is to do it within 5 minutes from slave B master ... and rebuild the demons, with the tests they live quietly on the same server and not interfering with each other. <br><br>  As a result, in order to simultaneously drop 3 cars on 2 different platforms, it is very unlikely that it will take no more than 10 minutes to raise the base for any server or landing. <br><br>  Be sure to set up sounders (munin, nagios, zabix - someone that is more to your liking) at 2 sites with the measurement of slider lag, by SMS or soap, we have Nagio watching this and at the same time the munin insures it and at the same time draws graphs everything is very clear how and who and how. <br><br>  Load average on servers decreases autumn strongly, now the processor and memory takes over the main load, not the disk.  Here are the graphs that we shot with another server translation today: <br><br> <a title="la" href=""><img src="https://habrastorage.org/storage/habraeffect/4d/96/4d965cc2ce558460c4d5a9b3606de9bf.png"></a> <br><br> <a title="cpu" href=""><img src="https://habrastorage.org/storage/habraeffect/c2/85/c2857355c861182458f815a504a85439.png"></a> <br><br> <a title="mysql queries" href=""><img src="https://habrastorage.org/storage/habraeffect/a1/7f/a17fe9420d6068e84d6bc8c67bd4f700.png"></a> <br><br>  It is worth noting that after transferring the database, the intervals for saving user data in C ++ were also reduced, so the number of updates increased. <br><br>  In general, the only potential problem is the growth of the base.  But now the memory in servers is cheap enough and it won't be a problem to increase it (on the part of the machines we have 16Gb, on the part 8Gb, but as far as I know, you can put 128Gb in the ceiling).  In any case, nobody canceled the clustering of the database and we will be able to distribute the database to several servers with a similar configuration. <br><br>  There is a suspicion that this is not entirely correct, or something.  But it was much easier to transfer the base into memory than to implement other databases / engines.  If there are any comments I will be glad to read them in the comments. <br>  In any case, perhaps this experience will be useful to someone. <br><br>  InnoDB - <a href="http://dev.mysql.com/doc/refman/5.1/en/innodb.html">dev.mysql.com/doc/refman/5.1/en/innodb.html</a> <br>  MyISAM - <a href="http://dev.mysql.com/doc/refman/5.1/en/myisam-storage-engine.html">dev.mysql.com/doc/refman/5.1/en/myisam-storage-engine.html</a> <br>  assandra - <a href="http://cassandra.apache.org/">cassandra.apache.org</a> <br>  tokyo tyrant - <a href="http://fallabs.com/tokyotyrant/">fallabs.com/tokyotyrant</a> <br>  Berkeley DB - <a href="http://www.oracle.com/technetwork/database/berkeleydb/overview/index-085366.html">www.oracle.com/technetwork/database/berkeleydb/overview/index-085366.html</a> <br>  mysqltuner - <a href="http://mysqltuner.com/mysqltuner.pl">mysqltuner.com/mysqltuner.pl</a> <br>  Falcon - <a href="http://en.wikipedia.org/wiki/Falcon_">en.wikipedia.org/wiki/Falcon_</a> (storage_engine) <br>  tmpfs - <a href="http://en.wikipedia.org/wiki/Tmpfs">en.wikipedia.org/wiki/Tmpfs</a> <br>  mylvmbackup - <a href="http://www.lenzg.net/mylvmbackup/">www.lenzg.net/mylvmbackup</a> </div><p>Source: <a href="https://habr.com/ru/post/104217/">https://habr.com/ru/post/104217/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../104210/index.html">DBMS - rotate 90 degrees</a></li>
+<li><a href="../104211/index.html">live camera from the International Space Station</a></li>
+<li><a href="../104213/index.html">Swan, cancer and pike: ViewSonic, IBS and Sberbank</a></li>
+<li><a href="../104214/index.html">Augmented Reality: How I Searched for the Berlin Wall</a></li>
+<li><a href="../104216/index.html">A game in which you need to design the work of traffic lights</a></li>
+<li><a href="../104218/index.html">Guessing on the noise of information</a></li>
+<li><a href="../104219/index.html">Evaluation of the complexity of the algorithms</a></li>
+<li><a href="../104220/index.html">JavaFX Tower Defense Competition: Light Towers</a></li>
+<li><a href="../104221/index.html">On the positivity of Facebook and the disadvantages of social services</a></li>
+<li><a href="../104224/index.html">MODx - a simple file archive for FileDownload v2.6. Improving the system of editing file descriptions</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
