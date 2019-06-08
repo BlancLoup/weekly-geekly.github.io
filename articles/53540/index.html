@@ -1,0 +1,265 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>FastCGI application in Perl. Part Three</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In a previous article , we demonstrated how to demonize the FastCGI application. The resulting daemon successfully processes requests, but it has one ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>FastCGI application in Perl. Part Three</h1><div class="post__text post__text-html js-mediator-article">  In a <a href="http://habrahabr.ru/blogs/perl/53206/">previous article</a> , we demonstrated how to demonize the FastCGI application.  The resulting daemon successfully processes requests, but it has one major drawback - it does not know how to process several requests at the same time. <br><br>  Moreover, in terms of handling several simultaneous requests, the situation with the daemon is even worse than with a regular CGI application.  If the CGI application can be started by the web server in the required number of instances (for example, one instance for each incoming request), then the daemon running in one single instance will be forced to put the received requests in a queue.  Until the previous request is completed, all other requests will have to wait. <br><br>  In order for a FastCGI application to service several requests at the same time, it must be able to create its own copies.  In this case, simultaneously received requests will be processed in parallel by several instances of the application. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      How to make copies? <br><a name="habracut"></a><br>  In fact, making copies of the process is not a tricky business.  Managing a host of created copies is the task.  We will transform our demon into agent Smith using the <a href="">FCGI :: ProcManager module</a> . <br><br>  The FCGI :: ProcManager module performs three main tasks: <br><br>  1) Creates working copies of the daemon - handlers or workers (or servers, in the terminology of the module itself) <br>  2) Controls the status of handlers in the process. <br>  3) Controls the behavior of handlers in the case of external intervention. <br><br>  In addition to the handler processes, FCGI :: ProcManager launches another process manager.  The process manager does not serve client requests; its task is to manage handlers. <br><br>  Before embedding parallelization, I want to draw your attention to what point.  In the previous article it was said that we would need to divide the process of demonization into two parts; otherwise, we may have an unpleasant surprise.  Now I will explain what the salt is. <br><br>  Consider a section of code from the previous article (in abbreviated form): <br><br><pre> # Demonization {
+     ... here I have cut ...
+
+     POSIX :: setuid (65534) or die "Can't set uid: $!";
+
+     reopen_std ();
+ #}
+
+ my $ socket = FCGI :: OpenSocket (": 9000", 5);
+
+ my $ request = FCGI :: Request (\ * STDIN, \ * STDOUT, \ * STDERR, \% ENV, $ socket);
+
+ while ($ request-&gt; Accept ()&gt; = 0) {
+</pre><br>  The reopen_std command breaks the connection between the standard descriptors and the console.  This means, in particular, that all error messages that may occur after executing this command (for example, in the OpenSocket function) will be sent to nowhere and the application will simply die in silence.  This will be the most unpleasant surprise of which I spoke - it seems that the application has started up normally, but it does not suddenly appear in the list of processes. <br><br>  The situation will get worse after paralleling is done.  The handler that caused the error will be killed, but in its place the manager will immediately launch another one.  There will again be an error in him, he will be killed again and so on in a circle.  Outwardly, all this will look quite harmless - the daemon started, did not output any errors, the list of processes clearly shows the presence of a specified number of handlers.  However, the daemon is not responding to requests and, even worse, after a while you suddenly notice that the system has become mercilessly slowed down, the processor is 100% busy and the load average is inexorably increasing. <br><br>  The system is a surprise!  - will be busy scheduling continuously and at a frantic speed of dying and newly launched processes.  It will take a lot of care to notice that the pids of the handlers are constantly changing, figure out what this means and take action. <br><br>  To avoid such a surprise, the call to the reopen_std function should be separated from the rest of the code from the demonization block.  You must place a call to this function immediately before the request processing cycle. <br><br>  Take all the same section of code and make changes: <br><br><pre> # Demonization {
+     ... here I have cut ...
+
+     POSIX :: setuid (65534) or die "Can't set uid: $!";
+ #}
+
+ my $ socket = FCGI :: OpenSocket (": 9000", 5);
+
+ my $ request = FCGI :: Request (\ * STDIN, \ * STDOUT, \ * STDERR, \% ENV, $ socket);
+
+ # Demonization {
+     reopen_std ();
+ #}
+
+ while ($ request-&gt; Accept ()&gt; = 0) {
+</pre><br>  As you can see, at the same time, the OpenSocket and Request commands will turn out to be “inside” the demonization process.  In other words, the demonization process will be divided into two parts, which would be impossible if we used the finished module for demonization. <br><br>  Now, any error that occurred before the reopen_std command was issued will be displayed on the console.  Accordingly, we can immediately see that something goes wrong. <br><br>  Well, now let's take the daemon code from the previous article and embed paralleling in it: <br><br><pre> #! / usr / bin / perl
+
+ # To heighten the order
+ use strict;
+ use warnings;
+
+ # This module implements the FastCGI protocol
+ use FCGI;
+
+ # This module is for talking with concepts on the operating system :)
+ use POSIX;
+
+ # Parallelization {
+     # This module provides parallel query processing.
+     use FCGI :: ProcManager qw (pm_manage pm_pre_dispatch pm_post_dispatch);
+ #}
+
+ # Fork
+ # getting rid of the parent
+ fork_proc () &amp;&amp; exit 0;
+
+ # Start a new session
+ # our demon will be the ancestor of the new session
+ POSIX :: setsid () or die "Can't set sid: $!";
+
+ # Go to root directory
+ # so as not to interfere with unmounting a file system
+ chdir '/' or die "Can't chdir: $!";
+
+ # Change user to nobody
+ # we are paranoid, huh?
+ POSIX :: setuid (65534) or die "Can't set uid: $!";
+
+ # Open the socket
+ # our demon will listen to port 9000
+ # query queue length - 5 pieces
+ my $ socket = FCGI :: OpenSocket (": 9000", 5);
+
+ # Getting to listen
+ # daemon will intercept standard handles
+ my $ request = FCGI :: Request (\ * STDIN, \ * STDOUT, \ * STDERR, \% ENV, $ socket);
+
+ # Parallelization
+     # Run handlers
+     # the specified number of handlers will be launched (in this case 2)
+     pm_manage (n_processes =&gt; 2);
+ #}
+
+ # Specificity {
+     # There should be a code specific to each specific processor
+     # for example, opening a connection to the base
+ #}
+
+ # Reopen standard handles on / dev / null
+ # no longer talk to user
+ reopen_std ();
+
+ my $ count = 1;
+
+ # Endless cycle
+ # for each accepted request, one cycle is performed.
+ while ($ request-&gt; Accept ()&gt; = 0) {
+     # Parallelization
+         # Managing handlers
+         # reacts to external interference
+         pm_pre_dispatch ();
+     #}
+   
+     # Inside the loop, all the required actions are performed
+     print "Content-Type: text / plain \ r \ n \ r \ n";
+     print "$$:". $ count ++;
+
+     # Parallelization
+         # Managing handlers
+         # reacts to external interference
+         pm_post_dispatch ();
+     #}
+ };
+
+ # Fork
+ sub fork_proc {
+     my $ pid;
+   
+     FORK: {
+         if (defined ($ pid = fork)) {
+             return $ pid;
+         }
+         elsif ($! = ~ / No more process /) {
+             sleep 5;
+             redo FORK;
+         }
+         else {
+             die "Can't fork: $!";
+         };
+     };
+ };
+
+ # Reopen standard handles on / dev / null
+ sub reopen_std {   
+     open (STDIN, "+&gt; / dev / null") or die "Can't open STDIN: $!";
+     open (STDOUT, "+&gt; &amp; STDIN") or die "Can't open STDOUT: $!";
+     open (STDERR, "+&gt; &amp; STDIN") or die "Can't open STDERR: $!";
+ };
+</pre><br>  What are some of the characteristics? <br><br>  First of all, pay attention to the location of the pm_manage command. <br><br>  On the one hand, commands common to all FastCGI applications (such as creating a socket and starting a wiretap) must be executed BEFORE running handlers.  You cannot start handlers, and then it will bind on one socket by several processes, this will lead to an error. <br><br>  On the other hand, commands specific to each specific handler (such as opening a connection to the database) should be placed AFTER the handlers are started.  You can not create a connection to the database, and then share it by process, this will lead to unnecessary problems. <br><br>  Well and, once again I remind you, the reopen_std command must be located after all the preparatory commands, immediately before the start of the cycle. <br><br>  The loop should begin and end with the pm_pre_dispatch and pm_post_dispatch commands, respectively.  These two commands control the behavior of handlers in the event of external intervention.  External intervention means receiving a signal by the FastCGI application, for example, from the <a href="http://www.freebsd.org/cgi/man.cgi%3Fquery%3Dkill%26sektion%3D1">kill</a> command.  Without them, handlers will not respond to signals in the right way. <br><br>  Run the demon.  When started, the daemon will output the following to the console: <br><br>  <b># ./test.pl</b> <br>  FastCGI: manager (pid 1858): initialized <br>  FastCGI: manager (pid 1858): server (pid 1859) started <br>  FastCGI: server (pid 1859): initialized <br>  FastCGI: manager (pid 1858): server (pid 1860) started <br>  FastCGI: server (pid 1860): initialized <br><br>  Here we see messages that the process manager (pid 1858) and two handlers (pid'y 1859 and 1860) were launched. <br><br>  Let's see the list of processes: <br><br>  <b># ps -aux |</b>  <b>grep perl</b> <br>  nobody 1858 0.0 0.2 5852 3816 ??  Is 21:09 0: 00,00 perl-fcgi-pm (perl5.8.8) <br>  nobody 1859 0.0 0.2 5852 3848 ??  I 21:09 0: 00,00 perl-fcgi (perl5.8.8) <br>  nobody 1860 0.0 0.2 5852 3848 ??  I 21:09 0: 00,00 perl-fcgi (perl5.8.8) <br><br>  Here we see that the process manager differs from handlers with the simple suffix "pm". <br><br>  To control a FastCGI application, signals must be sent to a process manager, not handlers.  The process manager resolves two signals, HUP and TERM.  He does it like this: <br><br>  When a HUP signal is received, the process manager sends a TERM signal to all handlers.  Handlers die, process manager launches new ones.  Thus, the solution of problems with hung handlers. <br><br>  When a TERM signal is received, the process manager sends a TERM signal to all handlers, waits for them to die, then dies itself.  If the handlers do not wish to die voluntarily, the process manager sends them a KILL signal, from which they can no longer get out. <br><br>  An interesting point: in both cases, the handlers do not die immediately, allowing the processed requests to be processed to the end.  Having received the TERM signal, the handler completes the useful work, gives the client an answer, and only then dies. <br><br>  This behavior can be changed by adding another parameter to the Request function call - FCGI :: FAIL_ACCEPT_ON_INTR (this is a constant exported by the FCGI module): <br><br>  my $ request = FCGI :: Request (\ * STDIN, \ * STDOUT, \ * STDERR, \% ENV, $ socket, FCGI :: FAIL_ACCEPT_ON_INTR); <br><br>  After adding this parameter, handlers will die immediately as soon as the signal was received.  This parameter is convenient to use at the debugging stage, in order not to wait until all the handlers finish their work. <br><br>  That's where the Perl FastCGI application creation trilogy is over :) <br><br>  ( <a href="http://m-ivanov.livejournal.com/4957.html">original article</a> ) </div><p>Source: <a href="https://habr.com/ru/post/53540/">https://habr.com/ru/post/53540/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../53533/index.html">Bill Gates banned iPhones and iPods at home</a></li>
+<li><a href="../53534/index.html">VBscript to help 1C programmer</a></li>
+<li><a href="../53535/index.html">Google Calendar is now offline!</a></li>
+<li><a href="../53536/index.html">Martin Fowler - GUI Architectures. Part 2</a></li>
+<li><a href="../53538/index.html">Microsoft will embed advertising in the next version of Office</a></li>
+<li><a href="../53542/index.html">Squid for the smallest</a></li>
+<li><a href="../53543/index.html">ESET reports Trojan programs that exploit Excel vulnerability.</a></li>
+<li><a href="../53545/index.html">Seagate Barracuda 7200.11 continuation of the topic</a></li>
+<li><a href="../53547/index.html">Installing and configuring SVN, Apache, Trac for Windows. Part 1 - SVN</a></li>
+<li><a href="../53549/index.html">Working with mobile phone camera in Python</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

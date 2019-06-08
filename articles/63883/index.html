@@ -1,0 +1,396 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Nested Sets + MySQL TRIGGER</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Task 
+ The task is the same as in the previous article , only applicable to MySQL. 
+
+ Rake 
+ Good news guys! MySQL has no problem with recursive trigg...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Nested Sets + MySQL TRIGGER</h1><div class="post__text post__text-html js-mediator-article"><h4>  Task </h4><br>  The task is the same as in the previous <a href="http://phoinixrw.habrahabr.ru/blog/63416/">article</a> , only applicable to MySQL. <br><br><h4>  Rake </h4><br>  Good news guys!  <i>MySQL has</i> no problem with recursive triggers!  <i>MySQL</i> developers just stupidly lock a table being changed even at the trigger level, here are the radishes.  But, in fact, we can only stop the outage. <br>  There is a small loophole, with ... pooled tables.  Although I did not find confirmation in the documentation that this was so intentionally intended, there was no denial either.  True, there is a possibility that this loophole may be covered, although I do not see the point. <br>  Alas, the trigger mechanism in <i>MySQL is</i> new and rather raw, which imposes some restrictions on its use, but still it is enough to solve our problem. <br><a name="habracut"></a>  So, the source table: <br>  SQL code (1) <pre> CREATE TABLE `ns_tree` (
+     `id` int (11) NOT NULL auto_increment,
+     `left_key` int (11) NOT NULL default '0',
+     `right_key` int (11) NOT NULL default '0',
+     `level` int (11) NOT NULL default '0',
+     `parent_id` int (11) NOT NULL default '0',
+     `tree` int (11) NOT NULL default '1',
+     `field1` text,
+     PRIMARY KEY (`id`)
+ ) ENGINE = MyISAM;
+    </pre><br>  Based on it, we are doing exactly the same table, with exactly the same set of fields: <br>  SQL code (2) <pre> CREATE TABLE `_ns_tree` (
+     `id` int (11) NOT NULL auto_increment,
+     `left_key` int (11) NOT NULL default '0',
+     `right_key` int (11) NOT NULL default '0',
+     `level` int (11) NOT NULL default '0',
+     `parent_id` int (11) NOT NULL default '0',
+     `tree` int (11) NOT NULL default '1',
+     `field1` text,
+     PRIMARY KEY (`id`)
+ ) ENGINE = MERGE INSERT_METHOD = LAST UNION = (`ns_tree`);
+    </pre><br>  The key word - <i>MERGE</i> in essence, we create a view of our table, with which we can work as with a table.  In general, the MERGE mechanism is also slightly damp.  The structure of the merged table must be exactly the same as the original. <br>  <b>IMPORTANT!!!</b>  <b>When changing the structure of the source table, the connection between the tables is lost, but between already connected rows it is NO!</b>  <b>Be careful.</b>  <b>When changing the structure of the source table, the same change is necessarily applied to the merged one!</b> <br>  Also, the source table should be MyISAM, which is understandable, in this case transactions are not applicable due to the fact that the tables cannot lock each other, and the data in them are the same.  However, this is not terrible for us, since the source table will be locked within the trigger, and we will change the data of the merged table from triggers, so there can be no intersection of queries. <br>  I also wanted to draw attention to: I strongly recommend not using root nodes within the same tree (which I mentioned in the previous article), since the table is completely blocked, and too long a queue can form. <br><br><h4>  Create a record </h4><br>  <i>The MySQL</i> dialect of triggers differs somewhat from the <i>PostgreSQL</i> dialect: <br><ul><li>  It is not necessary to declare variables at the beginning of the procedure; </li><li>  It is impossible to interrupt the execution of a trigger, it must work out completely; </li><li>  As mentioned above, we are not afraid of recursion, so we don’t need extra checks and additional fields; </li></ul>  Therefore, the logic changes somewhat: <br><ul><li>  Variables appear along the code; </li><li>  Instead of returning from a trigger, we wrap the code in terms; </li><li>  All changes concerning the structure of the tree are applied to the auxiliary joint table; </li></ul>  SQL code (3) <pre> CREATE DEFINER = 'user' @ 'localhost' TRIGGER `ns_tree_before_ins_tr` BEFORE INSERT ON` ns_tree`
+     FOR EACH ROW
+ BEGIN
+     SET @left_key: = 0;
+     SET @level: = 0;
+ - If we indicated a parent:
+     IF NEW.parent_id IS NOT NULL AND NEW.parent_id&gt; 0 THEN
+         SELECT right_key, `level` + 1 INTO @left_key, @level
+             FROM ns_tree
+             WHERE id = NEW.parent_id AND tree = NEW.tree;
+     END IF;
+ - If we specified the left key:
+     IF NEW.left_key IS NOT NULL AND NEW.left_key&gt; 0 AND 
+         (@left_key IS NULL OR @left_key = 0) THEN
+         SELECT id, left_key, right_key, `level`, parent_id 
+             INTO @tmp_id, @tmp_left_key, @tmp_right_key, @tmp_level, @tmp_parent_id
+             FROM ns_tree
+             WHERE tree = NEW.tree AND (left_key = NEW.left_key OR right_key = NEW.left_key);
+         IF @tmp_left_key IS NOT NULL AND @tmp_left_key&gt; 0 AND NEW.left_key = @tmp_left_key THEN
+             SET NEW.parent_id: = @tmp_parent_id;
+             SET @left_key: = NEW.left_key;
+             SET @level: = @tmp_level;
+         ELSEIF @tmp_left_key IS NOT NULL AND @tmp_left_key&gt; 0 AND NEW.left_key = @tmp_right_key THEN
+             SET NEW.parent_id: = @tmp_id;
+             SET @left_key: = NEW.left_key;
+             SET @level: = @tmp_level + 1;
+         END IF;
+     END IF;
+ - If the parent or left key is not specified, or we did not find anything
+     IF @left_key IS NULL OR @left_key = 0 THEN
+         SELECT MAX (right_key) + 1 INTO @left_key
+             FROM ns_tree
+             WHERE tree = NEW.tree;
+         IF @left_key IS NULL OR @left_key = 0 THEN
+             SET @left_key: = 1;
+         END IF;
+         SET @level: = 0;
+         SET NEW.parent_id: = 0; 
+     END IF;
+ - Set new key values
+     SET NEW.left_key: = @left_key;
+     SET NEW.right_key: = @left_key + 1;
+     SET NEW.`level`: = @level;
+ - We form a gap in the tree
+     UPDATE _ns_tree
+         SET left_key = CASE WHEN left_key&gt; = @left_key 
+               THEN left_key + 2 
+               ELSE left_key + 0 
+             END,
+             right_key = right_key + 2
+         WHERE tree = NEW.tree AND right_key&gt; = @left_key;
+ END;
+    </pre>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  Change record </h4><br>  The principle is the same with the use of the dialect. <br>  SQL code (4) <pre> CREATE DEFINER = 'user' @ 'localhost' TRIGGER `ns_tree_before_upd_tr` BEFORE UPDATE ON` ns_tree`
+     FOR EACH ROW
+ BEGIN
+ - Forbid to change fields, or send nasty things
+     SET NEW.tree: = OLD.tree;
+     SET NEW.right_key: = OLD.right_key;
+     SET NEWlevel`: = OLD .level`;
+     SET @return_flag: = 0;
+     IF NEW.parent_id IS NULL THEN SET NEW.parent_id: = 0;  END IF;
+ - Check whether there are changes associated with the tree structure
+     IF NEW.parent_id &lt;&gt; OLD.parent_id OR NEW.left_key &lt;&gt; OLD.left_key THEN
+ - We are still rebuilding the tree, well, let's start:
+         SET @left_key: = 0;
+         SET @level: = 0;
+         SET @skew_tree: = OLD.right_key - OLD.left_key + 1;
+ - Determine where we transfer it:
+ - If parent_id is changed:
+         IF NEW.parent_id &lt;&gt; OLD.parent_id THEN
+ - If in submission to another evil:
+             IF NEW.parent_id&gt; 0 THEN
+                 SELECT right_key, level + 1
+                     INTO @left_key, @level
+                     FROM ns_tree
+                     WHERE id = NEW.parent_id AND tree = NEW.tree;
+ - Otherwise, we transfer to the root of the tree:
+             ELSE
+                 SELECT MAX (right_key) + 1 
+                     INTO @left_key
+                     FROM ns_tree
+                     WHERE tree = NEW.tree;
+                 SET @level: = 0;
+             END IF;
+ - If suddenly the parent is in the range of the node being moved, check:
+             IF @left_key IS NOT NULL AND 
+                @left_key&gt; 0 AND
+                @left_key&gt; OLD.left_key AND
+                @left_key &lt;= OLD.right_key THEN
+                    SET NEW.parent_id: = OLD.parent_id;
+                    SET NEW.left_key: = OLD.left_key;
+                    SET @return_flag: = 1;
+             END IF;
+         END IF;
+ - If not parent_id, then left_key is changed, or if parent_id change did not give anything
+         IF @left_key IS NULL OR @left_key = 0 THEN
+             SELECT id, left_key, right_key, `level`, parent_id 
+                 INTO @tmp_id, @tmp_left_key, @tmp_right_key, @tmp_level, @tmp_parent_id
+                 FROM ns_tree
+                 WHERE tree = NEW.tree AND (right_key = NEW.left_key OR right_key = NEW.left_key - 1)
+                 LIMIT 1;
+             IF @tmp_left_key IS NOT NULL AND 
+                @tmp_left_key&gt; 0 AND 
+                NEW.left_key - 1 = @tmp_right_key THEN
+                 SET NEW.parent_id: = @tmp_parent_id;
+                 SET @left_key: = NEW.left_key;
+                 SET @level: = @tmp_level;
+             ELSEIF @tmp_left_key IS NOT NULL AND 
+                    @tmp_left_key&gt; 0 AND 
+                    NEW.left_key = @tmp_right_key THEN
+                 SET NEW.parent_id: = @tmp_id;
+                 SET @left_key: = NEW.left_key;
+                 SET @level: = @tmp_level + 1;
+             ELSEIF NEW.left_key = 1 THEN
+                 SET NEW.parent_id: = 0;
+                 SET @left_key: = NEW.left_key;
+                 SET @level: = 0;
+             ELSE
+                 SET NEW.parent_id: = OLD.parent_id;
+                 SET NEW.left_key: = OLD.left_key;
+                 SET @return_flag = 1;
+             END IF;
+         END IF;
+ - Now we know where we move the tree.
+ - Check whether it is worth doing
+         IF @return_flag IS NULL OR @return_flag = 0 THEN
+             SET @skew_level: = @level - OLD .level`;
+             IF @left_key&gt; OLD.left_key THEN
+ - Move up the tree
+                 SET @skew_edit: = @left_key - OLD.left_key - @skew_tree;
+                 UPDATE _ns_tree
+                     SET left_key = CASE WHEN right_key &lt;= OLD.right_key
+                                          THEN left_key + @skew_edit
+                                          ELSE CASE WHEN left_key&gt; OLD.right_key
+                                                    THEN left_key - @skew_tree
+                                                    ELSE left_key
+                                               END
+                                    END,
+                         `level` = CASE WHEN right_key &lt;= OLD.right_key 
+                                         THEN `level` + @skew_level
+                                         ELSE `level`
+                                    END,
+                         right_key = CASE WHEN right_key &lt;= OLD.right_key 
+                                          THEN right_key + @skew_edit
+                                          ELSE CASE WHEN right_key &lt;@left_key
+                                                    THEN right_key - @skew_tree
+                                                    ELSE right_key
+                                               END
+                                     END
+                     WHERE tree = OLD.tree AND
+                           right_key&gt; OLD.left_key AND
+                           left_key &lt;@left_key AND
+                           id &lt;&gt; OLD.id;
+                 SET @left_key: = @left_key - @skew_tree;
+             ELSE
+ - Move down the tree:
+                 SET @skew_edit: = @left_key - OLD.left_key;
+                 UPDATE _ns_tree 
+                     SET
+                         right_key = CASE WHEN left_key&gt; = OLD.left_key
+                                          THEN right_key + @skew_edit
+                                          ELSE CASE WHEN right_key &lt;OLD.left_key
+                                                    THEN right_key + @skew_tree
+                                                    ELSE right_key
+                                               END
+                                     END,
+                         `level` = CASE WHEN left_key&gt; = OLD.left_key
+                                          THEN `level` + @skew_level
+                                          ELSE `level`
+                                     END,
+                         left_key = CASE WHEN left_key&gt; = OLD.left_key
+                                          THEN left_key + @skew_edit
+                                          ELSE CASE WHEN left_key&gt; = @left_key
+                                                    THEN left_key + @skew_tree
+                                                    ELSE left_key
+                                               END
+                                     END
+                     WHERE tree = OLD.tree AND
+                           right_key&gt; = @left_key AND
+                           left_key &lt;OLD.right_key AND
+                           id &lt;&gt; OLD.id;
+             END IF;
+ - Tree rebuilt, only our current node remains
+             SET NEW.left_key: = @left_key;
+             SET NEW.`level`: = @level;
+             SET NEW.right_key: = @left_key + @skew_tree - 1;
+         END IF;
+     END IF;
+ END;
+    </pre><br>  ATTENTION!!!  In MySQL, the order of enumeration of fields in the <i>UPDATE</i> query is important, since the fields that are changed during the query in the query itself change the value to a new one, so if we continue using these fields in the conditions, the result will be inadequate. <br><br><h4>  Delete record </h4><br>  Due to the lack of problems with recursion of triggers, deletion in general becomes a trivial task. <br>  Trigger for option: “delete entire branch”: <br>  SQL code (5) <pre> CREATE DEFINER = 'user' @ 'localhost' TRIGGER `ns_tree_before_del_tr` AFTER DELETE ON` ns_tree`
+     FOR EACH ROW
+ BEGIN
+ - Remove child nodes:
+     DELETE FROM _ns_tree
+         WHERE 
+             tree = OLD.tree AND
+             left_key&gt; OLD.left_key AND
+             right_key &lt;OLD.right_key;
+ - Remove the gap in the keys:
+     SET @skew_tree: = OLD.right_key - OLD.left_key + 1;
+     UPDATE _ns_tree
+         SET left_key = CASE WHEN left_key&gt; OLD.left_key
+                             THEN left_key - @skew_tree
+                             ELSE left_key
+                        END,
+             right_key = right_key - @skew_tree
+         WHERE right_key&gt; OLD.right_key AND
+             tree = OLD.tree AND
+             id &lt;&gt; OLD.id;
+ END;
+    </pre><br>  Trigger for the option: “delete a node with the displacement of child nodes on the level in top”: <br>  SQL code (6) <pre> CREATE DEFINER = 'user' @ 'localhost' TRIGGER `ns_tree_before_del_tr` AFTER DELETE ON` ns_tree`
+     FOR EACH ROW
+ BEGIN
+ - Remove the gap in the keys:
+    UPDATE _ns_tree
+         SET left_key = CASE WHEN left_key &lt;OLD.left_key
+                             THEN left_key
+                             ELSE CASE WHEN right_key &lt;OLD.right_key
+                                       THEN left_key - 1 
+                                       ELSE left_key - 2
+                                  END
+                        END,
+             parent_id = CASE WHEN right_key &lt;OLD.right_key AND `level` = OLD.level + 1
+                            THEN OLD.parent_id
+                            ELSE parent_id
+                         END,
+             `level` = CASE WHEN right_key &lt;OLD.right_key
+                            THEN `level` - 1 
+                            ELSE `level`
+                       END,
+             right_key = CASE WHEN right_key &lt;OLD.right_key
+                              THEN right_key - 1 
+                              ELSE right_key - 2
+                         END
+         WHERE (right_key&gt; OLD.right_key OR
+             (left_key&gt; OLD.left_key AND right_key &lt;OLD.right_key)) AND
+             tree = OLD.tree;
+ END;
+    </pre><br>  I want to draw attention to the fact that changes affecting the tree structure should be made not in batches, but sequentially for each node, so that its integrity is preserved. <br>  Actually everything.  It remains only to put down the indices (again, I am lazy to write SQL commands here, so I’ll just voice them): <ul><li>  Composite is not unique to fields ( <i>left_key, right_key, level, tree</i> ); </li><li>  Not unique on the field ( <i>parent_id</i> ); </li></ul><br>  Enjoy ;-) <br>  <i>Sergey Tomulevich aka Phoinix (July 8, 2009)</i> </div><p>Source: <a href="https://habr.com/ru/post/63883/">https://habr.com/ru/post/63883/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../63872/index.html">Usaw chainsaw I.Saw</a></li>
+<li><a href="../63875/index.html">WhenWill be announcements of future events</a></li>
+<li><a href="../63878/index.html">Jobs's Health and Apple Quotes</a></li>
+<li><a href="../63879/index.html">USB flash drive</a></li>
+<li><a href="../63880/index.html">Music Search (remix 2.0)</a></li>
+<li><a href="../63885/index.html">The word "twitter" entered in the dictionary</a></li>
+<li><a href="../63888/index.html">Released #! CrunchBang Linux 04/09/01</a></li>
+<li><a href="../63890/index.html">Problems with ext4 in ubuntu jaunty</a></li>
+<li><a href="../63891/index.html">Interesting Spam</a></li>
+<li><a href="../63893/index.html">FBI: Russian programmer has stolen stock secrets</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

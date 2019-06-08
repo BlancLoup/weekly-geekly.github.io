@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Linux VPN server - addressing MPPE and non-encryption clients</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Historically, a bunch of pptpd + pppd is quite a popular solution for distributing the Internet on local networks, largely due to the presence of the ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Linux VPN server - addressing MPPE and non-encryption clients</h1><div class="post__text post__text-html js-mediator-article"> Historically, a bunch of pptpd + pppd is quite a popular solution for distributing the Internet on local networks, largely due to the presence of the pptp client in windows starting at 98 out of the box.  Moreover, this client supports the <a href="http://www.ietf.org/rfc/rfc3078.txt">MPPE</a> encryption protocol which, from windows 2000 on, is enabled for new connections by default. <br>  pppd happily meets us, also supporting this protocol, but does it in a very peculiar way: <br><a name="habracut"></a><br><br>  quote from README.MPPE: <br><br>  <i>MPPE * must * be negotiated (CCP is unidirectional) or it will be disconnected.</i>  <i>I think this is reasonable, if you want encryption, you want encryption.</i>  <i>I am not ready</i> 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      In practice, this means that by including support for mppe (with the options + mppe or require-mppe) you will not be able to serve connections from clients that do not support this protocol.  The pppd developers consider this to be quite the correct behavior, stating that “people do not need optional encryption” <br><br>  But what about those who, in addition to the Windows clients, also have quite a few connections of cheap hardware routers that simply do not support MPPE?  Disable encryption for everyone?  Or convince customers that they need a router 5 times more expensive? <br><br>  Before hitting such extremes, it was decided to fix this "feature" and after a couple of hours of thoughtful examination of the pppd sources, a patch was born: <br>  (tested on ppp-2.4.4rel-10.1 from debian lenny) <br><br> <code>diff -ruNp ppp-2.4.4.orig/pppd/auth.c ppp-2.4.4/pppd/auth.c <br> --- ppp-2.4.4.orig/pppd/auth.c 2006-06-18 14:26:00.000000000 +0300 <br> +++ ppp-2.4.4/pppd/auth.c 2008-02-13 18:24:08.000000000 +0200 <br> @@ -875,7 +875,7 @@ start_networks(unit) <br> */ <br> ecp_required = ecp_gotoptions[unit].required; <br> mppe_required = ccp_gotoptions[unit].mppe; <br> - if (!ecp_required &amp;&amp; !mppe_required) <br> + if (!ecp_required &amp;&amp; (!mppe_required || allow_mppe_fallback)) <br> continue_networks(unit); <br> } <br> diff -ruNp ppp-2.4.4.orig/pppd/ccp.c ppp-2.4.4/pppd/ccp.c <br> --- ppp-2.4.4.orig/pppd/ccp.c 2005-07-09 03:23:05.000000000 +0300 <br> +++ ppp-2.4.4/pppd/ccp.c 2008-02-13 18:31:16.000000000 +0200 <br> @@ -156,6 +156,11 @@ static option_t ccp_option_list[] = { <br> "allow MPPE stateful mode", OPT_PRIO }, <br> { "nomppe-stateful", o_bool, &amp;refuse_mppe_stateful, <br> "disallow MPPE stateful mode", OPT_PRIO | 1 }, <br> + <br> + /* allow falling back to unencrypted connection mode */ <br> + { "mppe-optional", o_bool, &amp;allow_mppe_fallback, <br> + "allow falling back to unencryped connection mode", OPT_PRIO | 1 }, <br> + <br> #endif /* MPPE */ <br> { NULL } <br> @@ -516,9 +521,14 @@ ccp_protrej(unit) <br> #ifdef MPPE <br> if (ccp_gotoptions[unit].mppe) { <br> - error("MPPE required but peer negotiation failed"); <br> - lcp_close(unit, "MPPE required but peer negotiation failed"); <br> - } <br> + if(!allow_mppe_fallback) { <br> + error("MPPE required but peer negotiation failed"); <br> + lcp_close(unit, "MPPE required but peer negotiation failed"); <br> + } else { <br> + error("MPPE required but peer negotiation failed."); <br> + error("Falling back and disabling MPPE"); <br> + } <br> + } <br> #endif <br> } <br> @@ -1004,11 +1014,17 @@ ccp_rejci(f, p, len) <br> #ifdef MPPE <br> if (go-&gt;mppe &amp;&amp; len &gt;= CILEN_MPPE <br> &amp;&amp; p[0] == CI_MPPE &amp;&amp; p[1] == CILEN_MPPE) { <br> - error("MPPE required but peer refused"); <br> - lcp_close(f-&gt;unit, "MPPE required but peer refused"); <br> - p += CILEN_MPPE; <br> - len -= CILEN_MPPE; <br> + if(!allow_mppe_fallback) { <br> + error("MPPE required but peer refused. Closing LCP"); <br> + lcp_close(f-&gt;unit, "MPPE required but peer refused"); <br> + } else { <br> + try.mppe = 0; <br> + error("MPPE required but peer refused."); <br> + error("Falling back and disabling MPPE"); <br> + } <br> } <br> + p += CILEN_MPPE; <br> + len -= CILEN_MPPE; <br> #endif <br> if (go-&gt;deflate_correct &amp;&amp; len &gt;= CILEN_DEFLATE <br> &amp;&amp; p[0] == CI_DEFLATE &amp;&amp; p[1] == CILEN_DEFLATE) { <br> diff -ruNp ppp-2.4.4.orig/pppd/ccp.h ppp-2.4.4/pppd/ccp.h <br> --- ppp-2.4.4.orig/pppd/ccp.h 2004-11-04 12:02:26.000000000 +0200 <br> +++ ppp-2.4.4/pppd/ccp.h 2008-02-13 19:03:43.000000000 +0200 <br> @@ -43,6 +43,8 @@ typedef struct ccp_options { <br> short method; /* code for chosen compression method */ <br> } ccp_options; <br> +bool allow_mppe_fallback; <br> + <br> extern fsm ccp_fsm[]; <br> extern ccp_options ccp_wantoptions[]; <br> extern ccp_options ccp_gotoptions[]; <br> @@ -50,3 +52,5 @@ extern ccp_options ccp_allowoptions[]; <br> extern ccp_options ccp_hisoptions[]; <br> extern struct protent ccp_protent; <br> + <br> + <br> diff -ruNp ppp-2.4.4.orig/pppd/pppd.8 ppp-2.4.4/pppd/pppd.8 <br> --- ppp-2.4.4.orig/pppd/pppd.8 2006-06-16 03:01:23.000000000 +0300 <br> +++ ppp-2.4.4/pppd/pppd.8 2008-02-13 18:41:31.000000000 +0200 <br> @@ -770,6 +770,9 @@ available under Linux. <br> .B nomppe <br> Disables MPPE (Microsoft Point to Point Encryption). This is the default. <br> .TP <br> +.B mppe-optional <br> +Makes MPPE optional, allowing both MPPE and non-MPPE clients <br> +.TP <br> .B nomppe\-40 <br> Disable 40-bit encryption with MPPE. <br> .TP <br></code> <br><br>  After overlaying and rebuilding - in the pppd config we write <br><br>  require-mppe <br>  mppe-optional <br><br>  and observe the normal operation of vpn with and without client-side encryption enabled. <br><br>  already compiled packages for debian lenny (maybe they are suitable for ubuntu) I can upload it on request </div><p>Source: <a href="https://habr.com/ru/post/56496/">https://habr.com/ru/post/56496/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../56485/index.html">Should Twitter sell Google or remain an independent company?</a></li>
+<li><a href="../56489/index.html">Effective management of windows in KWin, or manage desktops</a></li>
+<li><a href="../56491/index.html">7 sites that use external toolbars</a></li>
+<li><a href="../56494/index.html">Free certification exam for undergraduate and graduate students</a></li>
+<li><a href="../56495/index.html">Snowflake LLC - Part 2. Consider various aspects of registration and start working</a></li>
+<li><a href="../56497/index.html">Tuning nginx</a></li>
+<li><a href="../56499/index.html">DB_Pgsql_Type: transparent conversion of complex PostgreSQL types to PHP and back</a></li>
+<li><a href="../56505/index.html">We display nodes on Google Maps</a></li>
+<li><a href="../56506/index.html">Import news from one format in WordPress</a></li>
+<li><a href="../56508/index.html">Do I need a store that sells computers / laptops only with Ubuntu preinstalled?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
