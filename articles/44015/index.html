@@ -1,0 +1,224 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL. User data within the session</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, I had an interesting task of storing some data in a PostgreSQL database session (TTL = lifetime of a single connection to the database). The...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL. User data within the session</h1><div class="post__text post__text-html js-mediator-article">  Recently, I had an interesting task of storing some data in a PostgreSQL database session (TTL = lifetime of a single connection to the database).  The original question was: <br>  Is it possible instead of such a construction: <br><pre> some_procedure1 (user_id, param1, ..., paramN);
+ ...
+ some_procedureX (user_id, param1, ..., paramN);
+</pre><br>  use this: <br><pre> set_user (id);
+ some_procedure1 (param1, ..., paramN);
+ ....
+ some_procedureX (param1, ..., paramN);
+</pre><br>  those.  use a certain global variable within the session to store the value of the user ID that will be available to all procedures within the database. <br>  Rummaging in Google, asking around on the forum, I found not even one solution, but as many as 3!  What I share with you ... <a name="habracut"></a><br><br><h4>  First option.  Using a temporary table. </h4><br>  As the <a href="http://www.postgresql.org/docs/current/static/sql-createtable.html" title="documentation">documentation</a> says, I quote: <br><blockquote>  CREATE TEMPORARY TABLE command for each temporary table to be used. </blockquote><br>  for each session we need to re-create a temporary table.  Great, what we needed!  Let's try ... <br>  An example is taken from the forum <a href="http://www.sql.ru/forum/actualthread.aspx%3Ftid%3D579561" title="sql.ru">sql.ru</a> : <br><pre> CREATE OR REPLACE FUNCTION set_var (p_var_name varchar, p_var_value varchar) RETURNS void AS
+ $$
+ DECLARE
+   v_cnt integer;
+ BEGIN
+   SELECT Count (pc.relname) into v_cnt
+   FROM pg_catalog.pg_class pc, pg_namespace pn
+   WHERE pc.relname = 'session_var_tbl'
+     AND pc.relnamespace = pn.oid 
+     AND pn.oid = pg_my_temp_schema ();
+   IF v_cnt = 0 THEN
+     EXECUTE 'CREATE GLOBAL TEMPORARY TABLE session_var_tbl (var_name varchar (100) not null, var_value varchar (100)) &lt;br /&gt;
+ ON COMMIT preserve ROWS ';
+   END IF;
+   UPDATE session_var_tbl 
+   SET var_value = p_var_value
+   WHERE var_name = p_var_name;
+   IF NOT FOUND THEN
+     INSERT INTO session_var_tbl (var_name, var_value)
+     VALUES (p_var_name, p_var_value);
+   END IF;
+ END;
+ $$
+ LANGUAGE 'plpgsql';
+</pre><br><pre> CREATE OR REPLACE FUNCTION get_var (p_var_name varchar) RETURNS varchar AS
+ $$
+ DECLARE
+   v_cnt integer;
+   v_result varchar (100);
+ BEGIN
+   SELECT Count (pc.relname) 
+   INTO v_cnt
+   FROM pg_catalog.pg_class pc, pg_namespace pn
+   WHERE pc.relname = 'session_var_tbl' 
+     AND pc.relnamespace = pn.oid 
+     AND pn.oid = pg_my_temp_schema ();
+   IF v_cnt = 0 THEN
+     v_result: = null;
+   ELSE
+     SELECT var_value
+     INTO v_result
+     FROM session_var_tbl
+     WHERE var_name = p_var_name;
+     IF NOT FOUND THEN
+       v_result: = null;
+     END IF;
+   END IF;
+   RETURN v_result;
+ END;
+ $$
+ LANGUAGE 'plpgsql';
+</pre><br>  <strong>The advantage of</strong> this method is that there is no need for additional settings or modules, and the PL / PgSQL language is almost always there. <br>  <strong>The disadvantage of</strong> this method is the need for a decent amount of additional operations that perform the above procedures, including queries to system tables. <br><br><h4>  The second option.  Using the globaldata array. </h4><br>  As the documentation tells us again, we can use in such languages ​​PL / Perl, PL / Tcl, PL / Python a special array of data visible within the session. <br>  An example is taken from <a href="http://www.postgresql.org/docs/8.3/static/plperl-global.html" title="official documentation">official documentation</a> : <br><pre> CREATE OR REPLACE FUNCTION set_var (name text, val text) RETURNS text AS $$
+     if ($ _SHARED {$ _ [0]} = $ _ [1]) {
+         return 'ok';
+     } else {
+         return "cannot set shared variable $ _ [0] to $ _ [1]";
+     }
+ $$ LANGUAGE plperl;
+</pre><br><pre> CREATE OR REPLACE FUNCTION get_var (name text) RETURNS text AS $$
+     return $ _SHARED {$ _ [0]};
+ $$ LANGUAGE plperl;
+</pre><br>  <strong>The advantage of</strong> this method is the minimum number of operations and ease of use. <br>  <strong>The disadvantage</strong> is the need for an additional language module for PostgreSQL (postgresql-plperl).  It needs to be reinstalled independently, and on shared hosting, it is often impossible. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h4>  The third option.  Use Customized Options. </h4><br>  Several non-standard use of <a href="http://www.postgresql.org/docs/8.3/static/runtime-config-custom.html" title="additional parameters">additional parameters</a> in PostgreSQL.  The configuration variable custom_variable_classes was originally intended to create additional classes of configuration variables that PostgreSQL additional modules can use.  But in the course of the research it turned out that if you do not define variables in the class from postgresql.conf, then they “live” exactly the current session. <br>  To use this method, you need to register in postgresql.conf the appropriate setting: <br><pre> custom_variable_classes = 'usrvar'
+</pre><br>  Example: <br><pre> CREATE OR REPLACE FUNCTION set_var (p_var_name varchar, p_var_value varchar) RETURNS void AS
+ $ body $
+ BEGIN
+   PERFORM set_config ('usrvar.' || p_var_name, p_var_value, false);
+ END;
+ $ body $
+ LANGUAGE 'plpgsql';
+</pre><br><pre> CREATE OR REPLACE FUNCTION get_var (p_var_name varchar) RETURNS varchar AS
+ $ body $
+ DECLARE
+   v_var_value varchar;
+ BEGIN
+   SELECT INTO v_var_value current_setting ('usrvar.' || p_var_name);
+   RETURN v_var_value;
+ EXCEPTION
+ WHEN syntax_error_or_access_rule_violation THEN
+   v_var_value: = null;
+   RETURN v_var_value;
+ END;
+ $ body $
+ LANGUAGE 'plpgsql';
+</pre><br>  <strong>The advantage of</strong> this method is the use of PostgreSQL internal resources and the absence of the need to use additional languages ​​or tables. <br>  <strong>The disadvantage</strong> is the need to access the server configuration file. <br>  Well, that's probably all.  The choice of one of the three solutions depends entirely on the capabilities of your database installation.  For myself, I chose the 3rd solution. <br></div><p>Source: <a href="https://habr.com/ru/post/44015/">https://habr.com/ru/post/44015/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../44010/index.html">SaleStep.ru - anti-crisis startup</a></li>
+<li><a href="../44011/index.html">Unpleasant glitch Mozilla Firefox 3 c position: fixed</a></li>
+<li><a href="../44012/index.html">Creating a Custom Default User Profile in Windows XP</a></li>
+<li><a href="../44013/index.html">Usability: sawing state budgets is far away</a></li>
+<li><a href="../44014/index.html">Alternative browsers - the lot of marginals?</a></li>
+<li><a href="../44018/index.html">Freelance House Ithaca. We finish building.</a></li>
+<li><a href="../44019/index.html">The first step to the rubber woman</a></li>
+<li><a href="../44020/index.html">The structure of the technical task</a></li>
+<li><a href="../44023/index.html">Chip or bug?</a></li>
+<li><a href="../44024/index.html">Night Vision - EyeClops Night Vision</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

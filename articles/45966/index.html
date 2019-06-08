@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>MySQL file storage and distribution</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I think many people needed to store files associated with a record in a table. It can be a picture for the news, an avatar, a file uploaded by the use...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>MySQL file storage and distribution</h1><div class="post__text post__text-html js-mediator-article">  I think many people needed to store files associated with a record in a table.  It can be a picture for the news, an avatar, a file uploaded by the user - yes, whatever.  Usually, in this case, they arrive simply - the file is placed in the file system, and the link to it is written to the database record. <br>  But this classic campaign has many drawbacks: <br><ul><li>  files are not deleted when deleting the corresponding database record </li><li>  problems while trying to update a file </li><li>  synchronization violation between the database and the file system during a transaction rollback </li><li>  when backing up and restoring information in the database, out-of-sync with the file system may occur </li><li>  files are not subject to access restrictions imposed by the database </li></ul><br>  You can read more about the problems that arise when files are stored separately from the database in the <a href="http://www.scribd.com/doc/2670985/SQL-Antipatterns">SQL Antipatterns</a> presentation, section Phantom Files, page 60. By the way, the presentation author suggests a solution - to store files directly in the database, in the BLOB type field.  The truth is that there should be a remark that this must be a weighted decision in each specific case.  After all, with this method of storing files, the web server should, at each request, invoke a script that will extract the file from the database and give it to the user, which will inevitably adversely affect performance. <br>  To find a solution to this problem, a brainstorm was conducted and several solutions were invented: <a name="habracut"></a><br><ol><li>  Before deleting a record, do a SELECT with the same condition and get the names of the files to be deleted.  The problem is that if there are a lot of deleted files, this operation may take some time and for good time you need to block the table for reading and writing, and in many cases it is unacceptable. </li><li>  Before deleting, set the “to be deleted” label on deleted records, get all records with this label and delete files associated with these records, and finally delete all records with this label.  Queries working with this table should be refined so that they do not select records with the flag set.  Disadvantages - the need to edit multiple requests, moreover, in our project, records for deletion are selected by quite complex SELECTs that cannot be redone into one UPDATE. </li><li>  The first two methods try to solve the problem of “lost” files when deleting records in the database, which occurs when the “classic” method of storing files, but they do not solve the remaining problems of this approach, so we tried to come up with solutions that use the positive aspects of storing files directly in the database and get rid of the shortcomings inherent in this approach. </li><li>  Use <a href="http://ru.wikipedia.org/wiki/%25D0%25A2%25D1%2580%25D0%25B8%25D0%25B3%25D0%25B3%25D0%25B5%25D1%2580_(%25D0%25B1%25D0%25B0%25D0%25B7%25D1%258B_%25D0%25B4%25D0%25B0%25D0%25BD%25D0%25BD%25D1%258B%25D1%2585)">triggers</a> .  Unfortunately, MySQL does not have support for working with files in its language, such commands would have to be implemented independently, picking at the source code of MySQL.  Of the minuses - the files should be stored on the same host as the database, the need for refinement of MySQL, we did not find such ready-made solutions. </li><li>  Store files in the database, but send them directly to the web server, without PHP.  You can accomplish this by writing a module to a web server (nginx for example) that would allow you to give files directly from MySQL or by using the <a href="http://www.linux.com/feature/127055">MySQLfs</a> file system <a href="http://www.linux.com/feature/127055">driver</a> .  This approach solves all the problems listed above, but its disadvantage is the additional overhead of storing files in MySQL. </li><li>  A specialized storage engine for MySQL that stores records as files. </li></ol><br>  Let us dwell in more detail in the last paragraph.  After all, what the file system is is a specialized database that allows you to get a record — its contents — using the key “file name”.  That is, you can implement your own data storage engine for MySQL, in which each record will have three fields: <br><blockquote><code>CREATE TABLE `data_storage`.`files` ( <br> `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY , <br> `path` VARCHAR( 255 ) , <br> `data` BLOB <br> ) ENGINE = FILES <br></code> </blockquote><br>  You can insert data into such a table only in the `data` field, while they are simply saved to a file, the unique name is automatically generated (using the ʻid` field as a prefix) - for example, 764533, and the` path` field is automatically substituted The correct way in which MySQL put our data - for example, '/mnt/storage/mysqldata/76/45/33/764533_myfile.jpg'.  Thus, the data stored in such a table can be accessed as simple files, while MySQL will maintain data integrity.  Thus, this way of storing files is devoid of almost all the drawbacks of the classical approach (except for access restriction, but it can be done using a simple script and the <a href="http://blog.kovyrin.net/2006/11/01/nginx-x-accel-redirect-php-rails/lang/ru/">X-Accel-Redirect</a> nginx header) and at the same time does not reduce the performance when uploading files to clients. <br>  The problem is small - it was not possible to find a ready-made implementation of such a data storage engine for MySQL, although the idea is generally simple.  Perhaps one of the habroops will prompt a link to the ready implementation of such a storage engine, because the idea floats on the surface, and someone could have realized it for sure. <br><br>  Article written in collaboration with <a href="https://habrahabr.ru/users/viperet/" class="user_link">viperet</a> <br><br>  PS transferred to MySQL blog </div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/45966/">https://habr.com/ru/post/45966/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../45953/index.html">Nikon introduces new flagship: D3X</a></li>
+<li><a href="../45955/index.html">3g in the subway from MTS</a></li>
+<li><a href="../45960/index.html">"I do not minus" or the value of diversity</a></li>
+<li><a href="../45962/index.html">Markup. Transitional vs Strict</a></li>
+<li><a href="../45963/index.html">Software Engineering and Miyamotopoliya course</a></li>
+<li><a href="../45967/index.html">Problem when using OutputCache in CustomControl</a></li>
+<li><a href="../45968/index.html">widget do it yourself</a></li>
+<li><a href="../45975/index.html">The art of investing</a></li>
+<li><a href="../45976/index.html">Student startups will receive their award</a></li>
+<li><a href="../45977/index.html">Tuning buckets</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

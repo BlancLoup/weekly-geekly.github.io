@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Memcached: Statistics, Debugging and RPC</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A series of posts about “Web, caching and memcached” continues. Start here: 1 , 2 , 3 , 4 and 5 . 
+ In these posts we talked about memcached, its arch...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Memcached: Statistics, Debugging and RPC</h1><div class="post__text post__text-html js-mediator-article">  A series of posts about “Web, caching and memcached” continues.  Start here: <a href="http://habrahabr.ru/blogs/webdev/42607/">1</a> , <a href="http://habrahabr.ru/blogs/webdev/42972/">2</a> , <a href="http://habrahabr.ru/blogs/webdev/43282/">3</a> , <a href="http://habrahabr.ru/blogs/webdev/43540/">4</a> and <a href="http://habrahabr.ru/blogs/webdev/43539/">5</a> . <br>  In these posts we talked about memcached, its architecture, possible use, caching key selection, clustering, atomic operations and the implementation of counters in <a href="http://danga.com/memcached/">memcached</a> , as well as the problem of simultaneously rebuilding caches and tagging caches. <br><br>  Today's post completes this series, in it we will talk about technical “trifles”: <br><ul><li>  statistics analysis memcached; </li><li>  debugging memcached; </li><li>  “RPC” with memcached. </li></ul><br>  The full text of all sections as a single large PDF can be downloaded and viewed <a href="http://www.smira.ru/2008/10/08/highload-plus-plus-2008/">here</a> (in the “Materials” section). <br><a name="habracut"></a><br><h2>  Job statistics memcached </h2><br>  In addition to the need to implement mechanisms for working with memcached, you need to constantly monitor the cluster of memcached servers in order to be sure that we have achieved optimal performance.  Memcached provides a set of commands for getting information about its work. <br><br>  The simplest command, <code>stats</code> , allows you to get elementary statistics: server uptime (uptime), amount of memory used, number of get requests and number of hits (hits), i.e.  cache hits.  Their ratio allows us to judge caching efficiency as a whole, although it must be taken into account that not only cached samples are keys in memcached, but counters, locks, tags, etc., so this value needs to be adjusted to calculate the net caching efficiency.  From the general statistics, we can also find out how many keys were deleted before the expiration date (evictions), this parameter can signal the lack of memory memcached. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <h2>  Slab-allocator </h2><br>  To allocate memory for key values, memcached uses the <a href="http://en.wikipedia.org/wiki/Slab_allocation">slab-allocator option</a> .  This type of allocator tends to reduce internal fragmentation when allocating memory, and also ensures good efficiency of memory allocation operations. <br><br>  The mechanism of its work is that all available memcached memory is divided into slabs (blocks), each of which will store items of a certain size.  For example, slab for storing objects with a size of 256 bytes, while the slab itself is 1 MB in size, so it can save 4,096 such objects.  The memory inside such a slab is allocated only 256 bytes each.  If we have slabs for objects of 64, 128, 256, 1024 and 2048 bytes in size, then the maximum size of the object that we can save is 2048 bytes (in the last slab).  If we want to save an object of 65 bytes in size, memory in slab'e-128 will be allocated for it, 1 byte in slab'e 64. <br><br>  In order to achieve efficient memory utilization of memcached to store our keys and values, we must be sure that the sizes of the slabs that memcached has allocated are in the right size, as well as their reasonable content.  To do this, we can ask memcached to provide statistics on slabs, which can, for example, be visualized in the form of such a graph: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/8bd/296/a4a/8bd296a4aa08800c4d0bcc90ec0bb463.png" alt=" slab memcached" title="Slab stats" width="599" height="214"><br><br>  Here, the slab sizes are plotted on the horizontal axis, and the amount of memory used by slabs of a given size is plotted on the vertical axis.  At the moment, all memcached memory is occupied by keys and their values, so this graph represents the current distribution of values ​​in server memory.  It is easy to see that most of all slab's are allocated for keys with relatively small values ​​- up to 20 Kb, for much larger keys, slabs are much smaller.  This distribution is adequate to our task: we have most of all just small keys (counters, locks, small caches).  At the same time, the same keys occupy most of the memory, with local allocation peaks for keys of 300 bytes, 8 Kb in size.  If the schedule is different from what is expected by the logic of the problem, this is a cause for concern. <br><br><h2>  Debugging projects using memcached </h2><br>  We wrote a large subsystem for working with memcached, implemented various mechanisms for solving problems associated with high loads.  How to check that everything really works as we would like it?  High load, network delays, etc.  It is almost impossible to reproduce in the local environment, it is not easy to do in the test environment.  On servers in production, only those debugging mechanisms are available that do not affect the normal operation of the application itself.  The debugging method should not introduce noticeable time delays, otherwise it will change the behavior of the application, and debugging will become meaningless. <br><br>  We can offer the following "trick" that can help in this situation: for each cache (key in memcached) or for a group of caches (keys) we create a separate file in the local file system.  In the append mode, we add one character to this file in response to each logical action that occurred with the cache.  To view in real-time the behavior of the caching subsystem, it suffices to tail-f to this file: <br><br><pre> <code class="hljs">MLWUHHHHHHHHHHHHHHHMLLHHHHHHHHHH</code> </pre><br>  Let the letters have the following meaning: <br><ul><li>  <code>M</code> - cache is outdated (or not found); </li><li>  <code>L</code> - attempt to block; </li><li>  <code>W</code> - write (and build) a new cache; </li><li>  <code>U</code> - blocking removal; </li><li>  <code>H</code> - successful cache request. </li></ul><br><br>  Then, using the given sequence, you can tell what happened with this cache: at first it was absent, we did not find the cache ( <code>M</code> ), tried to block ( <code>L</code> ) to build it, blocked, built the cache ( <code>W</code> ), removed the lock ( <code>U</code> ), then for some time the cache worked successfully, returning the cached data ( <code>H</code> ).  Then at some point the cache was outdated or was reset ( <code>M</code> ), we tried to block, did not work ( <code>L</code> ), tried again ( <code>L</code> ), the lock was removed, someone else built a new cache, we read it ( <code>H</code> ) and then they used it. <br><br><h2>  Interprocess communication with memcached </h2><br>  A complex project consists of separate components, services that must interact with each other using RPC mechanisms, API calls, exchanging information through a database or in some other way.  Sometimes memcached can be used for this exchange of information. <br><br>  As an example, consider the user broadcasting service: there is a certain number of broadcasts, each of which has a certain number of viewers at a given time.  The popularity of broadcasting is determined by the number of viewers.  Actual information about the number of viewers has only the broadcast server, and the list of broadcasts on the broadcast page forms the frontend.  Of course, it would be possible to make the broadcast server periodically flush information about the number of viewers to the database or via the API in the frontend, or the frontend could receive the latest information through the broadcast server API.  However, the number of viewers is a very rapidly changing characteristic, and in this situation, you can periodically (once every few seconds) save memcached information about the number of viewers in each of the broadcasts from the broadcast server, and referring to memcached can receive information at any convenient time. moment.  This can be interprocess communication implemented with memcached. </div><p>Source: <a href="https://habr.com/ru/post/43735/">https://habr.com/ru/post/43735/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../43729/index.html">How are traffic jams formed?</a></li>
+<li><a href="../4373/index.html">Six Apart buys Rojo online news reader</a></li>
+<li><a href="../43731/index.html">Interval-associative array</a></li>
+<li><a href="../43733/index.html">IBM sued one of its employees for trying to go to Apple.</a></li>
+<li><a href="../43734/index.html">Mail.Ru Agent helps to find work</a></li>
+<li><a href="../43736/index.html">Found Mac virus ...</a></li>
+<li><a href="../4374/index.html">Six Apart buys Rojo</a></li>
+<li><a href="../43740/index.html">Java @ CERN</a></li>
+<li><a href="../43744/index.html">We write in pictures</a></li>
+<li><a href="../43745/index.html">Nimbuzz - Skype, SIP and IM on any mobile</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

@@ -1,0 +1,135 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>The problem of simultaneous rebuilding caches</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A series of posts about “Web, caching and memcached” continues. Start here: 1 , 2 and 3 . 
+ In these posts we talked about memcached, its architecture...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>The problem of simultaneous rebuilding caches</h1><div class="post__text post__text-html js-mediator-article">  A series of posts about “Web, caching and memcached” continues.  Start here: <a href="http://habrahabr.ru/blogs/webdev/42607/">1</a> , <a href="http://habrahabr.ru/blogs/webdev/42972/">2</a> and <a href="http://habrahabr.ru/blogs/webdev/43282/">3</a> . <br>  In these posts we talked about memcached, its architecture, possible use, caching key selection, clustering, atomic operations, and the implementation of counters in <a href="http://danga.com/memcached/">memcached</a> . <br><br>  Today we consider the problem of simultaneous rebuilding of the cache, which occurs when a large number of simultaneous accesses to the cache that has just been flushed or lost, which can lead to database overload. <br><br>  The next post will be devoted to tagging caches. <br><a name="habracut"></a><br><h2>  Simultaneous rebuilding of caches </h2><br>  This problem is typical primarily for high-load projects.  Consider the following situation: we have a sample of the database, which is used on many pages or especially popular pages (for example, on the main page).  This sample is cached with some “shelf life”, i.e.  the cache will be reset after a certain time interval.  In this case, the sample itself is relatively complex, its calculation significantly loads the backend (DB).  At some point in time, the memcached key will be deleted, because  its lifetime will expire (the lifetime has been set for the cache), at this moment several frontend's (several, because sampling is often used) will be sent to memcached using this key, they will detect its absence and will try to build the cache again by sampling from DB.  That is, the database will simultaneously receive several identical requests, each of which noticeably loads the database, if a certain threshold is exceeded, the request will not be executed within a reasonable time, even more frontend will access the cache, detect its absence and send even more queries to the database. which the database will not cope with.  As a result, the database server received a critical load, and “laid”.  This situation is called the dog-pile effect (see also, for example: <a href="http://korchasa.blogspot.com/2008/04/dog-pile.html">korchasa.blogspot.com/2008/04/dog-pile.html</a> ).  What to do, how to avoid such a situation? 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      The problem with rebuilding the cache becomes a problem only when there are two factors: a lot of cache accesses per unit of time and a complex query.  Moreover, one factor can compensate for the other: on a relatively unpopular, but very complex and long sample (which generally should not be), we can get a similar situation.  So what to do? <br><br>  We can suggest the following scheme: we no longer limit the lifetime of a key with a cache in memcached — it will stay there until it is superseded by other keys.  But along with the cache data, we also record the real time of its life, for example: <br><br><pre><code class="hljs">{  : 2008-11-03 11:53,  : { ... } }</code> </pre> <br>  Now, when retrieving the key from memcached, we can check whether the cache has expired using the "valid to" field.  If the lifetime has expired, the cache needs to be rebuilt, but we will do it with a lock (we will discuss blocking in the next section), if we fail to block, we can either wait another time (since the lock is already there, someone rebuilds the cache) or return the old cache value.  If we succeed in blocking, we build the cache ourselves, while other frontend will not rebuild the same cache, as they will see our blocking.  The main advantage of storing in memcached without specifying the expiration date is the ability to get the old cache value in case the cache is already rebuilt by someone.  What exactly to do — wait until someone else builds the cache, and get the new value from memcached, or return the old value — depends on the task, how much the old value is acceptable and how much time can be spent in the wait state.  Most often, you can afford a 2-3 second wait with checking the removal of the lock and, if the cache is not built (which is unlikely, it turns out that the sample takes more than 2-3 seconds), return the old value, freeing the frontend for other tasks. <br><br><h3>  An example of such an algorithm </h3><br><ol><li>  We get access to cache cache, its lifetime has expired. </li><li>  We are trying to block by user cache_lock. <ul><li>  Failed to get the lock: <ul><li>  waiting for unlocking; </li><li>  didn't wait: return old cache data; </li><li>  Wait: select key values ​​again, return new data (built cache by another process). </li></ul></li><li>  Managed to get a lock: <ul><li>  build the cache yourself. </li></ul></li></ul></li></ol><br><p>  Such a scheme allows to exclude or minimize the situation of “collapsing” the backend with the same “heavy” queries, when it is really enough to execute the request only once.  The last question remains, how to ensure correct locking?  Obviously, since the problem of simultaneous rebuilding arises on different frontends, the lock should be in a place that everyone can access for them, that is, in memcached. </p><br><br><h3>  Locks in memcached </h3><br>  Consider two options for implementing a lock (mutex, binary semaphore) using memcached.  The first one is incorrect, it cannot provide the correct exclusion of parallel processes, but it is obvious.  The second is completely correct, but not so obvious. <br><br>  Suppose we want to lock on the key <code>'lock'</code> : trying to get the key values ​​using the <code>get</code> operation.  If the key is not found, then there is no lock, and we use the <code>set</code> operation to <code>set</code> value of this key, for example, to one, and set the lifetime to a small time interval that exceeds the maximum lock lifetime, for example, to 10 seconds.  Now, if the frontend ends abnormally and does not release the lock, it will automatically be destroyed after 10 seconds.  So, using <code>set</code> we <code>set</code> lock, performed all the necessary actions, then remove the lock simply by deleting the corresponding key with the command <code>del</code> .  If on the first <code>get</code> operation we got the key value, it means that the lock has already been set by another process, our lock operation is unsuccessful. <br><br>  The described method has a drawback: the presence of a race condition (race condition).  Two processes can do <code>get</code> at the same time, both can get the answer that there is no “key”, both will do <code>set</code> , and both will assume that they have set the lock successfully.  In situations like simultaneous rebuilding of caches, this may be acceptable, because  here the goal is not to exclude all other processes, but to drastically reduce the number of simultaneous queries to the database, which can provide this simple, incorrect option. <br><br>  The second option is correct, and even simpler than the first.  To capture a lock, it is enough to execute one command: <code>add</code> , specifying the name of the key and the lifetime (as small as in the first variant).  The <code>add</code> command will be successful only if there is no key in memcached yet, that is, our process is the only process that managed to acquire the lock.  Then we need to perform the necessary actions and release the lock with the command <code>del</code> .  If <code>add</code> returns the error “such key already exists”, it means that the lock was taken earlier by some other process. </div><p>Source: <a href="https://habr.com/ru/post/43540/">https://habr.com/ru/post/43540/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../435388/index.html">Internet in Cuba. From revolution to revolution</a></li>
+<li><a href="../43539/index.html">Cache group reset and memcached tagging</a></li>
+<li><a href="../435390/index.html">3D engine inside SQL query</a></li>
+<li><a href="../435394/index.html">Physical results of the year</a></li>
+<li><a href="../435398/index.html">Meta-games: My experience in creating contests for sales managers</a></li>
+<li><a href="../435400/index.html">For information about the hacking of WhatsApp and iMessage, a reward of $ 1 million has been announced</a></li>
+<li><a href="../435402/index.html">Amazon has become the most expensive public company in the world.</a></li>
+<li><a href="../435406/index.html">Learning English: a geeky way</a></li>
+<li><a href="../435408/index.html">Uber will start using air taxi in 2020</a></li>
+<li><a href="../43541/index.html">Interview with Medvedev. About security.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
