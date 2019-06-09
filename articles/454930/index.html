@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Garbage Collection in V8: How the New Orinoco GC Works</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="To be honest, this is one of the most brutal articles that I read lately: there is a lot about death at a young age, about persecution from one area o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Garbage Collection in V8: How the New Orinoco GC Works</h1><div class="post__text post__text-html js-mediator-article">  To be honest, this is one of the most brutal articles that I read lately: there is a lot about death at a young age, about persecution from one area of ​​memory to another, and about a fierce struggle for productivity.  In general, welcome to the cat - there is a translation of Peter Marshall's excellent article on how garbage collection in V8 works today. <br><br><img src="https://habrastorage.org/webt/s1/vj/i4/s1vji4ia58-4d6fppntreacevai.jpeg"><a name="habracut"></a><br><br>  Over the past few years, the approach to garbage collection in V8 has changed a lot.  As part of the Orinoco project, he has gone from a consistent <a href="https://en.wikipedia.org/wiki/Tracing_garbage_collection">stop-the-world</a> approach to a parallel and competitive approach with incremental foldback. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      Note: if you like watching a report rather than reading an article, you can do it <a href="https://youtu.be/Scxz6jVS4Ls">here</a> .  If not, read on. <br><br>  Any garbage collector has a set of tasks that need to be performed periodically: <br><br><ol><li>  Find live / dead objects in memory. <br></li><li>  Reuse the memory occupied by dead objects. <br></li><li>  Condense / defragment memory (optional). <br></li></ol><br>  These tasks can be performed sequentially, or you can alternate.  The easiest way is to stop the execution of JavaScript and do everything consistently in the main thread.  However, this may lead to delays, which we talked about in <a href="https://v8.dev/blog/jank-busters">previous</a> <a href="https://v8.dev/blog/orinoco">posts</a> , as well as to a decrease in program performance in general. <br><br><h2>  Main GC (full mark-compact) </h2><br>  The main GC collects trash from the entire heap. <br><img src="https://habrastorage.org/webt/ap/4a/ew/ap4aewr_soaajwsy8pw7ybdn2qo.png"><br>  <i><font color="gray">Garbage collection occurs in three steps: labeling, recycling and compacting</font></i> <br><br><h3>  Marking </h3><br>  Determining from what objects you can free up memory is a mandatory part of the work of the garbage collector.  He considers the object alive based on information about its reachability.  This means that any object referenced from the current execution environment should be stored in memory, and all inaccessible objects can be collected by the GC. <br><br>  Marking is the process of finding reachable objects.  The GC has a set of pointers from which it begins to search, the so-called root set.  This set includes objects from the current execution stack and a global object.  Starting with this set, the GC follows each pointer to a JavaScript object and marks each one as reachable, and then moves to pointers from objects to other objects and repeats this process recursively until each reachable object is marked. <br><br><h3>  Recycling </h3><br>  Disposal is a process during which areas of memory left from dead objects are put into a list called free-list.  As soon as the marking process is completed, the GC finds such areas and adds them to the appropriate list.  Free-lists differ from each other in what size of the memory area they are stored in, which makes it possible to quickly find the desired one.  Later, when we want to allocate a memory, we will look at one of the lists and find a section of suitable size. <br><br><h3>  Compaction </h3><br>  Also, the main GC sometimes makes decisions about cleaning / compacting some pages of memory, based on its own heuristic estimates based on the degree of page fragmentation.  You can think of compaction as an analogue of hard disk defragmentation on older PCs.  We copy the surviving objects onto other pages that have not yet been compacted (here the free-list is just used).  Thus, we can reuse the small scattered memory areas left over from dead objects. <br><br>  One of the drawbacks of GC, which copies surviving objects, is that when many long-lived objects are created, you have to pay a high price for copying them.  It is for this reason that only some highly fragmented memory pages undergo compaction, while for the rest, recycling is simply carried out, which does not require copying the surviving objects. <br><br><h3>  Generation memory device </h3><br>  The pile in V8 is broken down into areas called generations.  There is a younger generation (which in turn is subdivided into a generation “nursery” and “intermediate” generation) and old generations.  Created objects are placed in the "nursery."  Subsequently, if they are experiencing the next garbage collection, they remain in the younger generation, but pass into the category of "intermediate".  If they survive after the next assembly, they are placed in the older generation. <br><img src="https://habrastorage.org/webt/bl/jl/qc/bljlqc2s8amymre3zunoc1lgngi.png"><br>  <i><font color="gray">A bunch of V8 is divided into generations.</font></i>  <i><font color="gray">Objects are moved from the youngest to the older generation if they are experiencing garbage collection</font></i> <br><br>  There is an important term "generational hypothesis" in garbage collection.  Simply put, it means that most of the objects “die young”.  In other words, most objects are created and almost immediately die in terms of GC.  And this statement is true not only for JavaScript, but also for most dynamic programming languages. <br><br>  The heap organization in V8 relies on the above hypothesis.  For example, at first glance it may seem illogical that GC is engaged in compaction / movement of objects that have survived garbage collection, because copying objects is a rather expensive operation in order to carry it out during garbage collection.  But, based on the hypothesis of generations, we know that very few objects will survive this procedure.  So, if you move only the surviving objects, anything that has not been moved can automatically be considered rubbish.  This means that the price we pay for copying is proportional to the number of surviving objects, not all created ones. <br><br><h2>  Auxiliary GC (scavenger) </h2><br>  There are actually two garbage collectors in V8.  The main (mark-compact) quite effectively collects garbage from the entire heap, while the auxiliary collects garbage only in young memory, because the hypothesis of generations tells us that the main efforts to collect garbage should be sent there. <br><br>  The principle of operation of the auxiliary GC is such that the surviving objects always move to a new memory page.  In V8, the young memory is divided into two halves.  One is always free so that it is possible to move the surviving objects into it, and during assembly this initially empty area is called To-space.  The area from which copying occurs is called From-space.  In the worst case, every object can survive, and then you have to copy them all. <br><br>  For this type of assembly, there is a separate set of pointers that reference old memory to young.  And instead of scanning the entire heap, we use <a href="https://en.wikipedia.org/wiki/Write_barrier">write barriers</a> to maintain this set.  So, combining this set with the stack and the global object, we get all the links in the young memory without having to scan all the objects from the old memory. <br><br>  When copying objects from From-space to To-space, all surviving objects are placed in a continuous memory location.  Thus, it is possible to get rid of fragmentation - gaps of memory left over from dead objects.  After the transfer is complete, To-space becomes From-space, and vice versa.  As soon as the GC finishes its work, the memory for new objects will be allocated starting from the first free address in From-space. <br><img src="https://habrastorage.org/webt/jt/yl/43/jtyl43bxlb-u7n8cgp3spapeksm.png"><br>  <i><font color="gray">Scavenger moves surviving objects to a new memory page.</font></i> <i><br></i> <br>  If you use only this strategy and do not move objects from the young memory, the memory will end pretty quickly.  Therefore, objects that have survived two garbage collections are moved to the old memory. <br><br>  The final step is to update the pointers to the objects that have been moved.  Each copied object leaves its original address, leaving instead the forwarding address, which is necessary to find the original object in the future. <br><img src="https://habrastorage.org/webt/ld/kv/oo/ldkvoorwihux9nfklfxk2p3fbos.png"><br>  <i><font color="gray">Scavenger transfers “intermediate” objects to old memory, and objects from “yasel” to a new page.</font></i> <br><br>  Thus, garbage collection in young memory consists of three steps: marking objects, copying them, updating pointers. <br><br><h2>  Orinoco </h2><br>  Most of the listed algorithms are described in various sources and are often used in execution environments with support for automatic garbage collection.  But GC in V8 has come a long way before becoming a truly modern tool.  One of the significant metrics describing its performance is how often and how long the main thread pauses while the garbage collector performs its functions.  For classic stop-the-world collectors, this time leaves its mark on the experience of using the page due to delays, poor-quality rendering and an increase in response time. <br><img src="https://habrastorage.org/webt/za/ct/gv/zactgvbniosnjhuqfmuvbeazggs.png"><br>  <i><font color="gray">Logo Orinoco GC V8</font></i> <br><br>  Orinoco is a codename for GC using modern techniques of parallel, incremental and competitive garbage collection.  There are some terms that have a specific meaning in the context of GC, so let's first give their definitions. <br><br><h3>  Parallelism </h3><br>  Parallelism is when the main and auxiliary streams do approximately the same amount of work per unit time.  This is still the stop-the-world approach, but the length of the pause in this case is divided by the number of threads involved in the work (minus the cost of synchronization). <br><br>  This is the simplest of the three techniques.  The heap does not change, because JavaScript is not executed, so that it is sufficient for threads to support synchronization of access to objects. <br><img src="https://habrastorage.org/webt/1s/1z/sl/1s1zsldqhz08kn8nciao0dooadi.png"><br>  <i><font color="gray">The main and auxiliary threads work on the same task simultaneously.</font></i> <br><br><h3>  Incrementality </h3><br>  Incrementality is when the main thread does a small amount of work intermittently.  Instead of full garbage collection, small tasks are done on partial assembly. <br><br>  This is a more difficult task, since JavaScript runs between the incremental builds, which means that the state of the heap is changing, which in turn can invalidate some of the work done in the previous iteration. <br><br>  As can be seen from the diagram, this approach does not reduce the total amount of work (and, as a rule, even increases it), but it distributes this work in time.  Therefore, it is a good way to solve one of the main tasks - reducing the response time of the main stream. <br>  By allowing javascript to run with a few interruptions to garbage collection, an application can continue to be responsive: respond to user input and update animations. <br><img src="https://habrastorage.org/webt/mc/yi/t7/mcyit7ystjkd8iddxxfj8zqhruw.png"><br>  <i><font color="gray">Small areas of GC work in the main thread</font></i> <br><br><h3>  Competitiveness </h3><br>  Competitiveness is when the main thread continuously executes JavaScript, and auxiliary threads do garbage collection in the background.  This is the most difficult of the three techniques: a heap can change at any time, invalidating the work done by the GC before. <br><br>  In addition, there are also read / write races, since the auxiliary and main threads simultaneously read or modify the same objects. <br><img src="https://habrastorage.org/webt/bm/uh/9y/bmuh9y_1linhkt6v4rthj1xky3g.png"><br>  <i><font color="gray">The build is completely in the background, the main thread at this time can perform JavaScript</font></i> <br><br><h2>  GC state in V8 </h2><br><h3>  Scavenging </h3><br>  V8 distributes the work of garbage collection between auxiliary streams in young memory (scavenging).  Each stream receives a set of pointers, following which, moves all living objects into To-space. <br><br>  When moving objects in To-space, threads need to synchronize through atomic read / write / compare and swap operations to avoid a situation where, for example, another thread found the same object, but following a different path, and also tries to move it. <br><br>  The thread that moved the object to To-space then returns and leaves the forwarding pointer so that other threads that find this object can proceed to the right address.  For fast and non-synchronized memory allocation for surviving objects, threads use thread local buffers. <br><img src="https://habrastorage.org/webt/jy/hj/cf/jyhjcfoy8qok8juwfddy6cczslu.png"><br>  <i><font color="gray">Parallel assembly distributes work between several auxiliary threads and the main thread</font></i> <br><br><h3>  Main GC </h3><br>  The main GC in V8 starts with the labeling of objects.  As soon as the heap reaches a certain limit (calculated dynamically), competitive markers begin their work.  Each of the streams receives a set of pointers, and, passing on them, they mark each found object as attainable. <br><br>  Competitive labeling occurs entirely in the background while javascript is running in the main thread.  <a href="https://dl.acm.org/citation.cfm%3Fid%3D2025255">Write barriers</a> are used to keep track of new links between objects that are created in JavaScript while threads are marking. <br><br><img src="https://habrastorage.org/webt/er/bi/-l/erbi-lduzw0biseu7gysr416fuq.png"><br>  <i><font color="gray">Primary GC uses competitive labeling, recycling, and parallel compaction and pointer updating.</font></i> <br><br>  At the end of the competitive labeling, the main stream performs a quick step to complete the marking.  During this, the execution of JavaScript in the main thread is suspended. <br><br>  The root set is scanned again to make sure that all living objects are marked, and then memory compaction and pointer updating begin in several streams. <br>  Not all pages in the old memory are compacted - those that do not will be scanned to the vacated memory areas (sweeping) for listing them (free-lists). <br><br>  During this pause, sweeping tasks start that compete with memory compaction tasks and the main thread and can continue even when JavaScript is running in the main thread. <br><br><h2>  Idle-time GC </h2><br>  JavaScript developers do not have access to the GC - it is part of the implementation of the environment.  And although the JS code cannot call GC directly, V8 provides such access to the environment that embeds the engine. <br><br>  GC can send tasks (idle tasks) that can be performed “in free time” and which are parts of the work that in any case would have to be done.  An environment like Chrome, where the engine is embedded, can have its own idea of ​​what is considered free time.  For example, in Chrome at a frequency of 60 frames per second, the browser has about 16.6 ms to render an animation frame. <br><br>  If the animation work is completed earlier, in free time, before the next frame arrives, Chrome can perform some of the tasks received from GC. <br><img src="https://habrastorage.org/webt/la/-i/bi/la-ibisn9rw6ulv6djzufbu-tt0.png"><br>  <i><font color="gray">GC uses the free time of the main thread to do pre-clean.</font></i> <br><br>  Learn more from <a href="https://queue.acm.org/detail.cfm%3Fid%3D2977741">our publication on Idle-time GC</a> . <br><br><h2>  Results </h2><br>  GC in V8 has come a long way since its inception.  Adding parallel, incremental and competitive techniques to it took several years, but it paid off, allowing us to do most of the work in the background. <br><br>  Everything related to the pauses of the main thread, the response time and page load has significantly improved, which allows the animation, scrolling and user interaction on the page to be much smoother.  The parallel collector made it possible to reduce the total duration of processing a young memory by 20–50%, depending on the load. <br><br>  Idle-time GC allows you to reduce the size of the used heap for Gmail by 45%.  Competitive labeling and disposal (sweeping) can reduce the duration of GC-pauses in heavy WebGL-games up to 50%. <br><br>  However, the work is not over.  Reducing pauses remains an important task to simplify the lives of web users, and we are looking for the possibility of using more advanced techniques to achieve the goal. <br><br>  On top of that, Blink (a renderer in Chrome) is also equipped with an Oilpan picker, and we are working to improve the interaction between the two GCs and also to use Orinoco techniques in Oilpan. <br><br>  Most JavaScript developers do not need to think about how GC works, but some idea of ​​this can help make optimal decisions in terms of memory usage and programming patterns.  For example, given the structure of the heap V8, based on generations, low-living objects are actually quite cheap in terms of GC, since we pay mainly for the surviving objects.  And this kind of pattern is not only peculiar to JavaScript, but also to many languages ​​with garbage collection support. </div><p>Source: <a href="https://habr.com/ru/post/454930/">https://habr.com/ru/post/454930/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../454918/index.html">How to combine backups of two retailers on SAP in 12 hours</a></li>
+<li><a href="../454920/index.html">Frontend performance: parse important metrics</a></li>
+<li><a href="../454922/index.html">Tales about foreign customers and their peculiarities of work in Russia after the law on PD</a></li>
+<li><a href="../454926/index.html">Everything you know about word2vec is not true</a></li>
+<li><a href="../454928/index.html">A way to bypass the Windows lock screen on RDP sessions</a></li>
+<li><a href="../454936/index.html">Vivaldi: ad blocking should be user selectable</a></li>
+<li><a href="../454938/index.html">Developing your own core for embedding into the FPGA processor system</a></li>
+<li><a href="../45494/index.html">University tour Opera. Kiev</a></li>
+<li><a href="../454940/index.html">Travel insurance: detailed instructions</a></li>
+<li><a href="../454944/index.html">How the JPEG format works</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
