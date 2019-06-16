@@ -1,0 +1,141 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>The story of a single SQL investigation</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Last December, I received an interesting error report from the VWO support team. The load time of one of the analytical reports for a large corporate ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>The story of a single SQL investigation</h1><div class="post__text post__text-html js-mediator-article"><p>  Last December, I received an interesting error report from the VWO support team.  The load time of one of the analytical reports for a large corporate client seemed to be prohibitive.  And since this is my responsibility, I immediately focused on solving the problem. </p><br><h2>  Prehistory </h2><br><p>  To make it clear what I am talking about, I will tell you quite a bit about VWO.  This is a platform with which you can run different targeted campaigns on your sites: conduct A / B experiments, track visitors and conversions, analyze sales funnels, display heat maps and play recordings of visits. </p><br><p>  But the most important thing in the platform is reporting.  All of the above functions are related.  And for corporate clients, a huge array of information would be simply useless without a powerful platform representing them in the form of analytics. </p><br><p>  Using the platform, you can make an arbitrary query on a large set of data.  Here is a simple example: </p><br><pre>  Show all clicks on the page "abc.com"
+ FROM &lt;date d1&gt; TO &lt;date d2&gt;
+ for people who
+ used chrome OR
+ (were in Europe and used the iPhone) </pre><br><p>  Pay attention to boolean operators.  They are available to clients in the query interface in order to make arbitrarily complex queries to receive samples. </p><br><h2>  Slow request </h2><br><p>  The client in question tried to do something that should intuitively work quickly: </p><br><pre>  Show all session records
+ for users visiting any page
+ with url where there are "/ jobs" </pre><br><p>  There was a huge amount of traffic on this site, and we stored over a million unique URLs just for it.  And they wanted to find a fairly simple urla pattern related to their business model. </p><br><a name="habracut"></a><h2>  Preliminary investigation </h2><br><p>  Let's see what happens in the database.  The following is the original slow SQL query: </p><br><pre><code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND sessions.referrer_id = recordings_urls.id AND ( urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[] ) AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ;</code> </pre> <br><p>  But the timings: </p><br><pre>  Estimated time: 1.480 ms
+ Running time: 1431924.650 ms </pre><br><p>  The request bypassed 150 thousand lines.  The query planner showed a couple of interesting details, but no obvious bottlenecks. </p><br><p>  Let's explore the query further.  Apparently, he does <code>JOIN</code> three tables: </p><br><ol><li>  <strong>sessions</strong> : to display session information: browser, user agent, country, and so on. </li><li>  <strong>recording_data</strong> : recorded URLs, pages, duration of visits </li><li>  <strong>urls</strong> : to avoid duplicating extremely large urls, we store them in a separate table. </li></ol><br><p>  Also note that all our tables are already divided by <code>account_id</code> .  Thus, the situation is excluded, when due to one particularly large account problems arise for the rest. </p><br><h2>  In search of evidence </h2><br><p>  Upon closer inspection, we see that something in a particular query is wrong.  It is worth looking at this line: </p><br><pre> <code class="plaintext hljs">urls &amp;&amp; array( select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%' )::text[]</code> </pre> <br><p>  The first thought was that, perhaps, due to <code>ILIKE</code> on all these long URLs (we have over 1.4 million <strong>unique</strong> URLs compiled for this account), the performance might subside. </p><br><p>  But no, that's not the point! </p><br><pre> <code class="plaintext hljs">SELECT id FROM urls WHERE url ILIKE '%enterprise_customer.com/jobs%'; id -------- ... (198661 rows) Time: 5231.765 ms</code> </pre> <br><p>  The pattern search request itself takes only 5 seconds.  A pattern search on millions of unique URLs is clearly not a problem. </p><br><p>  The next suspect on the list is several <code>JOIN</code> .  Perhaps their excessive use led to a slowdown?  <code>JOIN</code> 's are usually the most obvious candidates for performance problems, but I didn’t believe our case was typical. </p><br><pre> <code class="plaintext hljs">analytics_db=# SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data_0 as recording_data, acc_{account_id}.sessions_0 as sessions WHERE recording_data.usp_id = sessions.usp_id AND sessions.referrer_id = recordings_urls.id AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ; count ------- 8086 (1 row) Time: 147.851 ms</code> </pre> <br><p>  And it was also not our case.  <code>JOIN</code> 's turned out to be quite fast. </p><br><h2>  We narrow the circle of suspects </h2><br><p>  I was ready to start changing the query to achieve any possible performance improvements.  The team and I developed 2 main ideas: </p><br><ul><li>  <strong>Use EXISTS for the subquery URL</strong> : We wanted to check again if there are any problems with the subquery for urls.  One way to do this is to simply use <code>EXISTS</code> .  <code>EXISTS</code> <a href="https://www.postgresql.org/docs/current/functions-subquery.html">can</a> greatly improve performance because it ends as soon as it finds a single line by condition. </li></ul><br><pre> <code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND (exists(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')) AND r_time &gt; to_timestamp(1547585600) AND r_time &lt; to_timestamp(1549177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ; count 32519 (1 row) Time: 1636.637 ms</code> </pre> <br><p>  Well yes.  The subquery, when wrapped in <code>EXISTS</code> , makes everything super fast.  The next logical question is why a query with JOINs and the subquery itself are fast, but they terribly slow down together? </p><br><ul><li>  <strong>Move the subquery to the CTE</strong> : if the query is fast on its own, we can simply calculate the quick result first and then provide it to the main query </li></ul><br><pre> <code class="plaintext hljs">WITH matching_urls AS ( select id::text from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%' ) SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions, matching_urls WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND (urls &amp;&amp; array(SELECT id from matching_urls)::text[]) AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545107599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0;</code> </pre> <br><p>  But it was still very slow. </p><br><h2>  Find the culprit </h2><br><p>  All this time one little thing flashed before my eyes, from which I constantly waved away.  But since there was nothing left, I decided to take a look at it.  I'm talking about the <code>&amp;&amp;</code> operator.  While <code>EXISTS</code> simply improved performance, <code>&amp;&amp;</code> was the only remaining common factor in all versions of the slow query. </p><br><p>  Looking at the <a href="https://www.postgresql.org/docs/9.1/functions-array.html">documentation</a> , we see that <code>&amp;&amp;</code> used when you need to find common elements between two arrays. </p><br><p>  In the original request it is: </p><br><pre> <code class="plaintext hljs">AND ( urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[] )</code> </pre> <br><p>  Which means that we do a pattern search on our URLs, then find the intersection with all URLs with shared entries.  This is a bit confusing, since the “urls” here does not refer to the table containing all the URLs, but to the “urls” column in the <code>recording_data</code> table. </p><br><p>  With an increase in suspicion regarding <code>&amp;&amp;</code> , I tried to find confirmation in the query plan generated by <code>EXPLAIN ANALYZE</code> (I already had a saved plan, but it’s usually more convenient for me to experiment in SQL than to try to understand the opacity of query planners). </p><br><pre> <code class="plaintext hljs">Filter: ((urls &amp;&amp; ($0)::text[]) AND (r_time &gt; '2018-12-17 12:17:23+00'::timestamp with time zone) AND (r_time &lt; '2018-12-18 23:59:59+00'::timestamp with time zone) AND (duration &gt;= '5'::double precision) AND (num_of_pages &gt; 0)) Rows Removed by Filter: 52710</code> </pre> <br><p>  There were a few lines of filters from <code>&amp;&amp;</code> only.  Which meant that this operation was not only expensive, but also performed several times. </p><br><p>  I checked it by isolating the condition. </p><br><pre> <code class="plaintext hljs">SELECT 1 FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data_30 as recording_data_30, acc_{account_id}.sessions_30 as sessions_30 WHERE urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[]</code> </pre> <br><p>  This query was slow.  Since <code>JOIN</code> fast and subqueries are fast, only the <code>&amp;&amp;</code> operator remained. </p><br><p>  This is just a key operation.  We always need to search the entire main URL table to search for a pattern, and we always need to find intersections.  We cannot search by url records directly, because these are just IDs that refer to <code>urls</code> . </p><br><h2>  Towards a solution </h2><br><p>  <code>&amp;&amp;</code> slow because both sets are huge.  The operation will be relatively quick if I replace <code>urls</code> with <code>{ "http://google.com/", "http://wingify.com/" }</code> . </p><br><p>  I started looking for a way to do intersection of sets in Postgres without using <code>&amp;&amp;</code> , but without much success. </p><br><p>  In the end, we decided to just solve the problem in isolation: give me all the <code>urls</code> lines for which the url matches the pattern.  Without additional conditions it will be - </p><br><pre> <code class="plaintext hljs">SELECT urls.url FROM acc_{account_id}.urls as urls, (SELECT unnest(recording_data.urls) AS id) AS unrolled_urls WHERE urls.id = unrolled_urls.id AND urls.url ILIKE '%jobs%'</code> </pre> <br><p>  Instead of the <code>JOIN</code> syntax, I simply used a subquery and deployed the <code>recording_data.urls</code> array so that you can directly apply the condition in <code>WHERE</code> . </p><br><p>  The most important thing here is that <code>&amp;&amp;</code> used to check whether the entry contains the corresponding URL.  Slightly squinting, you can see in this operation moving through the array elements (or rows of the table) and stopping when the condition (match) is met.  Nothing like?  Yeah, <code>EXISTS</code> . </p><br><p>  Since <code>recording_data.urls</code> can be referenced from outside the subquery context, when this happens, we can return to our old friend <code>EXISTS</code> and wrap the subquery with it. </p><br><p>  Combining everything together, we get the final optimized query: </p><br><pre> <code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 AND EXISTS( SELECT urls.url FROM acc_{account_id}.urls as urls, (SELECT unnest(urls) AS rec_url_id FROM acc_{account_id}.recording_data) AS unrolled_urls WHERE urls.id = unrolled_urls.rec_url_id AND urls.url ILIKE '%enterprise_customer.com/jobs%' );</code> </pre><br><p>  And the final <code>Time: 1898.717 ms</code> time <code>Time: 1898.717 ms</code> time to celebrate?!? </p><br><p>  Not so fast!  First you need to check the correctness.  I was extremely suspicious about <code>EXISTS</code> optimization, as it changes the logic to an earlier end.  We need to be sure that we have not added a non-obvious error to the request. </p><br><p>  A simple check was to perform <code>count(*)</code> on both slow and fast queries for a large number of different data sets.  Then, for a small subset of the data, I checked the accuracy of all the results manually. </p><br><p>  All checks gave consistently positive results.  We fixed everything! </p><br><h2>  Lessons Learned </h2><br><p>  Many lessons can be learned from this story: </p><br><ol><li>  Query plans do not tell the whole story, but may give hints. </li><li>  The main suspects are not always the culprits. </li><li>  Slow queries can be broken to isolate bottlenecks </li><li>  Not all optimizations by nature are reductive. </li><li>  Using <code>EXIST</code> , where possible, can lead to a dramatic increase in performance. </li></ol><br><h2>  Conclusion </h2><br><p>  We passed from the time of inquiry in ~ 24 minutes to 2 seconds - a very serious increase in performance!  Although this article came out large, all the experiments we did occurred on the same day, and according to estimates, took from 1.5 to 2 hours for optimizations and testing. </p><br><p>  SQL is a wonderful language, if not afraid of it, but try to learn and use it.  Having a good understanding of how SQL queries are executed, how the database generates query plans, how indexes work, and just the size of the data you are dealing with, you can be very successful in query optimization.  It is equally important, however, to continue to try different approaches and slowly break the problem, finding bottlenecks. </p><br><p>  The best part in achieving similar results is a noticeable visible improvement in the speed of work - when a report that has not even loaded before is now loaded almost instantly. </p><br><p>  <strong>Special thanks to</strong> my teammates <em>Aditya Misra</em> , <em>Aditya Gauru</em> and <em><a href="https://twitter.com/s0ftvar">Varun Malhotra</a></em> for brainstorming and <em>Dinkar Pandera</em> for finding an important mistake in our final query before we finally said goodbye to him! </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/455832/">https://habr.com/ru/post/455832/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../455820/index.html">VM performance analysis in VMware vSphere. Part 2: Memory</a></li>
+<li><a href="../455826/index.html">Auto watering colors with remote control</a></li>
+<li><a href="../455828/index.html">Scientists have discovered new exotic forms of synchronization</a></li>
+<li><a href="../45583/index.html">O'Reilly about keeping tempting profits in the Clouds with a translator afterword</a></li>
+<li><a href="../455830/index.html">A look at Go through the eyes of a .NET developer. Week # 1</a></li>
+<li><a href="../455834/index.html">Benchmarks for Linux servers: 5 open tools</a></li>
+<li><a href="../45584/index.html">Amarok 2 RC1 came out and is in the repositories.</a></li>
+<li><a href="../455840/index.html">How to work with multiple queries. Composition, Reducer, OP</a></li>
+<li><a href="../455842/index.html">Double-page list rotation. Swift Edition</a></li>
+<li><a href="../455844/index.html">Creating a Roslyn analyzer using the encapsulation test as an example</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
