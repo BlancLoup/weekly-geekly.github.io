@@ -146,7 +146,7 @@ $(function() {
 		}
 	];
 
-	const donateButtonText = 'Play 2048';
+	const donateButtonText = 'Plant a 🌴 for 1 💲';
 	const donateButtonBgColor = '#2196f3';
 	const donateButtonTextColor = 'white';
 
