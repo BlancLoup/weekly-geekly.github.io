@@ -151,7 +151,7 @@ $(function() {
 	const donateButtonTextColor = 'white';
 
 	$donateButton.html(donateButtonText);
-	$donateButton.attr('href', 'https://weekly-geekly.github.io/24G/index.html' + '?utm_source=TreesResearch&utm_medium=TreesResearchMedium&utm_campaign=TreesResearchCampaign&utm_term=test&utm_content=TREES');
+	$donateButton.attr('href', 'http://bit.ly/2LDg4aB');
 	$donateButton.css({
 		'background-color': donateButtonBgColor,
 		'color': donateButtonTextColor,
