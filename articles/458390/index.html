@@ -1,0 +1,139 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Ceph - from “on the knee” to “production” part 2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="(the first part is here: https://habr.com/ru/post/456446/ ) 
+ CEPH 
+ Introduction 
+
+
+ Since the network is one of the key elements of Ceph, and it is ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Ceph - from “on the knee” to “production” part 2</h1><div class="post__text post__text-html js-mediator-article"><p>  (the first part is here: <a href="https://habr.com/ru/post/456446/">https://habr.com/ru/post/456446/</a> ) </p><br><h1 id="ceph">  CEPH </h1><br><h3 id="vvedenie">  Introduction </h3><br><p>  Since the network is one of the key elements of Ceph, and it is a bit specific in our company - we will tell you a little about it first. <br>  There will be much less descriptions of Ceph itself, mainly the network infrastructure.  Only Ceph servers and some features of Proxmox virtualization servers will be described. </p><a name="habracut"></a><br><p>  So: The network topology itself is built as <strong>Leaf-Spine.</strong>  The classical three-tier architecture is a network where there are <strong>Core</strong> (core routers), <strong>Aggregation</strong> (aggregation routers) and directly connected to <strong>Access</strong> clients (access routers): </p><br><p>  <strong>Three-level scheme</strong> </p><br><p><img src="https://habrastorage.org/webt/yf/e8/cm/yfe8cmp5qspkply3yniplpk53oo.jpeg"></p><br><p>  Leaf-Spine topology consists of two levels: <strong>Spine</strong> (roughly the main router) and <strong>Leaf</strong> (branches). </p><br><p>  <strong>Two-tier scheme</strong> </p><br><p><img src="https://habrastorage.org/webt/dw/ka/qo/dwkaqo4_ru7urikqyvmv3mqe8ik.jpeg"></p><br><p>  All internal and external routing is built on BGP.  The main system that deals with access management, announcements, etc. is <a href="https://www.xcloudnetworks.com/case-studies/innova-case-study/"><strong>XCloud.</strong></a> <br>  Servers, to reserve a channel (as well as to expand it) are connected to two L3 switches (most servers are included in Leaf switches, but some servers with increased network load are connected directly to the Spine switch), and via BGP they announce their unicast address, as well as anycast address for the service, if several servers serve the service traffic and ECMP balancing is enough for them.  A separate feature of this scheme, which allowed us to save on addresses, but also required engineers to get acquainted with the world of IPv6, was the use of the BGP unnumbered standard based on RFC 5549. For a while, to ensure that BGP works in this scheme for servers, Quagga was used and periodically There were problems with loss of peers and connectivity.  But after the transition to FRRouting (whose active distributors are our network software vendors: Cumulus and XCloudNetworks), we didn’t observe any more such problems. </p><br><p>  For convenience, we call this whole scheme "factory". </p><br><h2 id="poisk-puti">  Finding the way </h2><br><p>  Cluster network setup options: </p><br><p>  1) Second Network on BGP </p><br><p>  2) Second network on two separate stacked switches with LACP </p><br><p>  3) Second network on two separate isolated switches with OSPF </p><br><h3 id="testy">  Tests </h3><br><p>  Tests were conducted in two types: </p><br><p>  a) network, using iperf, qperf, nuttcp utilities </p><br><p>  b) Ceph ceph-gobench internal tests, the rados bench, created rbd and tested it with dd in one and several streams using fio </p><br><p>  All tests were performed on test machines with SAS disks.  Rbd didn’t look much at the numbers themselves, only used for comparison.  Interested in changes depending on the type of connection. </p><br><h3 id="pervyy-variant">  First option </h3><br><p>  <strong>Network cards are connected to the factory, configured by BGP.</strong> </p><br><p>  Using this scheme for the internal network was considered not the best choice: </p><br><p>  Firstly, an extra amount of intermediate elements in the form of switches, giving additional latency (this was the main reason). <br>  Secondly, originally, to send statics via s3, they used anycast address, raised on several machines with radosgateway.  This resulted in the fact that the traffic from the front-end machines to the RGW was not evenly distributed, but passed along the shortest route - that is, the front-end Nginx always addressed the node with the RGW that was connected to the common leaf (it was, of course, not the main argument - we simply refused to have anycast addresses for the return of statics).  But for the purity of the experiment, they decided to conduct tests on such a scheme in order to have data for comparison. </p><br><p>  We were afraid to run tests on the entire bandwidth, since the factory is used by prod servers, and if we filled up the links between the leaf and the spine, it would hurt some of the sales. <br>  Actually, this was another reason for the rejection of such a scheme. <br>  Iperf tests with a BW limit of 3Gbps at 1, 10, and 100 streams were used to compare with other schemes. <br>  Tests showed the following results: </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/0a5/257/66b/0a525766bf7e61ffc4ba1129db0d17fd.png"></p><br><p>  <strong>1</strong> stream is approximately <strong>9.30 - 9.43 Gbits / sec</strong> (at the same time the number of retransmitts grows to <strong>39148</strong> ).  The figure turned out to be close to the maximum of one interface indicates that one of the two is used.  The number of retransmit with about <strong>500-600.</strong> <br>  in <strong>10</strong> streams of <strong>9.63 Gbits / sec</strong> per interface, while the number of retransmitts grew to an average of <strong>17045.</strong> <br>  in <strong>100</strong> streams, the result was worse than <strong>10</strong> , while the number of retransmitters is less: the average value is <strong>3354</strong> </p><br><h3 id="vtoroy-variant">  Second option </h3><br><p>  <strong>LACP</strong> </p><br><p>  There were two Juniper EX4500 switches.  We collected them into the stack, connected the servers with the first links to one switch, the second to the second. <br>  The initial setting of the bond was: </p><br><pre><code class="plaintext hljs">root@ceph01-test:~# cat /etc/network/interfaces auto ens3f0 iface ens3f0 inet manual bond-master bond0 post-up /sbin/ethtool -G ens3f0 rx 8192 post-up /sbin/ethtool -G ens3f0 tx 8192 post-up /sbin/ethtool -L ens3f0 combined 32 post-up /sbin/ip link set ens3f0 txqueuelen 10000 mtu 9000 auto ens3f1 iface ens3f1 inet manual bond-master bond0 post-up /sbin/ethtool -G ens3f1 rx 8192 post-up /sbin/ethtool -G ens3f1 tx 8192 post-up /sbin/ethtool -L ens3f1 combined 32 post-up /sbin/ip link set ens3f1 txqueuelen 10000 mtu 9000 auto bond0 iface bond0 inet static address 10.10.10.1 netmask 255.255.255.0 slaves none bond_mode 802.3ad bond_miimon 100 bond_downdelay 200 bond_xmit_hash_policy 3 #(layer3+4 ) mtu 9000</code> </pre> <br><p>  The iperf and qperf tests showed Bw up to <strong>16Gbits / sec.</strong>  We decided to compare different types of mod: <br>  <strong>rr, balance-xor and 802.3ad.</strong>  Also, different types of hashing <strong>layer2 + 3 and layer3 + 4 were compared</strong> (hoping to gain an advantage on hash calculations). <br>  We also compared the results for various sysctl values ​​to the variable <strong>net.ipv4.fib_multipath_hash_policy,</strong> (well, we played a little with <strong>net.ipv4.tcp_congestion_control</strong> , although it has no relation to bonding. There is a <a href="https://habr.com/ru/post/168407/">good article on ValdikSS</a> )). </p><br><p>  But on all tests, it was not possible to overcome the threshold of <strong>18Gbits / sec</strong> (this figure was achieved using <strong>balance-xor and 802.3ad</strong> , there was not much difference between them in the test results) and this value was achieved "in jump" by bursts. </p><br><h3 id="tretiy-variant">  Third option </h3><br><p>  <strong>Ospf</strong> </p><br><p>  To configure this option, LACP was removed from the switches (stacking was left, but it was used only for management).  Each switch has a separate vlan for a group of ports (with an eye to the future, that both QA and PROD servers will be plugged into the same switches). </p><br><p>  Configured two flat private networks for each vlan (one interface per switch).  On top of these addresses is the announcement of another address from the third private network, which is the cluster network for CEPH. </p><br><p>  Since the <em>public network</em> (which we use for SSH) runs on BGP, we used frr, which is already in the system, to configure OSPF. </p><br><p>  <strong>10.10.10.0/24 and 20.20.20.0/24</strong> - two flat networks on the switches </p><br><p>  <strong>172.16.1.0/24</strong> - network for announcement </p><br><p><img src="https://habrastorage.org/webt/t5/c5/fp/t5c5fpxxwqv7u82ywsvkuumcsag.jpeg"></p><br><p>  Machine setting: <br>  interfaces <strong>ens1f0 ens1f1</strong> look into the private network <br>  interfaces <strong>ens4f0 ens4f1</strong> look to the public network </p><br><p>  The network config on the machine looks like this: </p><br><pre> <code class="plaintext hljs">oot@ceph01-test:~# cat /etc/network/interfaces # This file describes the network interfaces available on your system # and how to activate them. For more information, see interfaces(5). source /etc/network/interfaces.d/* # The loopback network interface auto lo iface lo inet loopback auto ens1f0 iface ens1f0 inet static post-up /sbin/ethtool -G ens1f0 rx 8192 post-up /sbin/ethtool -G ens1f0 tx 8192 post-up /sbin/ethtool -L ens1f0 combined 32 post-up /sbin/ip link set ens1f0 txqueuelen 10000 mtu 9000 address 10.10.10.1/24 auto ens1f1 iface ens1f1 inet static post-up /sbin/ethtool -G ens1f1 rx 8192 post-up /sbin/ethtool -G ens1f1 tx 8192 post-up /sbin/ethtool -L ens1f1 combined 32 post-up /sbin/ip link set ens1f1 txqueuelen 10000 mtu 9000 address 20.20.20.1/24 auto ens4f0 iface ens4f0 inet manual post-up /sbin/ethtool -G ens4f0 rx 8192 post-up /sbin/ethtool -G ens4f0 tx 8192 post-up /sbin/ethtool -L ens4f0 combined 32 post-up /sbin/ip link set ens4f0 txqueuelen 10000 mtu 9000 auto ens4f1 iface ens4f1 inet manual post-up /sbin/ethtool -G ens4f1 rx 8192 post-up /sbin/ethtool -G ens4f1 tx 8192 post-up /sbin/ethtool -L ens4f1 combined 32 post-up /sbin/ip link set ens4f1 txqueuelen 10000 mtu 9000 #     loopback-: auto lo:0 iface lo:0 inet static address 55.66.77.88/32 dns-nameservers 55.66.77.88 auto lo:1 iface lo:1 inet static address 172.16.1.1/32</code> </pre> <br><p>  Frr configs look like this: </p><br><pre> <code class="plaintext hljs">root@ceph01-test:~# cat /etc/frr/frr.conf frr version 6.0 frr defaults traditional hostname ceph01-prod log file /var/log/frr/bgpd.log log timestamp precision 6 no ipv6 forwarding service integrated-vtysh-config username cumulus nopassword ! interface ens4f0 ipv6 nd ra-interval 10 ! interface ens4f1 ipv6 nd ra-interval 10 ! router bgp 65500 bgp router-id 55.66.77.88 # ,       timers bgp 10 30 neighbor ens4f0 interface remote-as 65001 neighbor ens4f0 bfd neighbor ens4f1 interface remote-as 65001 neighbor ens4f1 bfd ! address-family ipv4 unicast redistribute connected route-map redis-default exit-address-family ! router ospf ospf router-id 172.16.0.1 redistribute connected route-map ceph-loopbacks network 10.10.10.0/24 area 0.0.0.0 network 20.20.20.0/24 area 0.0.0.0 ! ip prefix-list ceph-loopbacks seq 10 permit 172.16.1.0/24 ge 32 ip prefix-list default-out seq 5 permit 0.0.0.0/0 ge 32 ! route-map ceph-loopbacks permit 10 match ip address prefix-list ceph-loopbacks ! route-map redis-default permit 10 match ip address prefix-list default-out ! line vty !</code> </pre> <br><p>  On these settings, network tests iperf, qperf, etc.  showed maximum utilization of both channels at <strong>19.8 Gbit / sec,</strong> while latency dropped to <strong>20us</strong> </p><br><p>  <em><strong>Bgp router-id</strong> field <strong>:</strong> Used to identify a node when processing route information and building routes.</em>  <em>If not specified in the config, then one of the host IP addresses is selected.</em>  <em>Different vendors of hardware and software may have different algorithms, in our case FRR used the largest IP address on the loopback.</em>  <em>This led to two problems:</em> <em><br></em>  <em>1) If we tried to hang another address (for example, a private one from the network 172.16.0.0) more than the current one, this led to a change in the <strong>router-id</strong> and, accordingly, to the reinstallation of the current sessions.</em>  <em>And this means a short-term rupture and loss of network connectivity.</em> <em><br></em>  <em>2) If we tried to hang up anycast address common to several machines and it was selected as a <strong>router-id</strong> , two nodes with the same <strong>router-id</strong> appeared on the network <strong>.</strong></em> </p><br><h2 id="chast-2">  Part 2 </h2><br><p>  After testing for QA, we started upgrading the combat Ceph. </p><br><h3 id="network">  NETWORK </h3><br><h3 id="pereezd-s-odnoy-seti-na-dve">  Moving from one network to two </h3><br><p>  The cluster network parameter is one of those that cannot be changed on the fly by specifying its OSD via <strong>ceph tell osd. * Injectargs.</strong>  Changing it in the config and restarting the entire cluster is a tolerable solution, but I really did not want to have even a small downtime.  It is also impossible to restart one OSD with a new network parameter - at some point we would have two polclusters - the old OSD on the old network, the new ones on the new one.  Fortunately, the cluster network parameter (as, by the way, and public_network) is a list, that is, you can specify several values.  We decided to move gradually - first add a new network to the configs, then remove the old one.  Ceph follows the list of networks sequentially - OSD starts working first with the network that is listed first in the list. </p><br><p>  The difficulty was that the first network worked through bgp and was connected to one switch, and the second was connected to ospf and connected to others that were not physically connected with the first.  At the time of the transition, it was necessary to have temporarily network access between the two networks.  The customization feature of our factory was that ACLs cannot be configured on the network if it is not on the list advertised (in this case, it is “external” and the ACL for it can only be created externally. It was created on spain, but did not arrive on leaf). </p><br><p>  The solution was a crutch, difficult, but it worked: to announce the internal network via bgp, simultaneously with ospf. </p><br><p>  The sequence of the transition was as follows: </p><br><p>  1) Configure the cluster network for ceph on two networks: via bgp and via ospf <br>  There was nothing to change in the frr configs, string </p><br><pre> <code class="plaintext hljs">ip prefix-list default-out seq 5 permit 0.0.0.0/0 ge 32</code> </pre> <br><p>  does not limit us in the advertised addresses, the address for the internal network is raised on the loopback interface, it was enough for the routers to configure the reception of the announcement of this address. </p><br><p>  2) Add a new network to the <strong>ceph.conf</strong> config </p><br><pre> <code class="plaintext hljs">cluster network = 172.16.1.0/24, 55.66.77.88/27</code> </pre> <br><p>  and we start one by one to restart the OSD, until everyone <strong>switches</strong> to the <strong>172.16.1.0/24</strong> network <strong>.</strong> </p><br><pre> <code class="plaintext hljs">root@ceph01-prod:~#ceph osd set noout # -          OSD #     .  ,     #  , OSD      30 . root@ceph01-prod:~#for i in $(ps ax | grep osd | grep -v grep| awk '{ print $10}'); \ root@ceph01-prod:~# do systemctl restart ceph-osd@$i; sleep 30; done</code> </pre> <br><p>  3) Then remove the extra network from the config </p><br><pre> <code class="plaintext hljs">cluster network = 172.16.1.0/24</code> </pre> <br><p>  and repeat the procedure. </p><br><p>  Everything, we smoothly moved to a new network. </p><br><p>  References: <br>  <a href="https://shalaginov.com/2016/03/26/%25D1%2581%25D0%25B5%25D1%2582%25D0%25B5%25D0%25B2%25D0%25B0%25D1%258F-%25D1%2582%25D0%25BE%25D0%25BF%25D0%25BE%25D0%25BB%25D0%25BE%25D0%25B3%25D0%25B8%25D1%258F-leaf-spine/">https://shalaginov.com/2016/03/26/online- topology-leaf-spine/</a> <br>  <a href="https://www.xcloudnetworks.com/case-studies/innova-case-study/">https://www.xcloudnetworks.com/case-studies/innova-case-study/</a> <br>  <a href="https://github.com/rumanzo/ceph-gobench">https://github.com/enmanzo/ceph-gobench</a> </p></div>
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <p>Source: <a href="https://habr.com/ru/post/458390/">https://habr.com/ru/post/458390/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../458376/index.html">Not a regular programming language</a></li>
+<li><a href="../458378/index.html">Use Avocode for site layout. Overview for beginners. Bonus - register a 30-day trial period</a></li>
+<li><a href="../458382/index.html">Why do we teach this?</a></li>
+<li><a href="../458384/index.html">HP 3D Structured Light Scanner Pro S3 3D Scanner Review and Testing</a></li>
+<li><a href="../458388/index.html">Deep (Learning + Random) Forest and parsing articles</a></li>
+<li><a href="../458394/index.html">Securing wireless protocols using LoRaWAN as an example</a></li>
+<li><a href="../458396/index.html">How I made it easy to develop on Vue.js with server-side rendering</a></li>
+<li><a href="../458398/index.html">Remote hygiene or telepathy benefits</a></li>
+<li><a href="../4584/index.html">Rambler turned off the TV</a></li>
+<li><a href="../45840/index.html">Operator @ in php</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

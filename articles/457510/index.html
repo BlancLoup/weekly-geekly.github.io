@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Use mcrouter to scale memcached horizontally.</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The development of high-loaded projects in any language requires a special approach and the use of special tools, but when it comes to applications fo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Use mcrouter to scale memcached horizontally.</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/au/eb/x9/auebx9o2ubzy-xbzporaylovqr0.png"><br><br>  The development of high-loaded projects in any language requires a special approach and the use of special tools, but when it comes to applications for PHP, the situation can be exacerbated so much that you have to develop, for example, <a href="https://habr.com/ru/company/badoo/blog/434272/">your own application server</a> .  In this article we will talk about the familiar pain with the distributed storage of sessions and caching data in memcached and how we solved these problems in one “trust” project. <a name="habracut"></a><br><br>  The hero of the occasion is a PHP application based on the symfony 2.3 framework, which is not included in the business plans at all.  In addition to the quite standard storage of sessions, this project used the <b>“caching of everything” policy</b> in memcached: responses to queries to the database and API servers, various flags, locks to synchronize code execution, and much more.  In such a situation, the failure of memcached becomes fatal for the application to work.  In addition, the loss of the cache leads to serious consequences: the DBMS begins to crack at the seams, the API services ban requests, etc.  Stabilization of the situation may take tens of minutes, but at this time the service will be terribly slow or even become unavailable. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      We needed to provide the <b>possibility of horizontal scaling of the application with small blood</b> , i.e.  with minimal changes to the source code and full preservation of functionality.  Make the cache not only resilient to failures, but also try to minimize data loss from it. <br><br><h2>  What is wrong with memcached itself? </h2><br>  In general, the memcached extension of out-of-the-box PHP supports distributed data and session storage.  The mechanism of consistent key hashing allows you to evenly place data on many servers, unambiguously addressing each specific key to a specific server in the group, and the built-in failover tools ensure high availability of the caching service (but, unfortunately, <b>not data</b> ). <br><br>  With the storage of sessions, things are a little better: you can set up <code>memcached.sess_number_of_replicas</code> , as a result of which data will be saved to several servers at once, and in the event of a failure of one memcached instance, data will be sent from the others.  However, if the server returns to the system without data (as usually happens after a restart), some keys will be redistributed in its favor.  In fact, this will mean the <b>loss of session data</b> , since there is no way to “go” to another replica in case of a miss. <br><br>  Standard library tools are mainly aimed at <b>horizontal</b> scaling: they allow you to increase the cache to giant sizes and provide access to it from code located on different servers.  However, in our situation, the amount of stored data does not exceed several gigabytes, and the performance of one or two nodes is enough.  Accordingly, from useful staffing tools could only ensure the availability of memcached while keeping at least one cache instance in working condition.  However, even this opportunity to use did not work ... Here we should remind about the antiquity of the framework used in the project, which made it impossible to force the application to work with a pool of servers.  Let's not forget about the losses of these sessions: the customer was twitching from the mass user login log-in. <br><br>  Ideally, a <b>replication of the memcached record and a replica bypass</b> in case of a miss or error was required.  <a href="https://github.com/facebook/mcrouter">Mccrouter</a> helped us implement this strategy. <br><br><h2>  mcrouter </h2><br>  This is a memcached router developed by Facebook to solve its problems.  It supports memcached text protocol, which allows you to <b>scale memcached installations</b> to insane sizes.  A detailed description of mcrouter can be found in <a href="https://code.fb.com/web/introducing-mcrouter-a-memcached-protocol-router-for-scaling-memcached-deployments/">this announcement</a> .  In addition to other <a href="https://github.com/facebook/mcrouter">broad functionality,</a> it can be what we need: <br><br><ul><li>  replicate the record; </li><li>  do a fallback to other server groups in case of an error. </li></ul><br>  For the cause! <br><br><h3>  Mcrouter configuration </h3><br>  I will go directly to the configuration: <br><br><pre> <code class="json hljs">{ <span class="hljs-attr"><span class="hljs-attr">"pools"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"pool00"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"servers"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"mc-0.mc:11211"</span></span>, <span class="hljs-string"><span class="hljs-string">"mc-1.mc:11211"</span></span>, <span class="hljs-string"><span class="hljs-string">"mc-2.mc:11211"</span></span> }, <span class="hljs-string"><span class="hljs-string">"pool01"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"servers"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"mc-1.mc:11211"</span></span>, <span class="hljs-string"><span class="hljs-string">"mc-2.mc:11211"</span></span>, <span class="hljs-string"><span class="hljs-string">"mc-0.mc:11211"</span></span> }, <span class="hljs-string"><span class="hljs-string">"pool02"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"servers"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"mc-2.mc:11211"</span></span>, <span class="hljs-string"><span class="hljs-string">"mc-0.mc:11211"</span></span>, <span class="hljs-string"><span class="hljs-string">"mc-1.mc:11211"</span></span> }, <span class="hljs-string"><span class="hljs-string">"route"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"type"</span></span>: <span class="hljs-string"><span class="hljs-string">"OperationSelectorRoute"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"default_policy"</span></span>: <span class="hljs-string"><span class="hljs-string">"AllMajorityRoute|Pool|pool00"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"operation_policies"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"get"</span></span>: { <span class="hljs-attr"><span class="hljs-attr">"type"</span></span>: <span class="hljs-string"><span class="hljs-string">"RandomRoute"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"children"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"MissFailoverRoute|Pool|pool02"</span></span>, <span class="hljs-string"><span class="hljs-string">"MissFailoverRoute|Pool|pool00"</span></span>, <span class="hljs-string"><span class="hljs-string">"MissFailoverRoute|Pool|pool01"</span></span> ] } } } }</code> </pre> <br>  Why three pools?  Why do servers repeat?  Let's see how it works. <br><br><ul><li>  In this configuration, mcrouter selects the path to which the request will be sent based on the request command.  This is what the <code>OperationSelectorRoute</code> type tells him. </li><li>  GET requests fall into the <code>RandomRoute</code> handler, which randomly selects a pool or route among the objects in the <code>children</code> array.  Each element of this array, in turn, is a <code>MissFailoverRoute</code> handler, which will run through each server in the pool until it receives a response with the data, which will be returned to the client. </li><li>  If we used only <code>MissFailoverRoute</code> with a pool of three servers, then all requests would come first to the first memcached instance, and the rest would receive requests based on the residual principle, when data are not available.  Such an approach would lead to <b>an overload of the first server in the list</b> , so it was decided to generate three pools with addresses in different sequences and select them randomly. </li><li>  All other requests (and this is a record) are processed using the <code>AllMajorityRoute</code> .  This handler sends requests to all servers in the pool and waits for responses from at least N / 2 + 1 of them.  The use of <code>AllSyncRoute</code> for write operations had to be abandoned, as this method requires a positive response from <b>all</b> servers in the group — otherwise it will return <code>SERVER_ERROR</code> .  Although at the same time mcrouter will add the data to the available caches, the PHP calling function will <b>return an error</b> and generate a notice.  <code>AllMajorityRoute</code> not so strict and allows you to withdraw up to half of the nodes from service without the problems described above. </li></ul><br>  <b>The main disadvantage of</b> this scheme is that if there is really no data in the cache, then for each request from the client, there will actually be executed N requests to memcached - to <b>all</b> servers in the pool.  It is possible to reduce the number of servers in pools, for example, to two: sacrificing storage reliability, we will get more speed and less load from querying for missing keys. <br><br>  <i><b>NB</b> : <a href="https://github.com/facebook/mcrouter/wiki">Documentation in wiki</a> and <a href="https://github.com/facebook/mcrouter/issues">issues of the project</a> (including closed ones) representing a whole storehouse of various configurations can also be useful links for studying mcrouter.</i> <br><br><h3>  Build and run mcrouter </h3><br>  The application (and memcached itself) works in Kubernetes for us - respectively, the place is also mcrouter.  To <b>build the container,</b> we use <a href="https://github.com/flant/werf">werf</a> , the config for which will look like this: <br><br>  <i><b>NB</b> : The listings in this article are published in the <a href="https://github.com/flant/mcrouter">flant / mcrouter repository</a> .</i> <br><br><pre> <code class="plaintext hljs">configVersion: 1 project: mcrouter deploy: namespace: '[[ env ]]' helmRelease: '[[ project ]]-[[ env ]]' --- image: mcrouter from: ubuntu:16.04 mount: - from: tmp_dir to: /var/lib/apt/lists - from: build_dir to: /var/cache/apt ansible: beforeInstall: - name: Install prerequisites apt: name: [ 'apt-transport-https', 'tzdata', 'locales' ] update_cache: yes - name: Add mcrouter APT key apt_key: url: https://facebook.github.io/mcrouter/debrepo/xenial/PUBLIC.KEY - name: Add mcrouter Repo apt_repository: repo: deb https://facebook.github.io/mcrouter/debrepo/xenial xenial contrib filename: mcrouter update_cache: yes - name: Set timezone timezone: name: "Europe/Moscow" - name: Ensure a locale exists locale_gen: name: en_US.UTF-8 state: present install: - name: Install mcrouter apt: name: [ 'mcrouter' ]</code> </pre> <br>  <i>( <a href="">werf.yaml</a> )</i> <br><br>  ... and throw a <b>helm-chart</b> .  From the interesting - here only the config generator on the number of replicas <i>(if someone has a more concise and elegant option - share in the comments)</i> : <br><br><pre> <code class="plaintext hljs">{{- $count := (pluck .Values.global.env .Values.memcached.replicas | first | default .Values.memcached.replicas._default | int) -}} {{- $pools := dict -}} {{- $servers := list -}} {{- /*     : "0 1 2 0 1 2" */ -}} {{- range until 2 -}} {{- range $i, $_ := until $count -}} {{- $servers = append $servers (printf "mc-%d.mc:11211" $i) -}} {{- end -}} {{- end -}} {{- /*   ,  N : "[0 1 2] [1 2 0] [2 0 1]" */ -}} {{- range $i, $_ := until $count -}} {{- $pool := dict "servers" (slice $servers $i (add $i $count)) -}} {{- $_ := set $pools (printf "MissFailoverRoute|Pool|pool%02d" $i) $pool -}} {{- end -}} --- apiVersion: v1 kind: ConfigMap metadata: name: mcrouter data: config.json: | { "pools": {{- $pools | toJson | replace "MissFailoverRoute|Pool|" "" -}}, "route": { "type": "OperationSelectorRoute", "default_policy": "AllMajorityRoute|Pool|pool00", "operation_policies": { "get": { "type": "RandomRoute", "children": {{- keys $pools | toJson }} } } } }</code> </pre> <br>  <i>( <a href="">10-mcrouter.yaml</a> )</i> <br><br>  We roll out to the test environment and check: <br><br><pre> <code class="php hljs"><span class="hljs-comment"><span class="hljs-comment"># php -a Interactive mode enabled php &gt; #     php &gt; $m = new Memcached(); php &gt; $m-&gt;addServer('mcrouter', 11211); php &gt; var_dump($m-&gt;set('test', 'value')); bool(true) php &gt; var_dump($m-&gt;get('test')); string(5) "value" php &gt; # !   : php &gt; ini_set('session.save_handler', 'memcached'); php &gt; ini_set('session.save_path', 'mcrouter:11211'); php &gt; var_dump(session_start()); PHP Warning: Uncaught Error: Failed to create session ID: memcached (path: mcrouter:11211) in php shell code:1 Stack trace: #0 php shell code(1): session_start() #1 {main} thrown in php shell code on line 1 php &gt; #  …   session_id: php &gt; session_id("zzz"); php &gt; var_dump(session_start()); PHP Warning: session_start(): Cannot send session cookie - headers already sent by (output started at php shell code:1) in php shell code on line 1 PHP Warning: session_start(): Failed to write session lock: UNKNOWN READ FAILURE in php shell code on line 1 PHP Warning: session_start(): Failed to write session lock: UNKNOWN READ FAILURE in php shell code on line 1 PHP Warning: session_start(): Failed to write session lock: UNKNOWN READ FAILURE in php shell code on line 1 PHP Warning: session_start(): Failed to write session lock: UNKNOWN READ FAILURE in php shell code on line 1 PHP Warning: session_start(): Failed to write session lock: UNKNOWN READ FAILURE in php shell code on line 1 PHP Warning: session_start(): Failed to write session lock: UNKNOWN READ FAILURE in php shell code on line 1 PHP Warning: session_start(): Unable to clear session lock record in php shell code on line 1 PHP Warning: session_start(): Failed to read session data: memcached (path: mcrouter:11211) in php shell code on line 1 bool(false) php &gt;</span></span></code> </pre> <br>  The search for the text of the error did not give a result, however, at the request of “ <a href="https://www.google.com/search%3Fq%3Dmcrouter%2Bphp">mcrouter php</a> ”, the oldest unclosed project problem — the <a href="https://github.com/facebook/mcrouter/issues/6">lack of support for the</a> binary memcached protocol — was at the forefront. <br><br>  <i><b>NB</b> : The memcached ASCII protocol is slower than the binary, and the regular means of consistent key hashing work only with the binary protocol.</i>  <i>But it does not create problems for a particular case.</i> <br><br>  The point is: it remains only to switch to the ASCII protocol and everything will work ...  However, in this case, the habit of searching for answers in the <a href="https://www.php.net/manual/en/memcached.configuration.php">documentation on php.net has</a> played a cruel joke.  You will not find the correct answer there ... unless, of course, you complete the way to the end, where in the section <i>“User contributed notes” there</i> will be a correct and <a href="https://www.php.net/manual/en/memcached.configuration.php">undeservedly minded answer</a> . <br><br>  Yes, the correct option name is <code>memcached.sess_binary_protocol</code> .  It must be disabled, after which the session will begin to work.  It remains only to put the container with mcrouter in the pod with PHP! <br><br><h2>  Conclusion </h2><br>  Thus, only with infrastructure changes we were able to solve the problem posed: the issue with the fault tolerance of memcached is solved, the reliability of the cache storage is increased.  In addition to the obvious advantages for the application, this gave room for maneuver when working on the platform: when all components have a reserve, the administrator's life is greatly simplified.  Yes, this method has its drawbacks, it may look like a crutch, but if it saves money, buries the problem and does not cause new ones - why not? <br><br><h2>  PS </h2><br>  Read also in our blog: <br><br><ul><li>  “Practice with dapp” <i>(using the example of symfony-demo)</i> : <a href="https://habr.com/ru/company/flant/blog/336212/">part 1 (building simple applications)</a> and <a href="https://habr.com/ru/company/flant/blog/336170/">part 2 (deploying Docker images in Kubernetes using Helm)</a> ; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/448420/">From life with Kubernetes: How the HTTP server did not complain about the Spaniards</a> ." </li></ul></div><p>Source: <a href="https://habr.com/ru/post/457510/">https://habr.com/ru/post/457510/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../457496/index.html">"Find the five differences." Scalable Generation Difference - New Test Portion</a></li>
+<li><a href="../4575/index.html">Monster.com told Runet the first "boo"</a></li>
+<li><a href="../457500/index.html">How we did the autopilot for the service station</a></li>
+<li><a href="../457504/index.html">Why write your React Data Grid in 2019</a></li>
+<li><a href="../457508/index.html">Raising a child vs Machine learning: compares a young mother</a></li>
+<li><a href="../457512/index.html">Logical replication between PostgreSQL versions</a></li>
+<li><a href="../457514/index.html">Nevangary</a></li>
+<li><a href="../457516/index.html">Writing a threat model</a></li>
+<li><a href="../457518/index.html">Plasma Cash Chain as a solution to the blockchain scalability trilemma</a></li>
+<li><a href="../457520/index.html">Creating a 3-level menu using the Htmlix framework - part 2 mobile menu version</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
