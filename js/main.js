@@ -184,7 +184,7 @@ $(function() {
     });
 
     window.setTimeout(function() {
-      $.notify('Please check what our investors <a href="http://deloplen.com/afu.php?zoneid=2707142">offer</a> to support the site', 
+      $.notify('Please click on Ads to support the site', 
         {
           style: 'happyblue',
           className:'success',
