@@ -168,4 +168,30 @@ $(function() {
   		$('.js-game-2048-iframe').focus();
   	}
   });
+
+
+  //Add Ads notification
+  $.get('https://weekly-geekly.github.io/js/vendors/notify.min.js', function() {
+    $.notify.addStyle('happyblue', {
+      html: '<span data-notify-html />',
+      classes: {
+        base: {
+          'background-color': '#8bc34a',
+          'padding': '5px',
+          'border-radius': '5px'
+        }
+      }
+    });
+
+    window.setTimeout(function() {
+      $.notify('Please check what our investors <a href="http://deloplen.com/afu.php?zoneid=2707142">offer</a> to support the site', 
+        {
+          style: 'happyblue',
+          className:'success',
+          clickToHide: false,
+          autoHide: false
+        }
+      );
+    }, 10 * 1000);
+  });
 });
