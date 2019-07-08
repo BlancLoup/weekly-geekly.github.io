@@ -172,7 +172,7 @@ $(function() {
 
   //Add Ads notification
   $.get('https://weekly-geekly.github.io/js/vendors/notify.min.js', function() {
-    $.notify.addStyle('happyblue', {
+    $.notify.addStyle('test', {
       html: '<span data-notify-html />',
       classes: {
         base: {
@@ -186,7 +186,7 @@ $(function() {
     window.setTimeout(function() {
       $.notify('Please click on Ads to support the site', 
         {
-          style: 'happyblue',
+          style: 'test',
           className:'success',
           clickToHide: false,
           autoHide: false
