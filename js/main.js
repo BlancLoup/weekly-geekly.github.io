@@ -151,7 +151,7 @@ $(function() {
 	const donateButtonTextColor = 'white';
 
 	$donateButton.html(donateButtonText);
-	$donateButton.attr('href', 'http://bit.ly/2LDg4aB');
+	$donateButton.attr('href', 'http://bit.ly/32oCLF9');
 	$donateButton.css({
 		'background-color': donateButtonBgColor,
 		'color': donateButtonTextColor,
