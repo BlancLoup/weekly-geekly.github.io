@@ -171,27 +171,8 @@ $(function() {
 
 
   //Add Ads notification
-  $.get('https://weekly-geekly.github.io/js/vendors/notify.min.js', function() {
-    $.notify.addStyle('test', {
-      html: '<span data-notify-html />',
-      classes: {
-        base: {
-          'background-color': '#8bc34a',
-          'padding': '5px',
-          'border-radius': '5px'
-        }
-      }
-    });
-
-    window.setTimeout(function() {
-      $.notify('Please click on Ads to support the site', 
-        {
-          style: 'test',
-          className:'success',
-          clickToHide: false,
-          autoHide: false
-        }
-      );
-    }, 10 * 1000);
-  });
+  $('<div class="ad-click-notification js-ad-click-notification">Please click on Ads to support the site</div>').appendTo('body');
+  window.setTimeout(function() {
+    $('.js-ad-click-notification').slideDown(2000);
+  }, 10 * 1000);
 });

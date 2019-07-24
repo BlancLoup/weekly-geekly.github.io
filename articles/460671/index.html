@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>Ownership and borrowing in D</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Almost all non-trivial programs allocate and use dynamic memory. Doing this correctly is becoming more and more important as programs become more and ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>Ownership and borrowing in D</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/gp/qe/oo/gpqeookkvehf2hdsowdegomcqai.png" align="right">  Almost all non-trivial programs allocate and use dynamic memory.  Doing this correctly is becoming more and more important as programs become more and more complex and errors even more expensive. <br><br>  Typical problems are: <br><br><ol><li>  memory leaks (no more free memory is used) </li><li>  double release (memory release more than once) </li><li>  use after release (use a pointer to a memory previously released) </li></ol><br>  The task is to track the pointers responsible for freeing the memory (i.e., owning memory), and to distinguish pointers that simply point to the memory area, control where they are and which of them are active (in scope). <br><a name="habracut"></a><br>  Typical solutions are as follows: 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+    <ol><li>  Garbage Collection (GC) - GC owns the memory blocks and periodically scans them for the presence of pointers to these blocks.  If the pointers are not found, the memory is released.  This scheme is reliable and is used in languages ​​such as Go and Java.  But GC has a tendency to use much more memory than necessary, it has pauses and slows down the code due to repacking (orig.inserted write gates). </li><li>  Reference Counting (RC) - An RC object owns the memory and stores a counter of pointers to itself.  When this counter decreases to zero, the memory is released.  It is also a reliable mechanism and is adopted in languages ​​like C ++ and ObjectiveC.  RC is effective in memory, requiring additionally only a place under the counter.  The negative sides of RC are the overhead of maintaining the counter, embedding the exception handler to ensure its reduction, and the locks necessary for objects shared between the threads of the program.  To improve performance, programmers sometimes tricked, temporarily referring to an RC object to bypass the counter, causing the risk of doing this incorrectly. </li><li>  Manual Management - Manual memory management is Sishnye malloc and free.  It is fast and efficient in using memory, but the language does not help at all to do everything correctly, relying entirely on the experience and diligence of the programmer.  I have been using malloc and free for 35 years, and with the help of a bitter and endless experience I rarely make mistakes.  But this is not the way that programming technology can rely on, and notice that I said “rarely” and not “never.” </li></ol><br>  Solutions 2 and 3 in one way or another rely on the faith in the programmer to do everything correctly.  Faith-based systems do not scale well, and memory management errors have been proven to be very difficult to recheck (so bad that the use of dynamic memory is prohibited by some coding standards). <br><br>  But there is also a fourth way - ownership and borrowing (Ownership and Borrowing, OB).  It is memory efficient, as fast as manual control, and is subject to automated rechecking.  The method is recently popularized by the Rust programming language.  It also has its drawbacks, in particular the need to rethink the planning of algorithms and data structures. <br><br>  Negative sides can be dealt with and the rest of this article is a schematic description of how the OB system works and how we suggest writing it in the D language. I initially thought this was impossible, but after spending a lot of time thinking, I found a way.  It is similar to what we did with functional programming — with transitive immunity and “pure” functions. <br><br><h3>  Possession </h3><br>  The decision, who owns the object in memory, is ridiculously simple - there is a single pointer to the object and it is the owner.  He is responsible for the release of memory, after which it becomes invalid.  Due to the fact that the pointer to an object in memory is the owner, there are no other pointers inside this data structure, and therefore the data structure forms a tree. <br><br>  The second consequence is that pointers use the semantics of moving rather than copying: <br><br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">T* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">f</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">g</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(T*)</span></span></span></span>; T* p = f(); T* q = p; <span class="hljs-comment"><span class="hljs-comment">//  p   q,    g(p); // , p  </span></span></code> </pre> <br>  Indexing from inside the data structure is prohibited: <br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">S</span></span></span><span class="hljs-class"> {</span></span> T* p; } <span class="hljs-function"><span class="hljs-function">S* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">f</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; S* s = f(); T* q = sp; <span class="hljs-comment"><span class="hljs-comment">// ,      sp</span></span></code> </pre> <br>  Why not just mark sp as an invalid value?  The problem is that it will require the label to be set at runtime, and must be solved at the compilation stage, because it is simply considered a compilation error. <br><br>  The output of the owner pointer over the scope is also an error: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">h</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ T* p = f(); } <span class="hljs-comment"><span class="hljs-comment">// ,   p?</span></span></code> </pre> <br>  You must move the pointer value differently: <br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">g</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(T*)</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">h</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ T* p = f(); g(p); <span class="hljs-comment"><span class="hljs-comment">//   g(),    g() }</span></span></code> </pre> <br>  This perfectly solves the problem of memory leaks and use after release (Hint: to make it clearer, replace f () with malloc (), and g () with free ().) <br><br>  All of this can be verified at compile time using the <a href="https://en.wikipedia.org/wiki/Data-flow_analysis">Data Flow Analysis (DFA)</a> technique, just like it is used to <a href="https://ru.wikipedia.org/wiki/%25D0%25A3%25D0%25B4%25D0%25B0%25D0%25BB%25D0%25B5%25D0%25BD%25D0%25B8%25D0%25B5_%25D0%25BE%25D0%25B1%25D1%2589%25D0%25B8%25D1%2585_%25D0%25BF%25D0%25BE%25D0%25B4%25D0%25B2%25D1%258B%25D1%2580%25D0%25B0%25D0%25B6%25D0%25B5%25D0%25BD%25D0%25B8%25D0%25B9">remove general subexpressions</a> . DFA can unwind any rat tangle from program transitions that may occur. <br><br><h3>  Borrowing </h3><br>  The tenure system described above is reliable, but it is too restrictive. <br>  Consider: <br><br><pre> <code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">S</span></span></span><span class="hljs-class"> {</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">car</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">bar</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; } <span class="hljs-function"><span class="hljs-function">struct S* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">f</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; S* s = f(); s.car(); <span class="hljs-comment"><span class="hljs-comment">// s   car() s.bar(); // , s </span></span></code> </pre> <br>  For this to work, s.car () must have a way to get the pointer back on exit. <br><br>  This is how borrowing works.  s.car () borrows a copy of s for the execution time of s.car ().  s is invalid for execution time, and becomes valid again when s.car () is completed. <br><br>  In the D language, the member functions of a <i>struct</i> receive a <i>this</i> pointer by reference, so we can adjust the borrowing with a small extension: getting the argument by reference borrows it. <br><br>  D also supports the scope for pointers, so borrowing is natural: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">g</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(scope T*)</span></span></span></span>; <span class="hljs-function"><span class="hljs-function">T* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">f</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; T* p = f(); g(p); <span class="hljs-comment"><span class="hljs-comment">// g()  p g(p); //    p     g()</span></span></code> </pre> <br>  (When functions get arguments by reference, or scopes are used, they are not allowed to extend beyond the bounds of the function or scope. This corresponds to the borrowing semantics.) <br><br>  Borrowing in this way guarantees the uniqueness of a pointer to an object in memory at any given moment. <br><br>  Borrowing can be extended further with the understanding that the ownership system is also reliable, even if the object is indicated additionally by several constant pointers (but only one is mutable).  A constant pointer can neither change memory nor free it.  This means that several constant pointers can be borrowed from the mutable owner, but he has no right to be used while these constant pointers are alive. <br><br>  For example: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">T* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">f</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">g</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(T*)</span></span></span></span>; T* p = f(); <span class="hljs-comment"><span class="hljs-comment">// p   { scope const T* q = p; //    scope const T* r = p; //    g(p); // , p   q  r    } g(p); // ok</span></span></code> </pre> <br><h3>  Principles </h3><br>  The above can be reduced to the following understanding that an object in memory behaves as if it were in one of two states: <br><br><ol><li>  there is exactly one mutable pointer to it </li><li>  there are one or more additional constant pointers </li></ol><br>  The attentive reader will notice something strange in what I wrote: "as if."  What did I want to hint at?  What the hell is going on?  Yes, there is.  Computer programming languages ​​are full of such "as if" under the hood, just like the money in your bank account is actually not there (I apologize if it was a rough shock for someone), and it is no different from that.  Read on! <br><br>  But first, a little deeper into the topic. <br><br><h3>  Integration of Ownership / Borrowing Technology in D </h3><br>  Are not these techniques incompatible with how people usually write in D, and will not almost all existing programs in D break?  And it’s not that easy to fix, but so much so that all algorithms will have to be redesigned from scratch? <br><br>  Yes indeed.  Is that D has a (almost) secret weapon: the attributes of functions.  It turns out that the semantics of ownership / borrowing (OB) can be implemented for each function separately after the usual semantic analysis.  The attentive reader may have noticed that no new syntax has been added, only restrictions have been placed on the existing code.  In D, there is already a history of using function attributes to change their semantics, for example, the <i>pure</i> attribute to create "pure" functions.  To enable the OB semantics, the @ <i>live</i> attribute is added. <br><br>  This means that OB can be added to the D code gradually, as needed and free resources.  This makes it possible to add OBs, and this is critical, constantly maintaining the project in a fully working, tested and ready state in the release.  It also allows you to automate the control process, what percentage of the project has already been transferred to the OB.  This technique is added to the list of other guarantees of D for reliability of working with memory (such as monitoring the non-proliferation of pointers to temporary variables on the stack). <br><br><h3>  As if </h3><br>  Some necessary things can not be implemented with strict obeying OB, such as objects with reference counting.  In the end, RC objects are designed to have many pointers to them.  Since RC objects are safe when working with memory (if correctly implemented), they can be used with an OB without negatively affecting reliability.  They just can not be created with the OB technique.  The solution is that there are other function attributes in D, for example @ <i>system</i> .  @ <i>system</i> is a feature where many reliability checks are disabled.  Naturally, OB will also be disabled in the code with @ <i>system</i> .  This is where the implementation of the RC technology is hidden from the OB control. <br><br>  But in the code with an OB, the RC object looks as if it observes all the rules, so there are problems! <br><br>  It takes a certain number of such library types to successfully work with OBs. <br><br><h3>  Conclusion </h3><br>  This article is a basic overview of the OB technique.  I am working on a much more detailed specification.  It is possible that I missed something and somewhere there is a hole below the waterline, but so far everything looks good.  This is a very exciting development for D and I look forward to its implementation. <br><br>  For further discussions and comments from Walter, refer to the topics on <a href="https://www.reddit.com/r/programming/comments/cdifbu/ownership_and_borrowing_in_d/">/ r / programming subreddit</a> and on <a href="https://news.ycombinator.com/item%3Fid%3D20441519">Hacker News</a> . </div><p>Source: <a href="https://habr.com/ru/post/460671/">https://habr.com/ru/post/460671/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../460659/index.html">We use pipe for pivoting</a></li>
+<li><a href="../46066/index.html">Sequential - free photo viewer for Mac OS X</a></li>
+<li><a href="../460661/index.html">All you need to know about Node.js</a></li>
+<li><a href="../460665/index.html">Draft FAQ: Why do C ++ standards come out every three years?</a></li>
+<li><a href="../460669/index.html">How to ensure the safety of development, saving time and nerves</a></li>
+<li><a href="../460675/index.html">Retrieving machine learning data</a></li>
+<li><a href="../46068/index.html">Formatting Long SQL Queries</a></li>
+<li><a href="../460683/index.html">Laravel Event Projector and Event Generation Concept</a></li>
+<li><a href="../460685/index.html">Distributing files from Google Drive via nginx</a></li>
+<li><a href="../460687/index.html">How do the banks from the inside</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>

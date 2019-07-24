@@ -1,0 +1,134 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>PostgreSQL WAL: 2. Prerecord Log</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Last time we met with the device of one of the important objects of shared memory, the buffer cache. The possibility of losing information from RAM is...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>PostgreSQL WAL: 2. Prerecord Log</h1><div class="post__text post__text-html js-mediator-article">  <a href="https://habr.com/ru/company/postgrespro/blog/458186/">Last time</a> we met with the device of one of the important objects of shared memory, the buffer cache.  The possibility of losing information from RAM is the main reason for the need for disaster recovery tools.  Today we will talk about these funds. <br><br><h1>  Magazine </h1><br>  Alas, there is no miracle: in order to survive the loss of information in the RAM, everything you need must be recorded on the disk (or other non-volatile device) in a timely manner. <br><br>  Therefore, this is what is done.  Along with the change of data is also a <em>log of</em> these changes.  When we change something on the page in the buffer cache, we create an entry in the log about this change.  Record contains the minimum information sufficient in order that if necessary change could be repeated. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      For this to work, a journal entry must necessarily go to disk <em>before the</em> modified page gets there.  Hence the name: <em>pre</em> -write log (write-ahead log). <br><br>  If a failure occurs, the data on the disk is in a disagreeable state: some pages were written earlier, some - later.  But the log remains, which can be read and rerun those operations that were already performed before the failure, but the result of which did not reach the disk. <br><a name="habracut"></a><br><blockquote>  Why not forcefully write the data pages themselves to the disk, why do double work instead?  It turns out that it is more effective. <br>  First, the log is a sequential data stream for writing.  Even HDDs do quite well with sequential recording.  But the recording of the data itself is random, because the pages are scattered across the disk more or less randomly. <br>  Secondly, a journal entry can be much smaller than a page. <br>  Thirdly, during the recording, it is not necessary to take care that at each arbitrary moment of time the data on the disk remains consistent (such a requirement makes life very difficult). <br>  And fourth, as we will see later, the log (since it is available) can be used not only for recovery, but also for backup and replication. <br></blockquote><br>  It is necessary to log all operations that may lead to disk inconsistency in the event of a failure.  In particular, the following actions are recorded in the log: <br><br><ul><li>  change pages in the buffer cache (as a rule, these are pages of tables and indexes) - since the changed page does not immediately hit the disk; </li><li>  commit and cancel transactions - the status change occurs in the XACT buffers and also does not hit the disk immediately; </li><li>  file operations (creating and deleting files and directories, for example, creating files when creating a table) - since these operations must occur synchronously with the change of data. </li></ul><br>  The log does not record: <br><br><ul><li>  operations with non-journaling (unlogged) tables - their name speaks for itself; </li><li>  operations with temporary tables make no sense, since the lifetime of such tables does not exceed the lifetime of the session that created them. </li></ul><br>  Prior to PostgreSQL 10, <a href="https://habr.com/ru/company/postgrespro/blog/328280/">hash indexes were</a> not logged (they only served to map hash functions to different data types), but this has now been fixed. <br><br><h1>  Logical device </h1><br><img src="https://habrastorage.org/webt/vx/vj/67/vxvj673dzyqmhumlxby7i8wt5q0.png"><br><br>  Logically, a journal can be thought of as a sequence of records of various lengths.  Each entry contains <em>data</em> about a certain operation, preceded by a standard <em>header</em> .  In the title, among others, are: <br><br><ul><li>  transaction number to which the record relates; </li><li>  resource manager - the component responsible for recording; </li><li>  checksum (CRC) - allows you to determine data corruption; </li><li>  record length and link to the previous record. </li></ul><br>  The data itself has a different format and meaning.  For example, they can be a fragment of a page that needs to be written on top of its content with a certain offset.  The specified resource manager “understands” how to interpret the data in its record.  There are separate managers for the tables, for each type of index, for the status of transactions, etc. You can optionally get a complete list of them with the command <br><br><pre><code class="plaintext hljs">pg_waldump -r list</code> </pre> <br><h1>  Physical device </h1><br>  The log is stored on disk as files in the $ PGDATA / pg_wal directory.  Each default file is 16 MB.  The size can be increased to avoid a large number of files in one directory.  Prior to PostgreSQL 11, this could only be done when compiling the source code, but now the size can be specified during cluster initialization (the <code>--wal-segsize</code> ). <br><br>  Log entries fall into the currently used file;  when it ends, the next one begins to be used. <br><br>  Special buffers are allocated in the server shared memory.  The size of the log cache is set by the <em>wal_buffers</em> parameter (the default value implies automatic tuning: 1/32 of the buffer cache is allocated). <br><br>  The journal cache is arranged like a buffer cache, but it works mainly in the ring buffer mode: records are added to the “head” and written to the disk from the “tail”. <br><br>  The positions of the entry (“tail”) and insert (“heads”) show the functions pg_current_wal_lsn and pg_current_wal_insert lsn, respectively: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_lsn(), pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_lsn | pg_current_wal_insert_lsn --------------------+--------------------------- 0/331E4E64 | 0/331E4EA0 (1 row)</code> </pre><br>  In order to refer to a specific record, the data type pg_lsn (LSN = log sequence number) is used - this is a 64-bit number representing the byte offset to the record relative to the beginning of the log.  LSN is displayed as two 32-bit numbers in hexadecimal system through slashes. <br><br>  You can find out in which file we will find the desired position, and with what offset from the beginning of the file: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> file_name, upper(to_hex(file_offset)) file_offset <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_walfile_name_offset(<span class="hljs-string"><span class="hljs-string">'0/331E4E64'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> file_name | file_offset --------------------------+------------- 000000010000000000000033 | 1E4E64 \ /\ /  0/331E4E64 </code> </pre><br>  The file name consists of two parts.  The upper 8 hexadecimal digits indicate the time branch number (it is used when restoring from a backup), the remainder corresponds to the LSN upper digits (and the remaining LSN lower digits indicate the offset). <br><br>  Log files can be viewed in the file system in the $ PGDATA / pg_wal / directory, but since PostgreSQL 10 you can also see them with a special function: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_ls_waldir() <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-type"><span class="hljs-type">name</span></span> = <span class="hljs-string"><span class="hljs-string">'000000010000000000000033'</span></span>;</code> </pre><pre> <code class="plaintext hljs"> name | size | modification --------------------------+----------+------------------------ 000000010000000000000033 | 16777216 | 2019-07-08 20:24:13+03 (1 row)</code> </pre><br><h1>  Proactive recording </h1><br>  Let's see how logging happens and how proactive write is secured.  Create a table: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> wal(id <span class="hljs-type"><span class="hljs-type">integer</span></span>); =&gt; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> wal <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> (<span class="hljs-number"><span class="hljs-number">1</span></span>);</code> </pre><br>  We will look at the title of the table page.  To do this, we need an already familiar extension: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXTENSION</span></span> pageinspect;</code> </pre><br>  We start the transaction and remember the insertion position in the log: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; =&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_insert_lsn --------------------------- 0/331F377C (1 row)</code> </pre><br>  Now let's perform some operation, for example, update the line: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> wal <span class="hljs-keyword"><span class="hljs-keyword">set</span></span> id = id + <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br>  This change was also recorded in the log, the insertion position has changed: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_insert_lsn --------------------------- 0/331F37C4 (1 row)</code> </pre><br>  To ensure that a modified data page is not preempted to disk before a log entry, the LSN of the last log entry relating to this page is stored in the page header: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lsn <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> page_header(get_raw_page(<span class="hljs-string"><span class="hljs-string">'wal'</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>));</code> </pre><pre> <code class="plaintext hljs"> lsn ------------ 0/331F37C4 (1 row)</code> </pre><br>  It is necessary to take into account that the journal is common for the entire cluster, and new records get into it all the time.  Therefore, the LSN on the page may be less than the value that pg_current_wal_insert_lsn has just returned.  But nothing happens in our system, so the numbers are the same. <br><br>  Now complete the transaction. <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>;</code> </pre><br>  The fixation entry also goes to the log, and the position changes again: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_insert_lsn --------------------------- 0/331F37E8 (1 row)</code> </pre><br>  A commit changes the status of a transaction in a structure called XACT (we <a href="https://habr.com/ru/company/postgrespro/blog/445820/">already talked about it</a> ).  Statuses are stored in files, but their cache is also used for them, which takes 128 pages in shared memory.  Therefore, for the XACT pages, the LSN of the last log entry is tracked.  But this information is not stored in the page itself, but in RAM. <br><br>  At some point, the created log entries will be written to disk.  In which one - we will talk another time, but in our case it has already happened: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_lsn(), pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_lsn | pg_current_wal_insert_lsn --------------------+--------------------------- 0/331F37E8 | 0/331F37E8 (1 row)</code> </pre><br>  After this point, data pages and XACT can be pushed out of the cache.  But if it were necessary to oust them earlier, it would be detected and the journal entries would be forcibly recorded first. <br><br>  Knowing the two LSN positions, you can get the size of the log entries between them (in bytes) by simply subtracting one position from another.  It is only necessary to bring the position to the type pg_lsn: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-string"><span class="hljs-string">'0/331F37E8'</span></span>::pg_lsn - <span class="hljs-string"><span class="hljs-string">'0/331F377C'</span></span>::pg_lsn;</code> </pre><pre> <code class="plaintext hljs"> ?column? ---------- 108 (1 row)</code> </pre><br>  In this case, updating the string and committing required 108 bytes in the log. <br><br>  In the same way, it is possible to estimate how much log entries are generated by the server per unit of time under a certain load.  This is important information that will be required when setting up (which we will talk about next time). <br><br>  Now we use the pg_waldump utility to look at the created log entries. <br><br>  The utility can work with the LSN range (as in this example), and select entries for the specified transaction.  It should be run on behalf of the postgres OS user, as it needs access to the log files on the disk. <br><br><pre> <code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump -p /var/lib/postgresql/11/main/pg_wal -s 0/331F377C -e 0/331F37E8 000000010000000000000033</code> </pre><pre> <code class="plaintext hljs">rmgr: Heap len (rec/tot): 69/ 69, tx: 101085, lsn: 0/331F377C, prev 0/331F3014, desc: HOT_UPDATE off 1 xmax 101085 ; new off 2 xmax 0, blkref #0: rel 1663/16386/33081 blk 0</code> </pre><pre> <code class="plaintext hljs">rmgr: Transaction len (rec/tot): 34/ 34, tx: 101085, lsn: 0/331F37C4, prev 0/331F377C, desc: COMMIT 2019-07-08 20:24:13.945435 MSK</code> </pre><br>  Here we see the headings of the two entries. <br><br>  The first is the <a href="https://habr.com/ru/company/postgrespro/blog/449704/">HOT_UPDATE</a> operation, related to the Heap resource manager.  The file name and page number are indicated in the blkref field and match the updated tabular page: <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_relation_filepath(<span class="hljs-string"><span class="hljs-string">'wal'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> pg_relation_filepath ---------------------- base/16386/33081 (1 row)</code> </pre><br>  The second entry is a COMMIT related to the Transaction resource manager. <br><br>  Not the most readable format, but you can figure it out if necessary. <br><br><h1>  Recovery </h1><br>  When we start the server, the postmaster process is started first, and it, in turn, starts the startup process, whose task is to ensure recovery if a failure has occurred. <br><br>  To determine if recovery is required, startup looks in the special control file $ PGDATA / global / pg_control and looks at the status of the cluster.  We can check the status ourselves using the pg_controldata utility: <br><br><pre> <code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_controldata -D /var/lib/postgresql/11/main | grep state</code> </pre><pre> <code class="plaintext hljs">Database cluster state: in production</code> </pre><br>  A neatly stopped server status will be “shut down”.  If the server does not work, and the status remains “in production”, this means that the DBMS has fallen and then the recovery will be performed automatically. <br><br>  To restore the startup process will consistently read the log and apply entries to the pages, if necessary.  You can check the necessity by comparing the LSN pages on the disk with the LSN of the journal entry  If the LSN of the page is larger, then the entry is not necessary.  And in fact - even impossible, because the records are designed for strictly consistent application. <br><br><blockquote>  There are exceptions.  Part of the records are formed as a full image of the page (FPI, full page image), and it is clear that such an image can be applied to the page in any state - it will still erase everything that was there.  Another change in the status of the transaction can be applied to any version of the XACT page - so there is no need to store LSNs inside such pages. <br></blockquote><br>  Changing pages during recovery occurs in the buffer cache, as in normal work - for this postmaster runs the necessary background processes. <br><br>  Similarly, journal entries apply to files: for example, if an entry indicates that the file must exist, but it does not exist, the file is created. <br><br>  Well, at the very end of the recovery process, all non-journaling tables are overwritten with "dummies" from their <a href="https://habr.com/ru/company/postgrespro/blog/444536/">init layers</a> . <br><br>  This is a very simplified presentation of the algorithm.  In particular, we have not yet said anything about where to start reading the journal entries (this conversation will have to be postponed until the checkpoint is considered). <br><br>  And the last clarification.  “According to the classics,” the recovery process consists of two phases.  In the first phase (roll forward) log entries are rolled in, and the server repeats all the work lost during the failure.  On the second (roll back) - rollback transactions that were not fixed at the time of failure.  But PostgreSQL does not need a second phase.  As we <a href="https://habr.com/ru/company/postgrespro/blog/445820/">considered earlier</a> , due to the peculiarities of the implementation of a multiversion transaction, it is not necessary to roll back physically;  it suffices that the commit bit is not set in XACT. <br><br>  <a href="https://habr.com/ru/company/postgrespro/blog/460423/">Continued</a> . </div><p>Source: <a href="https://habr.com/ru/post/459250/">https://habr.com/ru/post/459250/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../459242/index.html">In the wake of the conference T + Conf 2019</a></li>
+<li><a href="../459244/index.html">Product manager notes: user behavior on game pages in the app store. How much time is needed to download the game</a></li>
+<li><a href="../459246/index.html">Why is website conversion going down? Examples of 60 errors in design and usability</a></li>
+<li><a href="../459248/index.html">Digital events in Moscow from 09 to 14 July</a></li>
+<li><a href="../45925/index.html">Glasses display: Teleglass by Scalar</a></li>
+<li><a href="../459252/index.html">Security Week 28: Hacking a Smart Home</a></li>
+<li><a href="../459254/index.html">Still the best ZIP bomb</a></li>
+<li><a href="../459256/index.html">How we optimized our Theme Hospital for different platforms</a></li>
+<li><a href="../459258/index.html">14,000 versts not a hook</a></li>
+<li><a href="../45926/index.html">habra</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
