@@ -66,19 +66,6 @@ $(function() {
 	});
 
 
-	//Generate the list of all articles
-	// $.getJSON('https://quick-geek.github.io/allArticles.json', function(data) {
-	// 	const $listOfAllArticles = $('.js-list-of-pages').detach();
-	// 	console.log(data);
-
-	// 	data.forEach(article => {
-	// 		$listOfAllArticles.append('<li><a href="../articles/' + article.id + '/index.html">' + article.title + '</a></li>\n');
-	// 	});
-		
-	// 	$('.js-list-of-articles-container').append($listOfAllArticles);
-	// });
-
-
 	//Get the list of all articles
 	//$('.js-list-of-articles-container').load('../../allArticles.html .js-all-articles-list');
 
