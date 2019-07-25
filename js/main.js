@@ -158,8 +158,8 @@ $(function() {
 
 
   //Add Ads notification
-  $('<div class="ad-click-notification js-ad-click-notification">Please click on Ads to support the site</div>').appendTo('body');
-  window.setTimeout(function() {
-    $('.js-ad-click-notification').slideDown(2000);
-  }, 10 * 1000);
+  // $('<div class="ad-click-notification js-ad-click-notification">Please click on Ads to support the site</div>').appendTo('body');
+  // window.setTimeout(function() {
+  //   $('.js-ad-click-notification').slideDown(2000);
+  // }, 10 * 1000);
 });
