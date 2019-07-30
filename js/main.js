@@ -225,4 +225,10 @@ $(function() {
   //Affiliate Program Notification
   const apnText = 'This site may contain Advertising and Affiliate Program links. As an Amazon Associate I earn from qualifying purchases.';
   $('.page-footer').before('<div class="apn">' + apnText + '</div>');
+
+
+  //Amazon Native Shopping Ads
+  const $amazonNativeShoppingAdsDiv = $('<div id="amzn-assoc-ad-a902da66-d8a1-4bc0-800f-582318c74da0" />');
+  $amazonNativeShoppingAdsDiv.insertAfter('.game-2048-container');
+  $.getScript('https://z-na.amazon-adsystem.com/widgets/onejs?MarketPlace=US&adInstanceId=a902da66-d8a1-4bc0-800f-582318c74da0');
 });
