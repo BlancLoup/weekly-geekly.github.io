@@ -179,7 +179,7 @@ $(function() {
   	$iframe: $('<iframe style="width:120px;height:240px;" marginwidth="0" marginheight="0" scrolling="no" frameborder="0" src="" />'),
   	$prevBtn: $('<div class="amazon-side-widget-prev-btn amazon-side-widget-nav-btn"><i class="fa fa-chevron-circle-left"></i></div>'),
   	$nextBtn: $('<div class="amazon-side-widget-next-btn amazon-side-widget-nav-btn"><i class="fa fa-chevron-circle-right"></i></div>'),
-  	$moreBtn: $('<a class="amazon-side-widget-more-btn" href="https://www.amazon.com/gp/search?ie=UTF8&tag=geeksworld0d-20&linkCode=ur2&linkId=44eac47bbe0d7de17a768bb6a00fcdf2&camp=1789&creative=9325&index=books&keywords=geeks">Read more</a><img src="https://ir-na.amazon-adsystem.com/e/ir?t=geeksworld0d-20&l=ur2&o=1" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />'),
+  	$moreBtn: $('<a class="amazon-side-widget-more-btn" href="https://www.amazon.com/gp/search?ie=UTF8&tag=geeksworld0d-20&linkCode=ur2&linkId=44eac47bbe0d7de17a768bb6a00fcdf2&camp=1789&creative=9325&index=books&keywords=geeks">More Books</a><img src="https://ir-na.amazon-adsystem.com/e/ir?t=geeksworld0d-20&l=ur2&o=1" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />'),
   	$closeBtn: $('<div class="amazon-side-widget-close-btn"><i class="fa fa-angle-double-right"></i></div>')
   }
 
