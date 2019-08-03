@@ -1,0 +1,137 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134931760-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134931760-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>VM performance analysis in VMware vSphere. Part 3: Storage</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Part 1. About CPU 
+ Part 2. About Memory 
+
+ Today we will analyze the disk subsystem metrics in vSphere. The problem with storage is the most common r...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({
+            google_ad_client: "ca-pub-6974184241884155",
+            enable_page_level_ads: true
+       });
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly.github.io/index.html"></a>
+    <div class="page-header-text">Geekly Articles each Day</div>
+  </header>
+  <nav class="page-headings-container js-page-headings-container"></nav>
+  <div class="tools-bar js-tools-bar">
+    <!-- <a href="../../search.html" title="Search">🔎</a> -->
+    <a class="js-list-of-headings-button" data-state="closed" href="#" title="Headings">📜</a>
+    <a class="js-go-to-top-button" href="#" title="Go to Top">⬆️</a>
+    <a class="js-go-to-bottom-button" href="#" title="Go to Bottom">⬇️</a>
+  </div>
+  <a href="http://bit.ly/donateToWeeklyGeekly" class="donate-btn">DONATE</a>
+  <section class="page js-page"><h1>VM performance analysis in VMware vSphere. Part 3: Storage</h1><div class="post__text post__text-html js-mediator-article"><img src="https://habrastorage.org/webt/2z/yj/ri/2zyjri-ljt0oq1lfki5jwlxuyuc.png"><br><br>  <a href="https://habr.com/ru/company/dataline/blog/452884/">Part 1. About CPU</a> <br>  <a href="https://habr.com/ru/company/dataline/blog/455820/">Part 2. About Memory</a> <br><br>  Today we will analyze the disk subsystem metrics in vSphere.  The problem with storage is the most common reason for a slow virtual machine.  If in cases with CPU and RAM, troubleshooting ends at the hypervisor level, then in case of problems with the disk, you may have to deal with the data network and storage systems. 
+      <br>
+        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <ins class="adsbygoogle"
+          style="display:block; text-align:center;"
+          data-ad-layout="in-article"
+          data-ad-format="fluid"
+          data-ad-client="ca-pub-6974184241884155"
+          data-ad-slot="8945601208"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      <br>
+      I will analyze the topic using the example of block access to storage, although with file access the counters are about the same. <br><a name="habracut"></a><br><h3>  Bit of theory </h3><br>  When talking about the performance of the disk subsystem of virtual machines, usually pay attention to three related parameters: <br><br><ul><li>  number of input / output operations (Input / Output Operations Per Second, IOPS); </li><li>  bandwidth (Throughput); </li><li>  latency of input / output operations (Latency). </li></ul><br>  <b>The number of IOPS is</b> usually important for random workloads: access to blocks on disk located in different places.  Databases, business applications (ERP, CRM), etc. can serve as an example of such a load. <br><br>  <b>Throughput is</b> important for sequential loads: access to blocks located one after the other.  For example, file servers (but not always) and video surveillance systems can generate such a load. <br><br>  Throughput is related to the number of I / O operations as follows: <br><br>  <i>Throughput = IOPS * Block size</i> , where Block size is the size of the block. <br><br>  Block size is a pretty important feature.  Modern ESXi versions allow blocks up to 32,767 KB in size.  If the block is even larger, it is divided into several.  Not all storage systems can work effectively with such large blocks, so Advanced Settings ESXi has the DiskMaxIOSize parameter.  Using it, you can reduce the maximum size of a block skipped by the hypervisor (more details <a href="https://kb.vmware.com/s/article/1003469">here</a> ).  I recommend that you consult the manufacturer of storage systems before changing this parameter, or at least test the changes at the laboratory bench. <br><br>  Large block sizes can adversely affect storage performance.  Even if the number of IOPS and throughput are relatively small, high latencies can occur with a large block size.  Therefore, pay attention to this parameter. <br><br>  <b>Latency</b> is the most interesting performance parameter.  The I / O latency for a virtual machine is the sum of: <br><br><ul><li>  delays within the hypervisor (KAVG, Average Kernel MilliSec / Read); </li><li>  latency given by data network and storage (DAVG, Average Driver MilliSec / Command). </li></ul><br>  The total delay that is visible in the guest OS (GAVG, Average Guest MilliSec / Command) is the sum of KAVG and DAVG. <br><br>  GAVG and DAVG are measured, and KAVG is calculated: GAVG – DAVG. <br><br><img src="https://habrastorage.org/webt/vl/nr/li/vlnrlisbs6bewpfc93um8pocz4c.png"><br>  <a href="https://www.codyhosterman.com/2018/03/what-is-the-latency-stat-qavg/"><i>A source</i></a> <br><br>  Let us dwell on <b>KAVG</b> .  In normal operation, the KAVG should tend to zero, or at least be much smaller than the DAVG.  The only case I know of when KAVG is expected to be high is the IOPS limit on the VM disk.  In this case, when trying to exceed the limit, KAVG will increase. <br><br>  The most significant component of KAVG is QAVG - the time in the queue for processing inside the hypervisor.  The remaining components of KAVG are negligible. <br><br>  The queue in the disk adapter driver and the moon queue has a fixed size.  For heavily loaded environments this size can be useful to increase.  <a href="https://kb.vmware.com/s/article/1267">It</a> describes how to increase the queue in the adapter driver (at the same time the queue to the moons will increase).  This setting works when only one VM works with the moon, which is rare.  If there are several <i>VMs</i> on the moon, you must also increase the <i>Disk.SchedNumReqOutstanding</i> parameter (instructions <a href="https://kb.vmware.com/s/article/1268">here</a> ).  By increasing the queue, you decrease QAVG and KAVG, respectively. <br><br>  But, again, first read the documentation from the HBA vendor and test the changes at the laboratory bench. <br><br>  The size of the queue to the moon can be affected by the inclusion of the SIOC (Storage I / O Control) mechanism.  It provides uniform access to the moon from all the cluster servers by dynamically changing the queue to the moon on the servers.  That is, if a VM is running on a host that requires a disproportionate amount of performance (noisy neighbor VM), SIOC reduces the length of the queue to the moon on this host (DQLEN).  More details <a href="http://www.yellow-bricks.com/2019/03/05/dqlen-changes-what-is-going-on/">here</a> . <br><br>  KAVG sorted out, now a little about <b>DAVG</b> .  Everything is simple here: DAVG is the delay introduced by the external environment (data network and storage).  Any modern and not so storage system has its own performance counters.  To analyze problems with DAVG, it makes sense to look at them.  If everything is fine on the ESXi and storage side, check the data network. <br><br>  To avoid performance issues, choose the right Path Selection Policy (PSP) for your storage.  Almost all modern storage systems support Round-Robin PSP (with or without ALUA, Asymmetric Logical Unit Access).  This policy allows you to use all available paths to storage.  In the case of ALUA, only the paths to the controller that owns the moon are used.  Not all storage systems on ESXi have default rules that establish the Round-Robin policy.  If there is no rule for your storage system, use the plug-in from the storage manufacturer that will create the corresponding rule on all the hosts in the cluster, or create the rule yourself.  Details <a href="https://kb.vmware.com/s/article/2053628">here</a> . <br><br>  Also, some storage vendors recommend changing the number of IOPS per path from the standard value of 1000 to 1. In our practice, this allowed us to “squeeze” more performance out of the storage and significantly reduce the time it takes to failover in the event of a controller failure or update.  Check the vendor's recommendations, and if there are no contraindications, then try changing this parameter.  Details <a href="https://kb.vmware.com/s/article/2069356">here</a> . <br><br><h3>  Basic performance counters of the disk subsystem of a virtual machine </h3><br>  The disk subsystem performance counters in vCenter are collected in the sections Datastore, Disk, Virtual Disk: <br><br><img src="https://habrastorage.org/webt/vh/kw/s4/vhkws4yppe9rqfk5pogjaey0_im.png"><br><br>  The <b>Datastore</b> section contains metrics for vSphere disk storages (datastores) on which VM disks are located.  Here you will find standard counters for: <br><br><ul><li>  IOPS (Average read / write requests per second), </li><li>  bandwidth (Read / Write rate), </li><li>  delays (Read / Write / Highest latency). </li></ul><br>  From the names of the counters, in principle, everything is clear.  Once again, I’ll draw attention to the fact that here the statistics are not for a specific VM (or VM disk), but for the entire datastore.  In my opinion, it is more convenient to look at these statistics in ESXTOP, at least on the basis that the minimum measurement period is 2 seconds. <br><br>  The <b>Disk</b> section contains metrics for block devices used by VMs.  There are IOPS counters of the summation type (the number of input / output operations per measurement period) and several counters related to block access (Commands aborted, Bus resets).  In my opinion, this information is also more convenient to look at in ESXTOP. <br><br>  The <b>Virtual Disk</b> partition is the most useful in terms of troubleshooting VM disk subsystem performance problems.  Here you can see the performance of each virtual disk.  This information is needed to understand if a particular virtual machine has a problem.  In addition to standard counters for the number of input / output operations, read / write volume and delays, this section contains useful counters that show the block size: Read / Write request size. <br><br>  In the picture below, a graph of the performance of the VM disk, where you can see the number of IOPS, latency and block size. <br><br><img src="https://habrastorage.org/webt/6_/1e/io/6_1eiop7odinrffnof8y6jkqoc4.png"><br><br>  Performance metrics can also be viewed across the entire datastore if SIOC is enabled.  Here is some basic information on average Latency and IOPS.  By default, this information can only be viewed in real time. <br><br><img src="https://habrastorage.org/webt/3z/fu/2f/3zfu2fvddarsk_ki3lnavc8juqs.png"><br><br><h3>  ESXTOP </h3><br>  ESXTOP has several screens that display information about the host disk subsystem as a whole, individual virtual machines and their disks. <br><br>  Let's start with information on virtual machines.  The “Disk VM” screen is called up by the “v” key: <br><br><img src="https://habrastorage.org/webt/x-/ix/kf/x-ixkfuuxxrv64gpsxezoo8lsci.png"><br><br>  <b>NVDISK</b> is the number of VM disks.  To view information on each disk, press “e” and enter the GID of the VM you are interested in. <br><br>  The meaning of the remaining parameters on this screen is clear from their names. <br><br>  Another useful screen for troubleshooting is Disk adapter.  It is called by the “d” key (in the picture below, the fields A, B, C, D, E, G are selected): <br><br><img src="https://habrastorage.org/webt/oo/yk/2n/ooyk2nk1kburs6exfrg1km9auum.png"><br><br>  <b>NPTH</b> is the number of <b>moon</b> paths that are visible from this adapter.  To get information on each path on the adapter, press “e” and enter the name of the adapter: <br><br><img src="https://habrastorage.org/webt/nb/rl/wr/nbrlwrvqdj95qy_qqna0ultn3tw.png"><br><br>  <b>AQLEN</b> - maximum queue size on the adapter. <br><br>  Also on this screen are the delay counters, which I talked about above: <b>KAVG / cmd, GAVG / cmd, DAVG / cmd, QAVG / cmd</b> . <br><br>  The Disk device screen, which is called by the “u” key, provides information on individual block devices - moons (in the picture below, the fields A, B, F, G, I are selected).  Here you can see the status of the queue to the moons. <br><br><img src="https://habrastorage.org/webt/ik/e0/lk/ike0lkaa77navbia1n-sjfvqwci.png"><br><br>  <b>DQLEN</b> - queue size for a block device. <br>  <b>ACTV</b> is the number of I / O commands in the ESXi core. <br>  <b>QUED</b> - the number of I / O commands in the queue. <br>  <b>% USD</b> - ACTV / DQLEN × 100%. <br>  <b>LOAD</b> - (ACTV + QUED) / DQLEN. <br><br>  If% USD is high, you should consider expanding the lineup.  The more teams in the queue, the higher the QAVG and, accordingly, KAVG. <br><br>  You can also see on the Disk device screen whether the VAAI (vStorage API for Array Integration) is running on storage.  To do this, select the fields A and O. <br><br>  The VAAI mechanism allows you to transfer part of the work from the hypervisor directly to the storage system, for example, zeroing, copying blocks or blocking. <br><br><img src="https://habrastorage.org/webt/ue/ko/mf/uekomfb2nkqqtktz9xy2b_uarpa.png"><br><br>  As you can see in the picture above, VAAI works on this storage system: Zero and ATS primitives are actively used. <br><br><h3>  ESXi Disk Optimization Tips </h3><br><ul><li>  Pay attention to the size of the block. </li><li>  Set the optimal queue size on the HBA. </li><li>  Remember to enable SIOC on the datastores. </li><li>  Choose your PSP according to the manufacturer’s recommendations. </li><li>  Make sure VAAI is working. </li></ul><br><div class="spoiler">  <b class="spoiler_title">Useful Related Articles:</b> <div class="spoiler_text">  <a href="http://www.yellow-bricks.com/2011/06/23/disk-schednumreqoutstanding-the-story/">http://www.yellow-bricks.com/2011/06/23/disk-schednumreqoutstanding-the-story/</a> <br>  <a href="http://www.yellow-bricks.com/2009/09/29/whats-that-alua-exactly/">http://www.yellow-bricks.com/2009/09/29/whats-that-alua-exactly/</a> <br>  <a href="http://www.yellow-bricks.com/2019/03/05/dqlen-changes-what-is-going-on/">http://www.yellow-bricks.com/2019/03/05/dqlen-changes-what-is-going-on/</a> <br>  <a href="https://www.codyhosterman.com/2017/02/understanding-vmware-esxi-queuing-and-the-flasharray/">https://www.codyhosterman.com/2017/02/understanding-vmware-esxi-queuing-and-the-flasharray/</a> <br>  <a href="https://www.codyhosterman.com/2018/03/what-is-the-latency-stat-qavg/">https://www.codyhosterman.com/2018/03/what-is-the-latency-stat-qavg/</a> <br>  <a href="https://kb.vmware.com/s/article/1267">https://kb.vmware.com/s/article/1267</a> <br>  <a href="https://kb.vmware.com/s/article/1268">https://kb.vmware.com/s/article/1268</a> <br>  <a href="https://kb.vmware.com/s/article/1027901">https://kb.vmware.com/s/article/1027901</a> <br>  <a href="https://kb.vmware.com/s/article/2069356">https://kb.vmware.com/s/article/2069356</a> <br>  <a href="https://kb.vmware.com/s/article/2053628">https://kb.vmware.com/s/article/2053628</a> <br>  <a href="https://kb.vmware.com/s/article/1003469">https://kb.vmware.com/s/article/1003469</a> <br>  <a href="https://www.vmware.com/content/dam/digitalmarketing/vmware/en/pdf/techpaper/performance/vsphere-esxi-vcenter-server-67-performance-best-practices.pdf">https://www.vmware.com/content/dam/digitalmarketing/vmware/en/pdf/techpaper/performance/vsphere-esxi-vcenter-server-67-performance-best-practices.pdf</a> <br></div></div></div><p>Source: <a href="https://habr.com/ru/post/461127/">https://habr.com/ru/post/461127/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../46111/index.html">Zend_Form and ini files</a></li>
+<li><a href="../461113/index.html">Five years of using C ++ for projects for microcontrollers in production</a></li>
+<li><a href="../461121/index.html">Small multitasking experiments in a microcontroller</a></li>
+<li><a href="../461123/index.html">Welcome to the Medium Summer Meetup on August 3</a></li>
+<li><a href="../461125/index.html">The task of creating sequential numeric codes for numbering messages in the source code in Visual Studio (ex. C #)</a></li>
+<li><a href="../461129/index.html">About kote, wife, two sons, the idea ... and not only. Story with continuation</a></li>
+<li><a href="../46113/index.html">20 million pages of history</a></li>
+<li><a href="../461131/index.html">The robot that will follow your smile. We make a cheap trolley for learning ROS. Part 2, software</a></li>
+<li><a href="../461137/index.html">How we developed a device for monitoring the attention of drivers. Experience Yandex.Taxi</a></li>
+<li><a href="../46114/index.html">Installing Linux from a virtual machine on a removable disk</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter52496797 = new Ya.Metrika({
+                  id:52496797,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/52496797" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134931760-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+  <footer class="page-footer">
+    <div class="page-footer-legal-info-container page-footer-element">
+      <p>
+        Weekly-Geekly | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+      </p>
+    </div>
+    <div class="page-footer-counters-container page-footer-element">
+      <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=6iCFw7uJz0zcOaoxz5k5PcLCJUzv2WG8G5V8M3U6Rc4&co=3a3a3a&ct=ffffff'/></a>
+    </div>
+  </footer>
+</body>
+
+</html>
